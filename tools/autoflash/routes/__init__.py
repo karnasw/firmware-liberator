@@ -216,7 +216,8 @@ def settle_route(ctx: Context) -> tuple[str | None, str]:
         raise Abort(
             f"this device is being converted to {FIRMWARES[kept]}, and a conversion cannot "
             f"switch to {FIRMWARES[given]} part way. Carry on without "
-            f"{'--esphome' if ctx.esphome_firmware else '--firmware'}, or start again with --new"
+            f"{'--esphome' if ctx.esphome_firmware else '--supla' if ctx.supla_firmware else '--firmware'}, "
+            "or start again with --new"
         )
     if kept:
         return kept, running or "sonoff"
@@ -295,6 +296,7 @@ def ask_firmware(source: str, choices: list[str], outdated: tuple[str, str, str]
     prompts.section("Choose the device's new firmware", body)
     labels = {"tasmota": "Tasmota" if source != "tasmota" else "Tasmota, as it is (its meter calibrated, if it is not)",
               "openbeken": "OpenBeken", "esphome": "ESPHome",
+              "supla": "Supla GUI-Generic (from a file you build at gui-generic-builder-new.supla.io)",
               "sonoff": "Sonoff's own firmware (back to eWeLink, from its backup)"}
     if outdated:
         labels[outdated[0]] = f"{FIRMWARES[outdated[0]]}, updated to {outdated[2]}"

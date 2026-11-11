@@ -9,7 +9,7 @@ from typing import Any, Callable, TYPE_CHECKING
 
 from tools.autoflash import account, esphome, kinds
 from tools.autoflash.routes import update
-from tools.autoflash.routes.espressif import bundle, hub, installer, mover, sonoff, tasmota
+from tools.autoflash.routes.espressif import bundle, hub, installer, mover, sonoff, supla, tasmota
 from tools.autoflash.routes.espressif.evidence import ATTEMPTED_EVIDENCE, DESTRUCTIVE_STEPS  # noqa: F401
 
 # Sonoff's firmware goes back on from the plug's own backup: there is no other.
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from tools.autoflash.context import Context
 
 # What a plug of this family may run: the firmware a run installs, by its key.
-FIRMWARES = {"tasmota": "Tasmota", "esphome": "ESPHome", "sonoff": "Sonoff"}
+FIRMWARES = {"tasmota": "Tasmota", "esphome": "ESPHome", "supla": "Supla", "sonoff": "Sonoff"}
 # After this step the plug no longer runs its Sonoff firmware.
 POINT_OF_NO_RETURN = "C2"
 
@@ -70,6 +70,14 @@ ESPHOME_FINAL_STEPS: list[tuple[str, str, Callable[[Context], dict[str, Any]]]] 
     ("I1", "ESPHome into the other slot, every block checked", mover.step_esphome_install),
     ("I2", "ESPHome started and on the Wi-Fi", mover.step_esphome_check),
 ]
+# Supla GUI-Generic: the image the builder gave checked first (SUPLA_CHECK_STEP,
+# before anything is written); then from the hub, like ESPHome, into the slot
+# Tasmota does not run from, with Supla's own layout (tools/autoflash/supla.py).
+SUPLA_CHECK_STEP = ("S0", "The Supla firmware checked", supla.step_image)
+SUPLA_FINAL_STEPS: list[tuple[str, str, Callable[[Context], dict[str, Any]]]] = [
+    ("S1", "Supla into the other slot, every block checked, and its layout", supla.step_supla_install),
+    ("S2", "Supla started and set up through its own network", supla.step_supla_check),
+]
 SONOFF_FINAL_STEPS: list[tuple[str, str, Callable[[Context], dict[str, Any]]]] = [
     ("R1", "The device's own Sonoff firmware and settings, from its backup", sonoff.step_sonoff_restore),
     ("R2", "Sonoff's firmware started and on the Wi-Fi", sonoff.step_sonoff_check),
@@ -118,6 +126,15 @@ UPDATE_STEPS: dict[str, list[tuple[str, str, Callable[[Context], dict[str, Any]]
 
 def steps_for(firmware: str, source: str = "sonoff") -> list[tuple[str, str, Callable[[Context], dict[str, Any]]]]:
     """The steps from `source` firmware to `firmware` (none, if it is the same)."""
+    steps = _steps_for(firmware, source)
+    if firmware == "supla" and steps:
+        # Its image checked straight after this computer's files: before anything is written.
+        at = next(index for index, (name, _, _) in enumerate(steps) if name == "A5") + 1
+        steps = steps[:at] + [SUPLA_CHECK_STEP] + steps[at:]
+    return steps
+
+
+def _steps_for(firmware: str, source: str) -> list[tuple[str, str, Callable[[Context], dict[str, Any]]]]:
     if firmware == source:
         return []
     if source == "outdated":
@@ -125,7 +142,7 @@ def steps_for(firmware: str, source: str = "sonoff") -> list[tuple[str, str, Cal
             raise ValueError(f"no route from {source} to {firmware}")
         return START_STEPS + UPDATE_STEPS[firmware]
     final = {"tasmota": TASMOTA_FINAL_STEPS, "esphome": ESPHOME_FINAL_STEPS,
-             "sonoff": SONOFF_FINAL_STEPS}[firmware]
+             "supla": SUPLA_FINAL_STEPS, "sonoff": SONOFF_FINAL_STEPS}[firmware]
     if source == "sonoff":
         return COMMON_STEPS + HUB_STEPS + final
     if source == "tasmota" and firmware == "esphome":
@@ -140,15 +157,15 @@ def steps_for(firmware: str, source: str = "sonoff") -> list[tuple[str, str, Cal
         # Official Tasmota first, from where the run left it; then on from Tasmota.
         rest = [step for step in TASMOTA_FINAL_STEPS if step[0] in ("F2", "F4", "G1", "H1")]
         if firmware != "tasmota":
-            rest += steps_for(firmware, "tasmota")[len(START_STEPS):]
+            rest += _steps_for(firmware, "tasmota")[len(START_STEPS):]
         return START_STEPS + rest
     if source == "safeboot":
         # Tasmota back first, as it was; then on from Tasmota, as any converted plug.
-        return START_STEPS + [TASMOTA_BACK_STEP] + steps_for(firmware, "tasmota")[len(START_STEPS):]
+        return START_STEPS + [TASMOTA_BACK_STEP] + _steps_for(firmware, "tasmota")[len(START_STEPS):]
     if source == "untemplated":
         if firmware == "tasmota":
             return START_STEPS + [step for step in TASMOTA_FINAL_STEPS if step[0] == "F4"]
-        return steps_for(firmware, "tasmota")
+        return _steps_for(firmware, "tasmota")
     leave = [LEAVE_TASMOTA_STEP] if source == "tasmota" else []
     return START_STEPS + leave + TO_HUB_STEPS + HUB_STEPS + final  # esphome and midway alike
 
@@ -172,7 +189,7 @@ STEP_VERIFIERS = {**tasmota.STEP_VERIFIERS, "U1": update.still_updated, "U5": up
 # The steps run on a Tasmota given the Wi-Fi: one that has lost its settings
 # instead raises its own network (F4 looks for that itself, F2 starts on the
 # startup firmware).
-ERASED_CHECK_STEPS = {"D4", "D5", "E1", "E2", "E3", "I1", "G1", "H1"}
+ERASED_CHECK_STEPS = {"D4", "D5", "E1", "E2", "E3", "I1", "S1", "G1", "H1"}
 
 
 # Each step's name on its stage line, in words that need no knowledge of the
@@ -193,6 +210,9 @@ STAGE_NAMES = {
     "H1": "Verifying conversion",
     "I1": "Installing ESPHome",
     "I2": "Checking ESPHome",
+    "S0": "Checking Supla firmware",
+    "S1": "Installing Supla",
+    "S2": "Setting up Supla",
     "L1": "Leaving Tasmota",
     "M1": "Installing ESPHome",
     "X1": "Installing startup firmware",
@@ -210,6 +230,7 @@ STAGE_NAMES = {
 # frees the half of the memory it goes into, and the layout is not changed.
 TARGET_STAGE_NAMES = {
     "esphome": {"D4": "Making room for ESPHome"},
+    "supla": {"D4": "Making room for Supla"},
     "sonoff": {"D4": "Making room for Sonoff firmware"},
 }
 
@@ -231,6 +252,9 @@ PLAIN_DESCRIPTION = {
     "H1": "checks the finished device against the official files",
     "I1": "writes ESPHome into the device, checks every block, and switches to it",
     "I2": "checks the device has started ESPHome and joined your Wi-Fi",
+    "S0": "checks the Supla GUI-Generic file you built is one for the device, before anything is written",
+    "S1": "writes Supla into the device, checks every block, gives it room for its settings and switches to it",
+    "S2": "has you set Supla up through its own network, then finds it on your Wi-Fi",
     "L1": "moves the device off Tasmota's memory layout, onto a small firmware that takes the next",
     "M1": "sends ESPHome to the device, which checks it and switches to it",
     "X1": "sends the startup firmware to the device as an ESPHome update",

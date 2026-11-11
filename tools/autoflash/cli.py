@@ -460,6 +460,9 @@ def _main() -> int:
     parser.add_argument("--replace-own-build", action="store_true",
                         help="install this project's ESPHome over a build of its config made elsewhere, such as "
                         "by an ESPHome builder, losing that build's config changes and any API key")
+    parser.add_argument("--supla", metavar="PATH",
+                        help="install Supla GUI-Generic from this file, as gui-generic-builder-new.supla.io gave it "
+                        "(the firmware .bin, or the .zip it came in)")
     # An ESPHome built by hand (firmware.ota.bin), instead of the published one.
     parser.add_argument("--esphome", metavar="PATH", help=argparse.SUPPRESS)
     parser.add_argument("--dry-run", action="store_true")
@@ -480,6 +483,8 @@ def _main() -> int:
     args = parser.parse_args()
     if args.replace_own_build and (args.esphome or args.firmware not in (None, "esphome")):
         parser.error("--replace-own-build installs the published ESPHome, so goes with no other firmware")
+    if args.supla and (args.esphome or args.replace_own_build or args.firmware not in (None, "supla")):
+        parser.error("--supla installs Supla, so goes with no other firmware")
     prompts.UNATTENDED = args.unattended
     installer.SIMULATED_BACKUP_FAILURES = 2 * installer.BACKUP_ROUNDS if args.simulate_backup_failure else 0
     beken_images.SPOIL_STEP = args.simulate_bad_image

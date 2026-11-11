@@ -28,6 +28,9 @@ from tools.autoflash.routes import espressif, update
 from tools.autoflash.routes.espressif import evidence, mover, source, tasmota
 
 
+# How the choice of firmware names Supla.
+SUPLA = "Supla GUI-Generic (from a file you build at gui-generic-builder-new.supla.io)"
+
 class RouteTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -54,7 +57,8 @@ class RouteTestCase(unittest.TestCase):
         for key, value in {"product_model": "S60TPF", "stock_version": "1.2.0",
                            "plug_ip": "192.0.2.50", **inputs}.items():
             state.set_input(key, value)
-        return SimpleNamespace(state=state, firmware_given=given, esphome_firmware=None, replace_own_build=False,
+        return SimpleNamespace(state=state, firmware_given=given, esphome_firmware=None, supla_firmware=None,
+                               replace_own_build=False,
                                dry_run=False, finder=SimpleNamespace(poll=lambda: None),
                                esphome_password=None, esphome_key=None, web_password=None,
                                esphome_login=None)
@@ -82,7 +86,7 @@ class FirmwareChoiceTests(RouteTestCase):
         self.assertEqual([step for step, _, _ in routes.steps_of(ctx.state)], ["A0", "A1", "A3"])
         with mock.patch.object(prompts, "ask_choice", return_value=1) as asked:
             self.assertEqual(routes.step_choose(ctx)["firmware"], "esphome")
-        self.assertEqual(asked.call_args.args[1], ["Tasmota", "ESPHome"])
+        self.assertEqual(asked.call_args.args[1], ["Tasmota", "ESPHome", "Supla GUI-Generic (from a file you build at gui-generic-builder-new.supla.io)"])
         self.assertEqual(ctx.state.input("firmware"), "esphome")
         self.assertEqual([step for step, _, _ in routes.STEPS][-2:], ["I1", "I2"])
         with mock.patch.object(prompts, "ask_choice", side_effect=AssertionError("asked again")):
@@ -770,9 +774,9 @@ class FromAConvertedPlugTests(RouteTestCase):
         return route, (asked.call_args.args[1] if asked.called else None)
 
     def test_from_tasmota_the_other_two_are_offered_and_staying(self):
-        (firmware, source), offered = self.settle("tasmota", answer=2)
+        (firmware, source), offered = self.settle("tasmota", answer=3)
         self.assertEqual(offered, ["Tasmota, as it is (its meter calibrated, if it is not)", "ESPHome",
-                                   "Sonoff's own firmware (back to eWeLink, from its backup)"])
+                                   SUPLA, "Sonoff's own firmware (back to eWeLink, from its backup)"])
         self.assertEqual((firmware, source), ("sonoff", "tasmota"))
 
     def test_staying_on_tasmota_converts_nothing(self):
@@ -784,7 +788,7 @@ class FromAConvertedPlugTests(RouteTestCase):
 
     def test_without_its_backup_sonoff_is_not_offered(self):
         (firmware, _), offered = self.settle("esphome", backup=False)
-        self.assertEqual(offered, ["Tasmota"])
+        self.assertEqual(offered, ["Tasmota", SUPLA])
         self.assertEqual(firmware, "tasmota")
 
     def test_the_firmware_it_already_runs_cannot_be_asked_for(self):
@@ -793,12 +797,12 @@ class FromAConvertedPlugTests(RouteTestCase):
         with self.assertRaisesRegex(errors.Abort, "no backup"):
             self.settle("tasmota", backup=False, given="sonoff")
 
-    def test_a_plug_left_part_way_can_go_on_to_any_of_the_three(self):
+    def test_a_plug_left_part_way_can_go_on_to_any_of_them(self):
         _, offered = self.settle("midway")
-        self.assertEqual(len(offered), 3)
+        self.assertEqual(len(offered), 4)
 
     def test_every_route_ends_by_checking_its_firmware(self):
-        last = {"tasmota": "H1", "esphome": "I2", "sonoff": "R2"}
+        last = {"tasmota": "H1", "esphome": "I2", "supla": "S2", "sonoff": "R2"}
         for running in espressif.SOURCES:
             for firmware in espressif.FIRMWARES:
                 if firmware == running or (running == "sonoff" and firmware == "sonoff"):
@@ -806,7 +810,7 @@ class FromAConvertedPlugTests(RouteTestCase):
                 if running == "outdated":
                     # Updated, as its firmware takes any update: the last step checks
                     # the new release arrived. Left, it is a run from the one it runs.
-                    if firmware == "sonoff":
+                    if firmware in ("supla", "sonoff"):
                         self.assertRaises(ValueError, espressif.steps_for, firmware, running)
                         continue
                     self.assertEqual([step for step, _, _ in espressif.steps_for(firmware, running)],
@@ -834,7 +838,8 @@ class FromAConvertedPlugTests(RouteTestCase):
         # Never the hub's steps: they need Sonoff's two slots, and Tasmota's
         # layout has one - the slot swap waits for a restart that never comes.
         for firmware in espressif.FIRMWARES:
-            steps = [step for step, _, _ in espressif.steps_for(firmware, "committed")]
+            steps = [step for step, _, _ in espressif.steps_for(firmware, "committed")
+                     if step != "S0"]  # Supla's image, checked first (Supla tests)
             self.assertEqual(steps[:3], ["A5", "F2", "F4"], firmware)
             if firmware != "tasmota":
                 self.assertIn("H1", steps)
@@ -847,7 +852,8 @@ class FromTheInstallerTests(RouteTestCase):
         # Left part way from Sonoff's firmware: the backup and D1 need only the
         # installer; the eWeLink steps, which a plug on it cannot answer, are not run.
         for firmware in espressif.FIRMWARES:
-            steps = [step for step, _, _ in espressif.steps_for(firmware, "installer")]
+            steps = [step for step, _, _ in espressif.steps_for(firmware, "installer")
+                     if step != "S0"]  # Supla's image, checked first (Supla tests)
             self.assertEqual(steps[:3], ["A5", "C3", "D1"], firmware)
             self.assertFalse({"A1", "A2", "C2"} & set(steps), firmware)
 
@@ -914,7 +920,7 @@ class TasmotaUpdateTests(RouteTestCase):
 
     def test_an_earlier_release_is_offered_the_one_this_tool_installs(self):
         ctx, route, offered = self.settle("15.6.0")
-        self.assertEqual(offered, [f"Tasmota, updated to {tasmota.OFFICIAL_TASMOTA_VERSION}", "ESPHome",
+        self.assertEqual(offered, [f"Tasmota, updated to {tasmota.OFFICIAL_TASMOTA_VERSION}", "ESPHome", SUPLA,
                                    "Sonoff's own firmware (back to eWeLink, from its backup)"])
         self.assertEqual(route, ("tasmota", "outdated"))
         self.assertEqual([step for step, _, _ in routes.steps_of(ctx.state)], ["A0", "A5", "U5", "U6"])
@@ -1046,7 +1052,7 @@ class ESPHomeUpdateTests(RouteTestCase):
 
     def test_an_earlier_release_is_offered_the_update(self):
         ctx, route, offered = self.settle(self.ours(), answer=1)
-        self.assertEqual(offered, ["Tasmota", "ESPHome, updated to 1.6.0",
+        self.assertEqual(offered, ["Tasmota", "ESPHome, updated to 1.6.0", SUPLA,
                                    "Sonoff's own firmware (back to eWeLink, from its backup)"])
         self.assertEqual(route, ("esphome", "outdated"))
         self.assertEqual([step for step, _, _ in routes.steps_of(ctx.state)], ["A0", "A5", "U1", "U2"])

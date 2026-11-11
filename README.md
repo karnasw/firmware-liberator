@@ -207,6 +207,8 @@ report back on how it went here:
   happens to the plug, step by step.
 - **[docs/troubleshooting.md](docs/troubleshooting.md)** - problems met so far
   and their fixes.
+- **[docs/supla.md](docs/supla.md)** - Supla GUI-Generic on an S60 instead
+  (`--supla FILE`), from a firmware you build at Supla's builder.
 - **[docs/emulator.md](docs/emulator.md)** - the whole conversion run against
   an emulated s60 plug.
 - **[docs/unattended.md](docs/unattended.md)** - running a conversion with

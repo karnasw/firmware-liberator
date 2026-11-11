@@ -404,3 +404,45 @@ def back_to_sonoff(backup: bytes, running: int) -> list[Plan]:
         blobs=blobs,
     ).check()
     return [first, second]
+
+
+# Supla's layout (tools/autoflash/supla.py): Sonoff's, ota_1 made smaller for
+# the LittleFS and core dump partitions GUI-Generic needs after it.  Pinned,
+# so a change to the layout is a change to this too.
+SUPLA_TABLE_SHA256 = "c30ea5d3c653b9185e23c41b05c705a012d20eb3a927348366a8faa69a0f5480"
+SUPLA_OTA1_SIZE = 0x1C0000
+SUPLA_TAIL = 0x3D0000           # the LittleFS and core dump partitions, to the end of the flash
+
+
+def supla(image: bytes, table: bytes) -> list[Plan]:
+    """GUI-Generic into ota_0 beside the Berry Tasmota in ota_1, in two plans
+    as it is more than one may write; then the end of the flash cleared for
+    its LittleFS and core dump, Supla's partition table, and the boot
+    selection cleared, so the plug starts ota_0, and a restart.
+
+    Until the boot selection is cleared it still starts Tasmota, which
+    Supla's table leaves where it was: a cut before then leaves the plug as
+    it was, with the table changed or not.  The table is the one sector a
+    power cut leaves unable to start; it is written in a few milliseconds.
+    """
+    if len(image) > SUPLA_OTA1_SIZE:
+        raise PlanError("GUI-Generic does not fit Supla's slots")
+    if len(image) <= SECTOR:
+        raise PlanError("that is too small to be GUI-Generic")
+    if sha256(table) != SUPLA_TABLE_SHA256:
+        raise PlanError("that is not Supla's partition table")
+    half = len(image) // 2 // SECTOR * SECTOR or SECTOR
+    first = Plan(
+        name="supla_app", title="Supla", table_sha256=SONOFF_TABLE_SHA256, running=1,
+        steps=[Write("supla", SONOFF_OTA[0], 0, half)], blobs={"supla": image}, restart=False,
+    ).check()
+    second = Plan(
+        name="supla_rest", title="Supla and its memory layout", table_sha256=SONOFF_TABLE_SHA256,
+        running=1,
+        steps=[Write("supla", SONOFF_OTA[0] + half, half, len(image) - half),
+               Erase(SUPLA_TAIL, 0x400000 - SUPLA_TAIL),
+               Write("table", TABLE_ADDRESS, whole=True),
+               Erase(SONOFF_OTADATA, OTADATA_SIZE)],
+        blobs={"supla": image, "table": table},
+    ).check()
+    return [first, second]
