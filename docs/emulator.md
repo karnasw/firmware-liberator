@@ -645,6 +645,12 @@ gives each request its own connection.
 - **No power meter.** The CSE7766 is not emulated, so readings are absent and
   the end-of-run check's log says the meter is unchanged; the checks still
   pass, as the relay switches.
+- **No Supla GUI-Generic.** It is written and started, but stops at once
+  (`assert failed: __esp_system_init_fn_init_flash`, after `qio_mode: Failed
+  to set QIE bit`) and restarts over and over - as it does flashed with the
+  builder's own bootloader and layout, so it is the emulated flash chip it
+  does not take, not the route. The run to Supla can be tried up to S1, whose
+  writes can be checked in the kept flash; S2 then stops, seeing Supla nowhere.
 - **One plug, one region.** The emulator runs whatever the dump came from. A
   dump of another model or region (with that owner's account) is needed to
   emulate it.
