@@ -1,15 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="432" height="395" viewBox="0 0 432 395" role="img" aria-labelledby="title">
-<title id="title">Sonoff (eWeLink), Tasmota or OpenBeken, and ESPHome, with arrows both ways between each pair: any one converts to any other</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="432" height="637" viewBox="0 0 432 637" role="img" aria-labelledby="title">
+<title id="title">Sonoff (eWeLink), Tasmota or OpenBeken, and ESPHome, with arrows both ways between each pair: any one converts to any other. Below them Supla GUI-Generic, with arrows one way into it from Sonoff, Tasmota and ESPHome: an S60 converts to Supla, not yet from it</title>
 <defs><marker id="head" viewBox="0 0 10 10" refX="0" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="pf"/></marker></defs>
 <g class="ps" stroke-width="2" marker-start="url(#head)" marker-end="url(#head)">
 <line x1="171" y1="153.9" x2="121" y2="240.5"/>
 <line x1="261" y1="153.9" x2="311" y2="240.5"/>
-<line x1="166" y1="318.5" x2="266" y2="318.5"/>
+</g>
+<g class="ps" stroke-width="2">
+<line x1="166" y1="318.5" x2="206" y2="318.5" marker-start="url(#head)"/>
+<line x1="226" y1="318.5" x2="266" y2="318.5" marker-end="url(#head)"/>
+</g>
+<g class="ps" stroke-width="2" marker-end="url(#head)">
+<line x1="216" y1="156" x2="216" y2="471"/>
+<line x1="116" y1="387.8" x2="171" y2="483.1"/>
+<line x1="316" y1="387.8" x2="261" y2="483.1"/>
 </g>
 <g fill="none" class="ps" stroke-width="2">
 <circle cx="216" cy="76" r="74"/><text><tspan x="216" y="66">Sonoff</tspan><tspan x="216" y="86" class="or">eWeLink</tspan></text>
 <circle cx="76" cy="318.5" r="74"/><text><tspan x="76" y="298.5">Tasmota</tspan><tspan x="76" y="318.5" class="or">- or -</tspan><tspan x="76" y="338.5">OpenBeken</tspan></text>
 <circle cx="356" cy="318.5" r="74"/><text><tspan x="356" y="308.5">ESPHome</tspan><tspan x="356" y="328.5" class="or">Home Assistant</tspan></text>
+<circle cx="216" cy="561" r="74"/><text><tspan x="216" y="551">Supla</tspan><tspan x="216" y="571" class="or">GUI-Generic</tspan></text>
 </g>
 <style>:root{--pp:#7c3aed}@media(prefers-color-scheme:dark){:root{--pp:#af5fff}}.ps{stroke:var(--pp)}.pf{fill:var(--pp)}text{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;fill:#1f2328;stroke:none;text-anchor:middle;dominant-baseline:central}.or{font-size:14px;fill:#6e7781}@media(prefers-color-scheme:dark){text{fill:#ffffff}.or{fill:#9198a1}}</style>
 </svg>

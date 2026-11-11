@@ -42,7 +42,7 @@ And every route between them.
 <br>
 
 
-![Sonoff (eWeLink), Tasmota or OpenBeken, and ESPHome: any one converts to any other](docs/FirmwareRoutes.svg)
+![Sonoff (eWeLink), Tasmota or OpenBeken, and ESPHome: any one converts to any other; and from each, one way, to Supla GUI-Generic](docs/FirmwareRoutes.svg)
 
 <br>
 
