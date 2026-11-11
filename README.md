@@ -1,5 +1,5 @@
 # Firmware Liberator
-**Sonoff eWeLink → Tasmota, OpenBeken, ESPHome**
+**Sonoff eWeLink → Tasmota, OpenBeken, ESPHome, Supla**
 > **Your Firmware Flasher Tool**  
 (Fully OTA - 'Over The Air' - I.e Flash over Wi-Fi)
 
@@ -36,6 +36,8 @@ Your device answers to you alone, on your own network.
 
 And every route between them.
 > Stock Sonoff to Tasmota, OpenBeken or ESPHome, either to the other, and back to Sonoff's own firmware if you change your mind.
+>
+> Or to **Supla** GUI-Generic, from Sonoff's firmware, Tasmota or ESPHome ([docs/supla.md](docs/supla.md)). A plug on Supla stays there as far as the tool goes: it does not take it on to another firmware yet.
 
 <br>
 
@@ -46,7 +48,7 @@ And every route between them.
 
 ### Fully automated 'Over The Air' firmware conversion
 
-Turn your stock Sonoff S60 smart plug into one running **Tasmota** or **ESPHome** using OTA method - no soldering, no taking the plug apart. Move the plug between the two, or back to Sonoff's own firmware. The S61S, with **OpenBeken** too, is coming soon.
+Turn your stock Sonoff S60 smart plug into one running **Tasmota** or **ESPHome** using OTA method - no soldering, no taking the plug apart. Move the plug between the two, or back to Sonoff's own firmware. An S60 can have **Supla** GUI-Generic instead, from a firmware you build at [Supla's builder](https://gui-generic-builder-new.supla.io/) (`--supla FILE`). The S61S, with **OpenBeken** too, is coming soon.
 
 > Conversion with this tool is fully automated end to end, with checks at every stage. It is resumable and can be restarted at any point.
 
@@ -102,6 +104,11 @@ The S61S (iPlug Gen2, model **S61STPF**) is being worked on: see [devices/sonoff
 
 - ✅ 1.1.1
 - ✅ 1.2.0
+
+**Firmware**
+
+- ✅ Tasmota, ESPHome, Sonoff's own (S60)
+- ✅ Supla GUI-Generic (S60, built at [gui-generic-builder-new.supla.io](https://gui-generic-builder-new.supla.io/); [docs/supla.md](docs/supla.md))
 
 **Computer**
 
@@ -173,6 +180,8 @@ was interrupted, it checks the plug to work out where to resume from.
 **Tasmota:** Official Tasmota
 
 **ESPHome:** Official ESPHome
+
+**Supla:** GUI-Generic as you built it, set up through its own network at the end of the run ([docs/supla.md](docs/supla.md)).
 
 **Sonoff:** A full backup of the plug's Sonoff firmware to restore later.
 
