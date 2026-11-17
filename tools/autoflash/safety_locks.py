@@ -6,7 +6,7 @@ presence makes its helper refuse to start (the bridge's sender, the
 memory-layout server). A step that needs the helper lifts the lock
 - moves it aside - for as long as it works, and puts it back after.
 
-Two runs at once, on two plugs, may both need the same one. So each run that
+Two runs at once, on two devices, may both need the same one. So each run that
 lifts a lock says so with a file of its own (under captures/.safety-locks),
 held with the operating system's file lock for as long as it needs the lock
 lifted. The lock goes back when the last of them is done - and a run that
@@ -105,7 +105,7 @@ def restore_left(root: Path) -> list[str]:
 
 
 def in_place(root: Path, name: str) -> bool:
-    """In place, or lifted by a run that is working now (another plug's)."""
+    """In place, or lifted by a run that is working now (another device's)."""
     return _paths(root, name)[0].exists() or bool(lifters(root, name))
 
 

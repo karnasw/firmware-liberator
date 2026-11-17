@@ -5,19 +5,15 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import http.client
 import json
 import shutil
-import ssl
-import time
-import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 try:
     from tools.autoflash import output
-    from tools.autoflash.hostsys import urlopen
+    from tools.autoflash import hostsys
     from tools.espressif.safeboot.safeboot_migration import (
         APP0_OFFSET,
         APP0_SIZE,
@@ -35,18 +31,18 @@ try:
         TABLE_OFFSET,
         TABLE_SIZE,
         TARGET_PARTITIONS,
-        TARGET_TABLE_SHA256,
         analyze_canonical_nvs,
         official_release,
         parse_partition_sector,
         require_exact_partitions,
         require_pinned_artifacts,
         sha256_bytes,
+        target_table as target_table_of,
         validate_native_image,
     )
 except ModuleNotFoundError:
     from autoflash import output
-    from autoflash.hostsys import urlopen
+    from autoflash import hostsys
     from safeboot_migration import (
         APP0_OFFSET,
         APP0_SIZE,
@@ -64,46 +60,23 @@ except ModuleNotFoundError:
         TABLE_OFFSET,
         TABLE_SIZE,
         TARGET_PARTITIONS,
-        TARGET_TABLE_SHA256,
         analyze_canonical_nvs,
         official_release,
         parse_partition_sector,
         require_exact_partitions,
         require_pinned_artifacts,
         sha256_bytes,
+        target_table as target_table_of,
         validate_native_image,
     )
 
 
 DEFAULT_OUTPUT = Path("captures/safeboot-migration")
-DOWNLOAD_TRIES = 3
-DOWNLOAD_PAUSE = 5.0
-
-
-def lasting(exc: Exception) -> bool:
-    """Whether a failed download would only fail the same way again."""
-    return (isinstance(exc, urllib.error.HTTPError) and exc.code < 500
-            or isinstance(getattr(exc, "reason", None), ssl.SSLCertVerificationError))
-
-
 def download(url: str) -> bytes:
-    """The file at `url`, tried again after a moment's trouble on the way: a
-    run stopped by one timed-out handshake has to be started again by hand."""
+    """The file at `url`, tried again through a passing trouble on the way
+    (hostsys.download): a run stopped by one has to be started again by hand."""
     request = urllib.request.Request(url, headers={"User-Agent": "AutoflashMigrationPrep/1"})
-    tries = 0
-    while True:
-        tries += 1
-        try:
-            with urlopen(request, timeout=60) as response:
-                return response.read()
-        except (OSError, http.client.HTTPException) as exc:
-            if lasting(exc) or tries == DOWNLOAD_TRIES:
-                if isinstance(exc, OSError):
-                    raise
-                # Cut off part way: callers look for an OSError.
-                raise OSError(f"the download was cut off: {exc!r}") from exc
-            output.detail(f"The download of {url} failed ({exc}); trying again.")
-            time.sleep(DOWNLOAD_PAUSE)
+    return hostsys.download(request, timeout=60, say=output.detail)
 
 
 def obtain(path: Path | None, url: str, destination: Path) -> bytes:
@@ -194,12 +167,13 @@ def main() -> int:
     if len(factory) != APP0_OFFSET + len(app):
         parser.error("factory image has unexpected bytes before/after app0")
 
-    target_table = factory[TABLE_OFFSET : TABLE_OFFSET + TABLE_SIZE]
+    try:
+        target_table = target_table_of(factory[TABLE_OFFSET : TABLE_OFFSET + TABLE_SIZE])
+    except ValueError as exc:
+        parser.error(f"the factory image's partition table: {exc}")
     target_report = parse_partition_sector(target_table)
     require_exact_partitions(target_report, TARGET_PARTITIONS)
-    if target_report["sha256"] != TARGET_TABLE_SHA256:
-        parser.error("target table differs from the reviewed official table sector")
-    target_table_path = output / "target-official-partition-table.bin"
+    target_table_path = output / "target-partition-table.bin"
     target_table_path.write_bytes(target_table)
 
     artifacts = {

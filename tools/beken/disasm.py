@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Disassemble a window of the logical S61 image (capstone).
 
 Addresses are offsets into the logical image (see unstripe.py), which equal

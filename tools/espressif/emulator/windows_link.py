@@ -3,7 +3,7 @@
 
 Carries Ethernet frames between the "Autoflash emulator" TAP adapter and the
 container's windows-link, over TCP port 7860, so that Windows is a computer
-on the emulated Wi-Fi: the plug's MAC in its ARP table, its mDNS answers, its
+on the emulated Wi-Fi: the device's MAC in its ARP table, its mDNS answers, its
 connections in through the Windows firewall - what the conversion tool meets
 on a real network. Each frame goes preceded by its length, two bytes,
 big-endian.

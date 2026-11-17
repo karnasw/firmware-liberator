@@ -6,3 +6,8 @@ CONFIG_ESP_WIFI_NVS_ENABLED=n
 CONFIG_HTTPD_MAX_URI_LEN=128
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=7168
+# A device whose table is at 0xC000 has none at 0x8000, where the bridge looks:
+# with the MD5 check on, every partition lookup then fails, and the bridge
+# cannot take the device's own table from 0xC000 (register_later_table, which
+# checks that table's MD5 itself). A table at 0x8000 still ends at its MD5 record.
+CONFIG_PARTITION_TABLE_MD5=n

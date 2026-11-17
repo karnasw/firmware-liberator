@@ -96,7 +96,7 @@ function Install-Adapter {
     Set-ItemProperty $tcpip -Name SubnetMask -Value @("255.255.255.0") -Type MultiString
     Set-ItemProperty $tcpip -Name DefaultGateway -Value @() -Type MultiString
     # The lowest metric, so the tool's mDNS goes out on it - as on a computer
-    # whose only network is the plug's Wi-Fi.
+    # whose only network is the device's Wi-Fi.
     netsh interface ipv4 set interface interface="$Adapter" metric=1 | Out-Null
     Write-Output "The '$Adapter' adapter is $Address/24, with no gateway."
 }

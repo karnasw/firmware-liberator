@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Find cross-references to an address in the logical S61 image.
 
 For each target address it reports:

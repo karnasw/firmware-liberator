@@ -1,7 +1,9 @@
 // The website at firmwareliberator.com: a Cloudflare Worker serving only the
 // files Astro builds into dist (README.md), with public/_redirects sending
-// the README's one line on to the latest release. Deploying it points both
-// names at it, replacing the DNS records there.
+// the README's one line on to the latest release, by a 302 so that no
+// browser keeps it past the next release. Deploying it points both names at
+// it; a name with DNS records of its own stops the deploy (Cloudflare's code
+// 100117) until they are deleted, and wrangler then makes the Worker's.
 {
   "name": "firmware-liberator",
   "compatibility_date": "2026-11-01",

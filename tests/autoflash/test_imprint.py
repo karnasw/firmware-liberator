@@ -6,6 +6,7 @@ from pathlib import Path
 from tools.espressif.analyze_vendor_ota import parse_esp_image
 from tools.autoflash.imprint import (
     FILLER,
+    LEGACY_MARKERS,
     PASSWORD_FIELD_BYTES,
     PASSWORD_MARKER,
     SSID_FIELD_BYTES,
@@ -141,7 +142,7 @@ class ImprintTests(unittest.TestCase):
     def test_the_firmware_reads_exactly_the_credentials_given(self):
         # The compiled string literal starts at the marker, so that is where the
         # firmware starts reading. Regression: values written after the marker
-        # left the plug looking for "S60-IMPRINT-SSID>Net".
+        # left the device looking for "S60-IMPRINT-SSID>Net".
         ssid_at = find_field(self.image, SSID_MARKER, SSID_FIELD_BYTES)
         pass_at = find_field(self.image, PASSWORD_MARKER, PASSWORD_FIELD_BYTES)
         result = imprint(self.image, "Wonky-2G", "correct horse")
@@ -154,6 +155,22 @@ class ImprintTests(unittest.TestCase):
         result = imprint(self.image, "Wonky-2G", "correct horse")
         self.assertEqual(imprinted_ssid(result, self.image), "Wonky-2G")
 
+    def test_an_image_built_with_the_earlier_markers_is_filled_just_the_same(self):
+        ssid_marker, password_marker = LEGACY_MARKERS
+        legacy = build_image(placeholder_payload().replace(SSID_MARKER, ssid_marker)
+                             .replace(PASSWORD_MARKER, password_marker))
+        self.assertTrue(has_placeholders(legacy))
+        ssid_at = find_field(legacy, ssid_marker, SSID_FIELD_BYTES)
+        result = imprint(legacy, "Wonky-2G", "correct horse")
+        self.assertEqual(read_c_string(result, ssid_at), b"Wonky-2G")
+        require_imprinted(result)
+
+    def test_a_placeholder_the_image_ends_inside_is_refused(self):
+        field = SSID_MARKER + FILLER * SSID_FIELD_BYTES
+        self.assertEqual(find_field(b"rodata" + field, SSID_MARKER, SSID_FIELD_BYTES), 6)   # just fits
+        with self.assertRaisesRegex(ImprintError, "too close to the end"):
+            find_field(b"rodata" + field[:-1], SSID_MARKER, SSID_FIELD_BYTES)
+
     def test_an_image_written_after_the_marker_is_refused(self):
         # What the faulty tool produced: marker kept, value after it.
         payload = (
@@ -164,10 +181,6 @@ class ImprintTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ImprintError, "still in this image"):
             require_imprinted(build_image(payload))
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class RealImageTests(unittest.TestCase):
@@ -258,3 +271,7 @@ class RecoverySafebootHeaderTests(unittest.TestCase):
         self.assertIn("#error AUTOFLASH_RECOVERY_PERSIST_SETTINGS requires", patch)
         self.assertIn("CFG_HOLDER == stored->cfg_holder", patch)
         self.assertIn("left alone", patch)
+
+
+if __name__ == "__main__":
+    unittest.main()

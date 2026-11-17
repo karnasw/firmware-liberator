@@ -121,7 +121,27 @@ def run_one(test_id: str) -> tuple[str, int, list[tuple[str, str]], int, float]:
     problems = [("FAIL", text) for _, text in result.failures] + \
                [("ERROR", text) for _, text in result.errors] + \
                [("UNEXPECTED SUCCESS", "") for _ in result.unexpectedSuccesses]
+    if left := left_behind():
+        problems.append(("LEFT BEHIND", f"{test_id} left the tool's screen state set: {left} - the next test "
+                         "in this process draws otherwise (put it back: mock.patch.multiple(output._s, ...))"))
     return test_id, result.testsRun, problems, len(result.skipped), time.monotonic() - started
+
+
+# What the tool's screen remembers between what it draws (tools/autoflash/output.py),
+# kept from one test to the next in a worker process: a test that leaves one set
+# changes how the next draws - seen, a blank row not drawn, now and then.
+SCREEN_STATE = ("after_blank", "after_stage", "waited")
+
+
+def left_behind() -> list[str]:
+    """Those of SCREEN_STATE a test left set, cleared for the next test."""
+    output = sys.modules.get("tools.autoflash.output")
+    if output is None:
+        return []
+    left = [name for name in SCREEN_STATE if getattr(output._s, name)]
+    for name in left:
+        setattr(output._s, name, False)
+    return left
 
 
 def load_times() -> dict[str, float]:

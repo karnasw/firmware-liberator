@@ -1,0 +1,203 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Adam Matthews <52178922+adamsthws@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 16:00:00 +0000
+Subject: [PATCH] wifi: a frame nobody on the air hears goes unacknowledged
+
+The MAC model wrote FRAME_SUCCESSFUL into every frame's status, so a
+station's firmware saw each of its frames acknowledged even with its access
+point gone. The firmware counts beacon losses since its last acknowledged
+frame (vif_mgmt.h beacon_loss_since_acked_cnt), and so never saw the access
+point go: it noticed only when one back on the air deauthenticated it.
+
+The peer callback now says whether a frame was acknowledged: a group frame
+needs none, and a unicast one is acknowledged by a peer on the air whose
+address is its receiver's. One no one acknowledges completes with
+DESC_DONE|RETRY_LIMIT_REACHED, as the hardware reports it.
+---
+ src/emulator.py     |  8 +++++++-
+ src/wifimac.py      | 46 ++++++++++++++++++++++++++++++++++++---------
+ src/wifipeer.py     |  5 +++++
+ tests/wifi_peers.py | 17 +++++++++++++++++
+ 4 files changed, 66 insertions(+), 10 deletions(-)
+
+diff --git a/src/emulator.py b/src/emulator.py
+index 206ebaa..43071aa 100644
+--- a/src/emulator.py
++++ b/src/emulator.py
+@@ -1033,9 +1033,15 @@ class BekenEmulator:
+ 
+     def _wifi_tx(self, frame, info=None):
+         """A frame the device sent, to every peer on the air: each takes what
+-        is addressed to it, as radios on one channel do."""
++        is addressed to it, as radios on one channel do. Whether it is
++        acknowledged (wifimac on_tx): a group frame needs no acknowledgement;
++        a unicast one is acknowledged only by a peer on the air whose address
++        it is sent to, as a radio acknowledges what is addressed to it."""
+         for peer in self.wifi_peers:
+             peer.on_device_tx(frame, info)
++        if len(frame) < 10 or frame[4] & 1:
++            return True
++        return any(peer.hears(frame[4:10]) for peer in self.wifi_peers)
+ 
+     def _write_mmio_reset_defaults(self):
+         """Write power-on reset values for UART FIFOs, SARADC, and WDT into MMIO."""
+diff --git a/src/wifimac.py b/src/wifimac.py
+index f8b9800..80a5881 100644
+--- a/src/wifimac.py
++++ b/src/wifimac.py
+@@ -36,7 +36,13 @@ TX: on a queue kick the model walks the THD list (upattern CAFEBABE) from the
+ head pointer, gathers the MPDU from the THD data range and the TBD chain
+ (CAFEFADE), hands it to the attached peer, and - a little later in device
+ time, like a real transmission - writes DESC_DONE|FRAME_SUCCESSFUL into
+-statinfo and raises the queue's TX trigger when the THD asked for one.
++statinfo and raises the queue's TX trigger when the THD asked for one. A
++frame the peer callback says nobody acknowledged (on_tx returning False: a
++unicast frame to an address no radio on the air has) gets
++DESC_DONE|RETRY_LIMIT_REACHED instead, as the hardware reports it: the
++firmware counts beacon losses since its last acknowledged frame
++(vif_mgmt.h beacon_loss_since_acked_cnt), so with every frame acknowledged
++it would never see its access point go.
+ Verified against an OpenBeken boot trace: a host data frame's THD has no
+ header buffer, the whole MPDU sits in one TBD and frmlen is that plus the FCS.
+ 
+@@ -149,6 +155,7 @@ RX_PAYLOAD_DESC_PATTERN = 0xC0DEDBAD
+ INTERRUPT_EN_TX = 1 << 8            # macctrlinfo2
+ DONT_ENCRYPT = 1 << 30              # macctrlinfo2
+ FRAME_SUCCESSFUL_TX_BIT = 1 << 23   # statinfo
++RETRY_LIMIT_REACHED_BIT = 1 << 16   # statinfo: sent, never acknowledged
+ DESC_DONE_TX_BIT = 1 << 31
+ TBD_DONE_HW = 1 << 31
+ RX_PD_LASTBUF, RX_PD_DONE = 0x0001, 0x0002
+@@ -224,7 +231,7 @@ class MacHw:
+         # TX queues: queue -> address of the THD the hardware is parked at
+         self.tx_cur = {q: 0 for q in TX_HEAD_PTR}
+         self.tx_last = {q: 0 for q in TX_HEAD_PTR}
+-        self.tx_inflight = []                   # [(done_at_us, queue, thd_addr, want_irq)]
++        self.tx_inflight = []                   # [(done_at_us, queue, thd_addr, want_irq, acked)]
+         self.rx_cur_rhd = 0
+         self.rx_cur_rbd = 0
+         self.rx_last_rhd = 0                    # last RHD/RBD consumed: the firmware
+@@ -583,13 +590,14 @@ class MacHw:
+         self.stats["tx"] += 1
+         if self.debug:
+             self.dbg("tx q%d thd %08x len %d frmlen %d: %s" % (q, thd_addr, len(frame), frmlen, frame[:32].hex()))
++        acked = None
+         if self.on_tx is not None:
+             try:
+-                self.on_tx(frame, {"queue": q, "insns": insns, "frmlen": frmlen,
+-                                   "policy": pol, "statinfo": stat})
++                acked = self.on_tx(frame, {"queue": q, "insns": insns, "frmlen": frmlen,
++                                           "policy": pol, "statinfo": stat})
+             except Exception as e:      # the peer must never take the guest down
+                 self.log("[WIFI] peer error on TX: %r" % (e,))
+-        self._tx_done(q, thd_addr, mac2, insns)
++        self._tx_done(q, thd_addr, mac2, insns, acked is not False)
+         return True
+ 
+     def _plaintext(self, data, on_air, mac2):
+@@ -615,9 +623,9 @@ class MacHw:
+         hdr_bytes[1] &= ~0x40                   # no longer protected
+         return bytes(hdr_bytes) + body
+ 
+-    def _tx_done(self, q, thd_addr, mac2, insns):
++    def _tx_done(self, q, thd_addr, mac2, insns, acked=True):
+         done_at = self.now_us(insns) + TX_AIR_TIME_US
+-        self.tx_inflight.append((done_at, q, thd_addr, bool(mac2 & INTERRUPT_EN_TX)))
++        self.tx_inflight.append((done_at, q, thd_addr, bool(mac2 & INTERRUPT_EN_TX), acked))
+ 
+     def _tx_complete(self, insns):
+         now = self.now_us(insns)
+@@ -625,13 +633,14 @@ class MacHw:
+         keep = []
+         changed = False
+         for item in self.tx_inflight:
+-            done_at, q, thd_addr, want_irq = item
++            done_at, q, thd_addr, want_irq, acked = item
+             if done_at > now:
+                 keep.append(item)
+                 continue
+             try:
+                 stat = self._r32(thd_addr + 60)
+-                self._w32(thd_addr + 60, stat | DESC_DONE_TX_BIT | FRAME_SUCCESSFUL_TX_BIT)
++                outcome = FRAME_SUCCESSFUL_TX_BIT if acked else RETRY_LIMIT_REACHED_BIT
++                self._w32(thd_addr + 60, stat | DESC_DONE_TX_BIT | outcome)
+                 self._w32(thd_addr + 64, TX_AIR_TIME_US)   # mediumtimeused
+             except Exception:
+                 pass
+@@ -939,6 +948,25 @@ def _run_selftests():
+     check(m.lines & (1 << FIQ_MAC_TX_TRIGGER) and m.read(PL + TX_RX_INT_STATUS, 0) & AC_TX_TRIGGER[2], "AC2 TX trigger on the tx-trigger line")
+     m.write(PL + TX_RX_INT_ACK, AC_TX_TRIGGER[2], 0)
+     check(not m.lines, "acked")
++
++    print("== TX: a frame nobody on the air acknowledges ==")
++    unheard = []
++
++    def nobody_hears(f, info):
++        unheard.append(f)
++        return False
++    m.on_tx = nobody_hears
++    wr(THD + 60, struct.pack("<I", 0))
++    wr(TBD, struct.pack(TBD_FMT, TX_PAYLOAD_DESC_PATTERN, 0, BUF, BUF + len(frame) - 1, 0))
++    m.write(PL + TX_HEAD_PTR[2], THD, 0)
++    m.write(PL + DMA_CNTRL_SET, TX_NEW_HEAD[2], 2000 * 5)
++    m.tick(2000 * 5 + 5 * TX_AIR_TIME_US)
++    st = struct.unpack("<I", rd(THD + 60, 4))[0]
++    check(len(unheard) == 1 and st & DESC_DONE_TX_BIT and st & RETRY_LIMIT_REACHED_BIT
++          and not st & FRAME_SUCCESSFUL_TX_BIT, "unacknowledged: DESC_DONE|RETRY_LIMIT_REACHED, never FRAME_SUCCESSFUL")
++    check(m.read(PL + TX_RX_INT_STATUS, 0) & AC_TX_TRIGGER[2], "its TX trigger is raised all the same")
++    m.write(PL + TX_RX_INT_ACK, AC_TX_TRIGGER[2], 0)
++    m.on_tx = lambda f, info: sent.append((f, info))
+     # chain a second THD behind it and kick the tail
+     THD2 = THD + 0x100
+     wr(THD2, struct.pack(THD_FMT, TX_HEADER_DESC_PATTERN, 0, 0, TBD, 0, 0, len(frame) + 4, 0, 0, POL, 0, 0, 0, 0, 0, 0, 0))
+diff --git a/src/wifipeer.py b/src/wifipeer.py
+index 64d5111..b4c3005 100644
+--- a/src/wifipeer.py
++++ b/src/wifipeer.py
+@@ -306,6 +306,11 @@ class WifiPeer:
+         self.device_reset()
+         self.active_role = role
+ 
++    def hears(self, address):
++        """Whether this peer's radio acknowledges a frame sent to `address`:
++        its own, or its network's as an access point, while on the air."""
++        return self.on_air and address in (self.mac, self.ap_bssid)
++
+     def on_device_tx(self, frame, info=None):
+         if not self.on_air:
+             return
+diff --git a/tests/wifi_peers.py b/tests/wifi_peers.py
+index 719bc21..96a455b 100644
+--- a/tests/wifi_peers.py
++++ b/tests/wifi_peers.py
+@@ -228,6 +228,22 @@ def test_a_station_not_joining_hears_the_network_and_leaves_it_when_told():
+     emu._wifi_tx(beacon(b"esphome-000001"))
+     visitor.tick()
+     assert len(sent[visitor.mac]) == 1, "nothing sent once it has left"
++
++
++def test_a_frame_is_acknowledged_only_by_a_radio_on_the_air_it_is_sent_to():
++    emu, home, visitor, clock, sent = on_air()
++    # Its first address, the receiver's, the one a radio acknowledges by.
++    to = lambda dst: home._data(dst, DEVICE, dst, LLC_SNAP + b"\x08\x06" + bytes(28), to_ds=True)
++    assert emu._wifi_tx(to(HOME)) is True, "the access point acknowledges what is sent to it"
++    assert emu._wifi_tx(to(VISITOR)) is True, "and the station what is sent to it"
++    assert emu._wifi_tx(to(str2mac("12:34:56:ab:cd:09"))) is False, "nobody has that address"
++    assert emu._wifi_tx(to(BCAST)) is True, "a group frame needs no acknowledgement"
++    # Its access point gone, the device's frames to it go unacknowledged:
++    # how the firmware finds out (wifimac RETRY_LIMIT_REACHED_BIT).
++    home.set_on_air(False)
++    assert emu._wifi_tx(to(HOME)) is False
++    home.set_on_air(True)
++    assert emu._wifi_tx(to(HOME)) is True
+     emu.close_network()
+ 
+ 
+@@ -239,6 +255,7 @@ def main():
+     test_an_access_point_off_the_air_carries_nothing_on_its_tap_device()
+     test_an_access_point_back_on_the_air_tells_a_station_it_forgot()
+     test_a_station_not_joining_hears_the_network_and_leaves_it_when_told()
++    test_a_frame_is_acknowledged_only_by_a_radio_on_the_air_it_is_sent_to()
+     print("Wi-Fi peers self-tests passed.")
+ 
+ 

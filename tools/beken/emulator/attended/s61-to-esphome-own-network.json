@@ -1,0 +1,97 @@
+{
+ "about": "An S61 from Sonoff's firmware to ESPHome, the home Wi-Fi's password changed as ESPHome starts, so it cannot join with the details it found: it raises its own network, the computer joins it as the run asks, the new details are typed and sent through it, and ESPHome joins the home Wi-Fi with them: each of those answers is needed, as the step's notes are gone from the final screen",
+ "start": "fresh",
+ "minutes": 60,
+ "answers": [
+  {
+   "when": "Press any key",
+   "type": "x",
+   "times": 3
+  },
+  {
+   "when": "Which firmware should the device have",
+   "type": "2\r"
+  },
+  {
+   "when": "Stage +\\d+ - Checking ESPHome",
+   "router": "on changed-wifi-pass",
+   "anywhere": true,
+   "after": 20
+  },
+  {
+   "when": "Join the device's setup network",
+   "wifi": "join",
+   "anywhere": true,
+   "times": 2
+  },
+  {
+   "when": "Back to your usual Wi-Fi",
+   "wifi": "home",
+   "anywhere": true,
+   "times": 2
+  },
+  {
+   "when": "Wi-Fi network name",
+   "type": "AutoflashNet\r"
+  },
+  {
+   "when": "Wi-Fi password",
+   "type": "changed-wifi-pass\r"
+  },
+  {
+   "when": "Same password again",
+   "type": "changed-wifi-pass\r"
+  },
+  {
+   "when": "What now",
+   "type": "q\r",
+   "optional": true
+  },
+  {
+   "when": "Which device is this run for",
+   "type": "1\r",
+   "optional": true
+  },
+  {
+   "when": "Type .+ to go ahead",
+   "type": "PROCEED\r",
+   "times": 3,
+   "optional": true
+  },
+  {
+   "when": "Which eWeLink account is this device in",
+   "type": "2\r",
+   "optional": true
+  },
+  {
+   "when": "eWeLink account email or phone number",
+   "type": "someone@example.invalid\r",
+   "optional": true
+  },
+  {
+   "when": "eWeLink password for",
+   "type": "made-up-password\r",
+   "optional": true
+  },
+  {
+   "when": "What next",
+   "type": "q\r",
+   "optional": true
+  },
+  {
+   "when": "\\[[Yy]/n\\]",
+   "type": "n\r",
+   "optional": true
+  },
+  {
+   "when": "\\(y/N[^)]*\\)|\\(Y/n[^)]*\\)",
+   "type": "y\r",
+   "times": 3,
+   "optional": true
+  }
+ ],
+ "expect": {
+  "exit": 0,
+  "result": "Converted"
+ }
+}

@@ -1,7 +1,7 @@
 """Drive the S61 into pairing mode in the emulator, and watch the emulated radio
 follow -- soft-AP beacons or station-mode association, or the AirKiss sniffer.
 
-Background (full story in ../beken-s61-emulation.md): with the integrity gate
+Background (full story in docs/beken-research.md): with the integrity gate
 bypassed (integrity_gate.py) the AIS app framework boots and its state
 machine (ais_appfw_task) cycles, but nothing sets a pairing method and posts the
 start event, so the firmware sits idle. This tool sets a method and calls the
@@ -37,9 +37,9 @@ integrity-gate bypass (force the compare at 0x29c3c to "equal") and raising
 Timer 5's interrupt status each slow tick (the key/app periodics run on
 bk_timer = Timer 5, which the emulator does not raise on its own).
 
-  $(tools/beken/emulator/bk-emu.sh python) archive/s61-research/pair_drive.py 0        # soft-AP (coexist)
-  $(tools/beken/emulator/bk-emu.sh python) archive/s61-research/pair_drive.py 1        # station
-  $(tools/beken/emulator/bk-emu.sh python) archive/s61-research/pair_drive.py airkiss  # sniffer-start
+  $(tools/beken/emulator/beken-emu.sh python) archive/s61-research/pair_drive.py 0        # soft-AP (coexist)
+  $(tools/beken/emulator/beken-emu.sh python) archive/s61-research/pair_drive.py 1        # station
+  $(tools/beken/emulator/beken-emu.sh python) archive/s61-research/pair_drive.py airkiss  # sniffer-start
 
 Env: SECS (run seconds, 18), FIRE_AT (when to drive, 8), SSID/PASS (peer AP to
 join for method 1 / credentials written into the config buffer).
@@ -75,7 +75,7 @@ from unicorn.arm_const import (  # noqa: E402
     UC_ARM_REG_R9,
     UC_ARM_REG_SP)
 
-DUMP = os.environ.get("S61_DUMP", str(ROOT/"firmwares/Sonoff_S61s_EUPlug_WBBK_01P_V1.3.bin"))
+DUMP = os.environ.get("AUTOFLASH_BEKEN_EMU_DUMP", str(ROOT/"firmwares/Sonoff_S61s_EUPlug_WBBK_01P_V1.3.bin"))
 SECS = float(os.environ.get("SECS", "18"))
 FIRE_AT = float(os.environ.get("FIRE_AT", "8"))
 SSID = os.environ.get("SSID", "S61PAIR").encode()[:31]

@@ -1,10 +1,10 @@
 """The UF2 files an ESPHome built on LibreTiny takes as an update, as
 ltchiptool writes them (`ltchiptool uf2 write ... --legacy "IMAGE=device:download"`).
 
-A plug on ESPHome takes updates through ESPHome's OTA; on LibreTiny each is a
+A device on ESPHome takes updates through ESPHome's OTA; on LibreTiny each is a
 UF2, and LibreTiny writes the file's "download" part to the download slot -
 where the S61's stock bootloader applies whatever rt_ota image it finds on the
-next start.  So a UF2 carrying an RBL in its download part is how a plug on
+next start.  So a UF2 carrying an RBL in its download part is how a device on
 ESPHome moves to OpenBeken, or back to Sonoff's firmware
 (devices/sonoff-s61/esphome.md).
 

@@ -1,5 +1,5 @@
-"""The ports this computer serves the plug on, and the firewall rules that
-let the plug reach them for the run, closed again when it ends.
+"""The ports this computer serves the device on, and the firewall rules that
+let the device reach them for the run, closed again when it ends.
 """
 
 from __future__ import annotations
@@ -15,13 +15,13 @@ if TYPE_CHECKING:
     from tools.autoflash.context import Context
 
 # Ports the bridge may be served on, in order of preference.  The upgrade
-# command names whichever is chosen, and the plug fetches from that port:
+# command names whichever is chosen, and the device fetches from that port:
 # 8088 matches the vendor OTA port, but the research probe was served on
 # 8765.  The phase servers have their own ports, so the two never share one.
 DELIVERY_PORTS = (8088, *range(8090, 8100))
 # Ports the migration phase servers (serve_safeboot_migration.py) may listen
-# on, in order of preference.  Nothing on the plug keeps the port: each phase
-# starts its own server and sends the plug a loader URL that names it.
+# on, in order of preference.  Nothing on the device keeps the port: each phase
+# starts its own server and sends the device a loader URL that names it.
 PHASE_PORTS = (8089, *range(8100, 8110))
 
 
@@ -29,7 +29,7 @@ def choose_port(ctx: Context, key: str, candidates: tuple[int, ...], serving: st
     """The first of `candidates` free on this computer, recorded as `key`.
 
     Chosen afresh each time, so a port that was busy last run is tried again.
-    Raises Abort - before anything reaches the plug - when none is free.
+    Raises Abort - before anything reaches the device - when none is free.
     """
     port = hostsys.first_free_port(ctx.listen_ip(), candidates)
     if port is None:
@@ -45,7 +45,7 @@ def choose_port(ctx: Context, key: str, candidates: tuple[int, ...], serving: st
 
 
 def firewall_ports(ctx: Context) -> list[int]:
-    """The ports the plug connects to this computer on: bridge delivery and phases."""
+    """The ports the device connects to this computer on: bridge delivery and phases."""
     return sorted({int(ctx.state.input("delivery_port") or DELIVERY_PORTS[0]),
                    int(ctx.state.input("phase_port") or PHASE_PORTS[0])})
 
@@ -64,74 +64,73 @@ def recorded_rules(ctx: Context) -> list[FirewallRule]:
 
 
 def ensure_firewall(ctx: Context) -> None:
-    """Let the plug's connections through this computer's firewall, once per address.
+    """Let the device's connections through this computer's firewall, once per address.
 
-    The rule admits only the plug's address on the two ports the tool listens
+    The rule admits only the device's address on the two ports the tool listens
     on, and is recorded so it can be removed when the tool exits, however it
-    exits; a resumed run adds it again.
+    exits; a resumed run adds it again.  How it went is kept for the run's
+    report (firewall_outcome: one of report_data.FIREWALL_OUTCOMES).
     """
-    plug_ip = ctx.state.input("plug_ip")
+    device_ip = ctx.state.input("device_ip")
     ports = firewall_ports(ctx)
     rules = recorded_rules(ctx)
-    if not plug_ip or any(r.plug_ip == plug_ip and set(ports) <= set(r.ports) for r in rules):
+    if not device_ip or any(r.device_ip == device_ip and set(ports) <= set(r.ports) for r in rules):
         return
     # Other security software, or an organisation's policy: logged, and shown if
-    # the plug then cannot connect (firewall_hint) - except a policy that
+    # the device then cannot connect (firewall_hint) - except a policy that
     # ignores rules added here, which is certain to stop it, so is shown now.
-    advice = hostsys.firewall_advice(plug_ip, ports)
+    advice = hostsys.firewall_advice(device_ip, ports)
     for line in advice:
         output.say(line)
-    if hostsys.local_rules_ignored(plug_ip):
+    if hostsys.local_rules_ignored(device_ip):
+        ctx.state.set_input("firewall_outcome", "managed")
         prompts.section("This computer's firewall is managed by an organisation", [
-            "It is set (by Group Policy) to ignore rules added on the computer itself,",
-            "so the device cannot be let in from here. Ask whoever manages it, or use",
-            "another computer. Carrying on - if the device is blocked, the next step",
-            "stops and says so.",
+            "It ignores rules added here: ask whoever manages it, or use another one.",
+            "Carrying on: if the device is blocked, the next step says so.",
         ])
+        output.log_only("Group Policy has it ignore rules added on the computer itself.")
         return
     kind = hostsys.active_firewall()
     if kind is None:
+        ctx.state.set_input("firewall_outcome", "none")
         return
     program = hostsys.python_program() if kind in ("windows", "macos") else None
-    add, _ = hostsys.firewall_commands(kind, plug_ip, ports, program)
-    prompt_note = [
-        "Windows will ask whether to allow the change - choose Yes. This window",
-        "does not need to be run as administrator; only this rule asks for it.",
-    ] if hostsys.IS_WINDOWS else ["You may be asked for this computer's password.",
-                                  *emulator_password_hint()]
-    what = ("lets Python accept incoming connections - the macOS firewall allows "
-            "programs, not ports" if kind == "macos"
-            else f"allows only {plug_ip} in, to Python, on TCP ports {', '.join(map(str, ports))}"
+    add, _ = hostsys.firewall_commands(kind, device_ip, ports, program)
+    prompt_note = ["Windows will ask whether to allow the change - choose Yes."] if hostsys.IS_WINDOWS else [
+        "You may be asked for this computer's password.", *emulator_password_hint()]
+    # The macOS firewall allows programs, not ports.
+    what = ("It lets Python accept incoming connections." if kind == "macos"
+            else f"It lets in only {device_ip}, to Python, on TCP ports {', '.join(map(str, ports))}."
             if kind == "windows"
-            else f"allows only {plug_ip} in, on TCP ports {', '.join(map(str, ports))}")
+            else f"It lets in only {device_ip}, on TCP ports {', '.join(map(str, ports))}.")
     output.transient_begin()  # the note, and the system's password question
     prompts.section("Let the device through this computer's firewall", [
-        f"This computer's firewall ({kind}) would block the device from fetching its",
-        f"firmware. Adding one rule that {what}.",
-        "This temporary rule is always removed when this tool exits (no matter how it exits).",
+        f"This computer's firewall ({kind}) would block the device: adding a rule",
+        "that is removed when this tool exits, however it exits.",
+        what,
         *prompt_note,
     ])
+    if hostsys.IS_WINDOWS:
+        output.log_only("This window need not be run as administrator: only the rule asks for it.")
     try:
         with interrupt.deferred():  # added and recorded, or neither
-            rule = hostsys.open_firewall(plug_ip, ports)
+            rule = hostsys.open_firewall(device_ip, ports)
             if rule is not None:
                 rules.append(rule)
                 ctx.state.set_input("firewall_rules", [r.to_json() for r in rules])
     except OSError:
+        ctx.state.set_input("firewall_outcome", "failed")
         output.transient_end()
         prompts.section("The firewall rule could not be added", [
-            "Add it yourself, in another window, with:",
+            "Add it yourself in another window, and remove it afterwards:",
             f"  {hostsys.display(add)}",
-            "and remove it after the conversion. Carrying on - if the device is still",
-            "blocked, the next step stops and says so.",
-            *([
-                "",
-                "Adding it needs administrator rights. On a work computer you may not be",
-                "allowed them: then ask whoever manages it, or use another computer.",
-            ] if hostsys.IS_WINDOWS else []),
+            "Carrying on: if the device is blocked, the next step says so.",
+            *(["It needs administrator rights; on a work computer, ask whoever manages it."]
+              if hostsys.IS_WINDOWS else []),
         ])
         return
     output.transient_end()
+    ctx.state.set_input("firewall_outcome", "there" if rule is not None and rule.detail.get("preexisting") else "added")
     if rule is not None:
         output.say("The rule was already there, so it is left in place afterwards."
             if rule.detail.get("preexisting") else
@@ -145,19 +144,19 @@ def ensure_firewall(ctx: Context) -> None:
 
 
 def firewall_hint(ctx: Context) -> list[str]:
-    """What to say when the plug never reached this computer."""
-    plug_ip = ctx.state.input("plug_ip") or "PLUG_IP"
+    """What to say when the device never reached this computer."""
+    device_ip = ctx.state.input("device_ip") or "DEVICE_IP"
     lines = [
-        "The device never connected to this computer. That is almost always this",
-        "computer's firewall, or this computer having changed address.",
+        "The device never reached this computer: most often this computer's",
+        "firewall, or a changed address.",
     ]
     kind = hostsys.active_firewall()
     ports = firewall_ports(ctx)
     if kind:
         program = hostsys.python_program() if kind in ("windows", "macos") else None
-        add, _ = hostsys.firewall_commands(kind, plug_ip, ports, program)
-        lines += ["", f"A {kind} firewall is on. This allows the device in:", f"  {hostsys.display(add)}"]
-    advice = hostsys.firewall_advice(plug_ip if plug_ip != "PLUG_IP" else None, ports, after_failure=True)
+        add, _ = hostsys.firewall_commands(kind, device_ip, ports, program)
+        lines += [f"A {kind} firewall is on; this lets the device in:", f"  {hostsys.display(add)}"]
+    advice = hostsys.firewall_advice(device_ip if device_ip != "DEVICE_IP" else None, ports, after_failure=True)
     if advice:
         lines += ["", *advice]
     return lines
@@ -168,15 +167,10 @@ def close_firewall_rules(ctx: Context) -> None:
     rules = recorded_rules(ctx)
     if not rules:
         return
-    permission = (
-        "Windows will ask for permission again"
-        if hostsys.IS_WINDOWS else "you may be asked for this computer's password again"
-    )
     output.transient_begin()  # gone once the rule is
     output.tell("")
-    output.tell("Removing the temporary firewall rule added at the start, which let the")
-    output.tell("plug connect to this computer. Changing the firewall needs admin/sudo")
-    output.tell(f"rights, so {permission}.")
+    output.tell("Removing the temporary firewall rule; Windows will ask again - choose Yes."
+                if hostsys.IS_WINDOWS else "Removing the temporary firewall rule; you may be asked for your password.")
     for line in emulator_password_hint():
         output.tell(line)
     left: list[FirewallRule] = []
@@ -210,8 +204,7 @@ def release_firewall(ctx: Context) -> bool:
         left = recorded_rules(ctx)
         output.tell("")
         output.tell("The temporary firewall rule was not removed"
-             + (" (stopped with Ctrl-C)." if isinstance(exc, KeyboardInterrupt) else f": {exc}."))
-        output.tell("Remove it yourself with:")
+             + (" (Ctrl-C)" if isinstance(exc, KeyboardInterrupt) else f" ({exc})") + "; remove it with:")
         for rule in left:
             for line in hostsys.undo_commands(rule):
                 output.tell("    " + line)
@@ -220,7 +213,9 @@ def release_firewall(ctx: Context) -> bool:
 
 def say_quit(ctx: Context) -> None:
     """The last word after the operator chose to quit, once everything is tidied:
-    the run's secrets are gone and the firewall rule is removed."""
+    the run's secrets are gone and the firewall rule is removed. Nothing more is
+    claimed: a quit can leave the device part way (on the installer, say), which
+    running again carries on from."""
     if release_firewall(ctx):
         output.tell("")
-        output.tell("Cleaned up. Nothing was left half done. Exiting.")
+        output.tell(f"{prompts.STOPPED_AS_ASKED} Run this again to carry on.")

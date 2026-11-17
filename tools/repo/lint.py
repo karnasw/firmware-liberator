@@ -3,10 +3,18 @@
 
     python3 tools/repo/lint.py staged     the files a commit changes (the pre-commit hook)
     python3 tools/repo/lint.py all        every tracked file (the lint workflow)
+    python3 tools/repo/lint.py compile    every tracked Python file compiled, alone: run
+                                          by the oldest Python the tool supports in CI
     python3 tools/repo/lint.py FILE...    those files
 
 Each linter is handed the files of its kind:
 
+    compile       Python, compiled as Python itself would: what parses yet will
+                  not compile (more than 20 nested blocks, say, before 3.13),
+                  which ruff misses
+    newer python  Python: what came in a Python newer than the oldest the tool
+                  runs on (tools/repo/newer_python.py), which a newer one
+                  compiles and tests without a word
     ruff          Python (.ruff.toml)
     shellcheck    shell scripts: *.sh, and files starting #!/bin/sh or bash
     actionlint    the workflows (with shellcheck on their scripts)
@@ -112,12 +120,20 @@ def has_psscriptanalyzer(path: str) -> bool:
 
 
 @functools.cache
-def esphome_pins() -> dict:
-    return json.loads((ROOT / "artifacts" / "firmware.json").read_text(encoding="utf-8"))["esphome"]
+def esphome_pins() -> list[dict]:
+    """The Espressif builds firmware.json pins that ESPHome makes from a config."""
+    espressif = json.loads((ROOT / "artifacts" / "firmware.json").read_text(encoding="utf-8"))["espressif"]
+    return [pin for section in espressif.values() for pin in section.values() if "config" in pin]
+
+
+def esphome_builder() -> str:
+    """ESPHome's image, as the S60's image was last built in it."""
+    return json.loads((ROOT / "artifacts" / "firmware.json").read_text(encoding="utf-8"))["espressif"][
+        "sonoff-s60"]["esphome"]["builder"]
 
 
 def esphome_config(path: Path) -> bool:
-    return path.as_posix() in {build["config"] for build in esphome_pins().values()}
+    return path.as_posix() in {build["config"] for build in esphome_pins()}
 
 
 def esphome_command(files: list[str], mounts: Iterable[str] = ()) -> list[str]:
@@ -125,17 +141,27 @@ def esphome_command(files: list[str], mounts: Iterable[str] = ()) -> list[str]:
     user = ["-u", f"{os.getuid()}:{os.getgid()}"] if hasattr(os, "getuid") else []
     extra = [argument for mount in mounts for argument in ("-v", mount)]
     return ["docker", "run", "--rm", *user, "-e", "HOME=/tmp", "--tmpfs", "/cache",
-            "-v", f"{ROOT}:/config:ro", *extra, "-w", "/config", esphome_pins()["image"]["builder"],
+            "-v", f"{ROOT}:/config:ro", *extra, "-w", "/config", esphome_builder(),
             "-q", "config", *files]
 
 
 def adoption_example(path: Path) -> bool:
-    """The guide, or a plug's config that its examples build on."""
+    """The guide, or a device's config that its examples build on."""
     return path == Path("docs/home-assistant-adoption.md") or (
         path.name == "esphome.yaml" and path.parts[0] == "devices")
 
 
+# Each file named compiled in memory, nothing written: a SyntaxError the
+# compiler raises after parsing is one no parser-based linter sees.
+COMPILE = ("import sys\nfailed = 0\nfor name in sys.argv[1:]:\n    try:\n"
+           "        compile(open(name, 'rb').read(), name, 'exec')\n"
+           "    except SyntaxError as error:\n        print(f'{name}:{error.lineno}: {error.msg}')\n"
+           "        failed = 1\nsys.exit(failed)")
+
 LINTERS = [
+    Linter("compile", python, lambda files: [sys.executable, "-c", COMPILE, *files], sys.executable),
+    Linter("newer python", python, lambda files: [sys.executable, "-m", "tools.repo.newer_python", *files],
+           sys.executable),
     Linter("ruff", python, lambda files: ["ruff", "check", "--quiet", "--force-exclude", *files], "ruff"),
     Linter("shellcheck", lambda path: shell(path) and CONTAINER not in path.parents,
            lambda files: ["shellcheck", *files], "shellcheck"),
@@ -170,12 +196,14 @@ def tracked() -> list[str]:
     return git("ls-files", "-z")
 
 
-def run(paths: list[str], strict: bool) -> int:
+def run(paths: list[str], strict: bool, only: str | None = None) -> int:
     tool_dirs = [*TOOL_DIRS, *shared_venv_dirs()]
     env = dict(os.environ, PATH=os.pathsep.join([*map(str, tool_dirs), os.environ.get("PATH", "")]))
     files = [Path(p) for p in paths if (ROOT / p).is_file()]
     failed = []
     for linter in LINTERS:
+        if only and linter.name != only:
+            continue
         mine = [str(p) for p in files if linter.wants(p)]
         if not mine:
             continue
@@ -203,6 +231,10 @@ def main(argv: list[str] | None = None) -> int:
         return run(staged(), strict=False)
     if args == ["all"]:
         return run(tracked(), strict=True)
+    if args == ["compile"]:
+        # What one Python compiles another may not (3.13 lifted the limit of
+        # 20 nested blocks), so CI runs this on the oldest the tool supports.
+        return run(tracked(), strict=True, only="compile")
     if not args or args[0].startswith("-"):
         print(__doc__.strip(), file=sys.stderr)
         return 2

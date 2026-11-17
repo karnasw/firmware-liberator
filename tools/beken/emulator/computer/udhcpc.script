@@ -1,0 +1,15 @@
+#!/bin/sh
+# busybox udhcpc's script for `wifi join` (bin/wifi): the address the device's
+# own network gives this computer, and the device, its router, as the gateway.
+# shellcheck disable=SC2154  # interface, ip, mask and router: udhcpc's
+RUN=${AUTOFLASH_WIFI_RUN:-/tmp/autoflash-wifi}
+case "$1" in
+deconfig)
+    ip -4 address flush dev "$interface" ;;
+bound|renew)
+    ip -4 address flush dev "$interface"
+    ip address add "$ip/$mask" dev "$interface"
+    gateway=${router%% *}
+    [ -n "$gateway" ] && ip route replace default via "$gateway" dev "$interface"
+    echo "${gateway:-$ip}" > "$RUN/gateway" ;;
+esac

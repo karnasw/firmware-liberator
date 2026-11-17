@@ -55,16 +55,26 @@
  * where 4.4.3 refused it: Tasmota then starts with the name the run gave it,
  * and makes its own network under that name, not Tasmota's default.
  *
- * BRIDGE_FLASH_READOUT (research build, never shipped): the same reads without
- * /update or /tasmota-settings, so a stock plug can be imaged without being
- * converted.  The only flash it writes is the otadata selection at startup,
- * which returns the plug to stock on the next power cycle.
+ * 4.4.6: POST /restart starts the plug again into the firmware chosen for the
+ * next start - Sonoff's, chosen as the bridge starts - as switching it off and
+ * on would, so the run need not ask anyone to.  Refused while an upload is
+ * under way, and where the next start would be this bridge again (an upload
+ * cut off part way left no Sonoff firmware to start).  It also starts on a
+ * device whose partition table is at 0xC000 (the BASICR4), taking the table
+ * from there without writing anything, and there only reads:
+ * register_later_table.
+ *
+ * 4.4.5: GET /info says what a backup cannot: the chip's exact revision, the
+ * flash chip's id and real size, whether PSRAM is in the chip's package, the
+ * slots, and the input pins' levels.  All read-only.
  */
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_chip_info.h"
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_http_server.h"
@@ -81,9 +91,15 @@
 #include "nvs_flash.h"
 #include "tasmota_settings.h"
 #include "esp_flash.h"
+#include "esp_flash_partitions.h"
+#include "mbedtls/md5.h"
 #include "mbedtls/sha256.h"
 #include "soc/efuse_reg.h"
+#include "soc/gpio_periph.h"
+#include "soc/gpio_reg.h"
+#include "soc/io_mux_reg.h"
 #include "soc/soc.h"
+#include "soc/soc_caps.h"
 
 #define BRIDGE_MAX_IMAGE_SIZE 0x1f0000
 #define UPLOAD_BUFFER_SIZE 4096
@@ -103,18 +119,13 @@
 #define STA_WINDOW_MS 45000
 /* The one version: the wrapper the updater is given and the app description
  * (PROJECT_VER in ../CMakeLists.txt) carry the same; a test keeps them equal. */
-#define BRIDGE_VERSION "4.4.4"
-#ifdef BRIDGE_FLASH_READOUT
-#define BRIDGE_NAME "bridge " BRIDGE_VERSION " flash readout"
-#else
+#define BRIDGE_VERSION "4.4.6"
 #define BRIDGE_NAME "bridge " BRIDGE_VERSION
-#endif
 
 static const char *TAG = "autoflash_bridge";
 static const esp_partition_t *s_running;
 static const esp_partition_t *s_peer;
-/* The peer was not bootable at start-up: an upload into it was cut off. */
-static bool s_no_fallback;
+static volatile bool s_uploading;
 static volatile bool s_sta_trying;
 static volatile uint32_t s_sta_ip; /* network byte order; 0 until joined */
 static volatile bool s_tasmota_settings_saved;
@@ -129,14 +140,19 @@ static uint8_t s_settings[TASMOTA_SETTINGS_SIZE];
  * recovery slot is pinned. */
 static char s_upload_buffer[UPLOAD_BUFFER_SIZE];
 
-static const char INDEX_HTML[] =
+static const char INDEX_HEAD[] =
     "<!doctype html><meta name=viewport content='width=device-width'>"
     "<title>Autoflash bridge</title>"
     "<style>body{font:16px system-ui;max-width:42rem;margin:3rem auto;padding:0 1rem}"
     "button{padding:.7rem 1rem}code{background:#eee;padding:.1rem .3rem}</style>"
-    "<h1>Autoflash bridge</h1>"
-    "<p>The untouched stock slot is selected for the next power cycle.</p>"
-    "<p>Choose a native ESP32-C3 application image no larger than 0x1f0000 "
+    "<h1>Autoflash bridge</h1>";
+static const char INDEX_FALLBACK[] =
+    "<p>The untouched stock slot is selected for the next power cycle.</p>";
+static const char INDEX_NO_FALLBACK[] =
+    "<p>The stock slot no longer holds firmware that can start: an upload into it "
+    "was cut off. This bridge starts again after a power cycle; upload an image to carry on.</p>";
+static const char INDEX_FORM[] =
+    "<p>Choose a native " CONFIG_IDF_TARGET " application image no larger than 0x1f0000 "
     "bytes. The peer slot is erased only after you press Upload.</p>"
     "<input id=f type=file accept='.bin,application/octet-stream'> "
     "<button id=u>Upload</button><pre id=o></pre>"
@@ -153,11 +169,27 @@ static void delayed_restart(void *unused)
     esp_restart();
 }
 
+/* The slot the plug starts next, when it is not this bridge: read from otadata
+ * each time, not kept from start-up, as an upload pins the bridge before it
+ * erases the peer, and one cut off then leaves no fallback until the next. */
+static const esp_partition_t *fallback_slot(void)
+{
+    const esp_partition_t *next = esp_ota_get_boot_partition();
+    return next != NULL && next->address != s_running->address ? next : NULL;
+}
+
 static esp_err_t root_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_send(req, INDEX_HTML, HTTPD_RESP_USE_STRLEN);
+    const char *parts[] = {INDEX_HEAD, fallback_slot() != NULL ? INDEX_FALLBACK : INDEX_NO_FALLBACK, INDEX_FORM};
+    for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); i++) {
+        esp_err_t err = httpd_resp_send_chunk(req, parts[i], HTTPD_RESP_USE_STRLEN);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    return httpd_resp_send_chunk(req, NULL, 0);
 }
 
 #ifdef BRIDGE_NVS_READOUT
@@ -255,20 +287,194 @@ static esp_err_t flash_sha256_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, text);
 }
 
-/* The eFuse read registers (EFUSE_RD_WR_DIS_REG to
- * EFUSE_RD_SYS_PART2_DATA7_REG), little-endian words in register order.
- * Reading them does not program anything. */
+/* The eFuse read registers, little-endian words in register order: on an
+ * ESP32-C3 EFUSE_RD_WR_DIS_REG to EFUSE_RD_SYS_PART2_DATA7_REG, on a classic
+ * ESP32 its four blocks' (flashmap.py reads either).  Reading them does not
+ * program anything. */
 static esp_err_t efuse_handler(httpd_req_t *req)
 {
     size_t length = 0;
+#if CONFIG_IDF_TARGET_ESP32
+    static const struct { uint32_t first, last; } blocks[] = {
+        {EFUSE_BLK0_RDATA0_REG, EFUSE_BLK0_RDATA6_REG},
+        {EFUSE_BLK1_RDATA0_REG, EFUSE_BLK1_RDATA7_REG},
+        {EFUSE_BLK2_RDATA0_REG, EFUSE_BLK2_RDATA7_REG},
+        {EFUSE_BLK3_RDATA0_REG, EFUSE_BLK3_RDATA7_REG},
+    };
+    for (size_t block = 0; block < sizeof(blocks) / sizeof(blocks[0]); block++) {
+        for (uint32_t reg = blocks[block].first; reg <= blocks[block].last; reg += 4) {
+            uint32_t word = REG_READ(reg);
+            memcpy(s_upload_buffer + length, &word, sizeof(word));
+            length += sizeof(word);
+        }
+    }
+#else
     for (uint32_t reg = EFUSE_RD_WR_DIS_REG; reg <= EFUSE_RD_SYS_PART2_DATA7_REG; reg += 4) {
         uint32_t word = REG_READ(reg);
         memcpy(s_upload_buffer + length, &word, sizeof(word));
         length += sizeof(word);
     }
+#endif
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, s_upload_buffer, length);
+}
+
+/* The pins the chip reaches its flash through, always busy: their levels say
+ * nothing about the board. */
+#if CONFIG_IDF_TARGET_ESP32
+#define FLASH_PINS (0x3FULL << 6)
+#else
+#define FLASH_PINS (0x3FULL << 12)
+#endif
+
+__attribute__((format(printf, 2, 3)))
+static void info_add(size_t *used, const char *format, ...)
+{
+    if (*used >= sizeof(s_upload_buffer)) {
+        return;
+    }
+    va_list args;
+    va_start(args, format);
+    int added = vsnprintf(s_upload_buffer + *used, sizeof(s_upload_buffer) - *used, format, args);
+    va_end(args);
+    *used += added > 0 ? (size_t)added : 0;
+}
+
+/* Each pin's level as the chip's input register has it.  Nothing is set: a pin
+ * whose input is off reads 0 whatever is on it, so it is named, not read -
+ * turning its input on would be changing how the plug's board is set up. */
+static void info_gpio(size_t *used)
+{
+    uint64_t levels = REG_READ(GPIO_IN_REG);
+#if SOC_GPIO_PIN_COUNT > 32
+    levels |= (uint64_t)REG_READ(GPIO_IN1_REG) << 32;
+#endif
+    uint64_t input_off = 0;
+    info_add(used, "gpio levels:");
+    for (int pin = 0; pin < SOC_GPIO_PIN_COUNT; pin++) {
+        const uint64_t bit = 1ULL << pin;
+        if (!(bit & (uint64_t)SOC_GPIO_VALID_GPIO_MASK) || (bit & FLASH_PINS)) {
+            continue;
+        }
+        if (REG_READ(GPIO_PIN_MUX_REG[pin]) & FUN_IE) {
+            info_add(used, " %d=%d", pin, (int)((levels >> pin) & 1));
+        } else {
+            input_off |= bit;
+        }
+    }
+    info_add(used, "\ngpio input off:");
+    for (int pin = 0; pin < SOC_GPIO_PIN_COUNT; pin++) {
+        if (input_off & (1ULL << pin)) {
+            info_add(used, " %d", pin);
+        }
+    }
+    info_add(used, "\n");
+}
+
+/* Sonoff's later firmware - the BASICR4's - is built for its partition table
+ * at 0xC000, and its bootloader reads it there; this bridge, as ESP-IDF builds
+ * it, reads 0x8000. Where that holds no table and 0xC000 one whose MD5 record
+ * matches, the bridge takes the device's own table from there, registering each
+ * entry before anything looks for a partition: nothing is written to flash.
+ * Nothing but Sonoff's firmware starts on such a device yet, so the bridge then
+ * only reads it, and refuses anything that would write over it. */
+#define LATER_TABLE_OFFSET 0xC000
+static bool s_later_table;
+
+static void register_later_table(void)
+{
+    if (esp_partition_find_first(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, NULL) != NULL) {
+        return;
+    }
+    static esp_partition_info_t table[ESP_PARTITION_TABLE_MAX_ENTRIES];
+    if (esp_flash_read(NULL, table, LATER_TABLE_OFFSET, sizeof(table)) != ESP_OK) {
+        ESP_LOGE(TAG, "no partition table at 0x8000, and 0x%x could not be read", LATER_TABLE_OFFSET);
+        return;
+    }
+    size_t count = 0;
+    while (count < ESP_PARTITION_TABLE_MAX_ENTRIES && table[count].magic == ESP_PARTITION_MAGIC) {
+        count++;
+    }
+    uint8_t digest[16];
+    if (count == 0 || count == ESP_PARTITION_TABLE_MAX_ENTRIES || table[count].magic != ESP_PARTITION_MAGIC_MD5 ||
+        mbedtls_md5((const unsigned char *)table, count * sizeof(table[0]), digest) != 0 ||
+        memcmp(digest, (const uint8_t *)&table[count] + ESP_PARTITION_MD5_OFFSET, sizeof(digest)) != 0) {
+        ESP_LOGE(TAG, "no partition table at 0x8000, nor a whole one at 0x%x", LATER_TABLE_OFFSET);
+        return;
+    }
+    /* By name: ESP-IDF 5.3 takes no NULL for the main flash here. */
+    for (size_t i = 0; i < count; i++) {
+        char label[sizeof(table[i].label) + 1] = {0};
+        memcpy(label, table[i].label, sizeof(table[i].label));
+        esp_err_t err = esp_partition_register_external(esp_flash_default_chip, table[i].pos.offset, table[i].pos.size, label,
+                                                        (esp_partition_type_t)table[i].type,
+                                                        (esp_partition_subtype_t)table[i].subtype, NULL);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "partition %s from 0x%x not taken: %s", label, LATER_TABLE_OFFSET, esp_err_to_name(err));
+            return;
+        }
+    }
+    s_later_table = true;
+    ESP_LOGI(TAG, "partition table read from 0x%x: %u entries", LATER_TABLE_OFFSET, (unsigned)count);
+}
+
+static esp_err_t refuse_on_later_table(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_set_status(req, "409 Conflict");
+    return httpd_resp_sendstr(req, "This device's partition table is at 0xC000, where nothing but Sonoff's "
+                                   "firmware starts yet: only reading it. Nothing was written.\n");
+}
+
+/* What a backup cannot tell, as plain "name: value" lines.  Read-only: nothing
+ * here writes flash or sets a pin, and no Wi-Fi details, MAC or other identity
+ * are in it.  PSRAM on a chip of its own could only be found by talking to it,
+ * which drives pins a board without one may use for something else, so this
+ * build does not set PSRAM up and only the package's is reported. */
+static esp_err_t info_handler(httpd_req_t *req)
+{
+    size_t used = 0;
+    esp_chip_info_t chip;
+    esp_chip_info(&chip);
+    info_add(&used, BRIDGE_NAME "\nchip: " CONFIG_IDF_TARGET "\nchip revision: %d.%d\ncores: %d\n",
+             chip.revision / 100, chip.revision % 100, chip.cores);
+    info_add(&used, "embedded flash: %s\n", chip.features & CHIP_FEATURE_EMB_FLASH ? "yes" : "no");
+
+    uint32_t id = 0, size = 0;
+    if (esp_flash_read_id(NULL, &id) == ESP_OK) {
+        info_add(&used, "flash id: %06lx\n", (unsigned long)id);
+    } else {
+        info_add(&used, "flash id: not readable\n");
+    }
+    if (esp_flash_get_physical_size(NULL, &size) == ESP_OK) {
+        info_add(&used, "flash chip size: %lu\n", (unsigned long)size);
+    } else {
+        info_add(&used, "flash chip size: not known from its id\n");
+    }
+
+#if SOC_SPIRAM_SUPPORTED
+    info_add(&used, "psram in the package: %s\npsram on its own chip: not looked for\n",
+             chip.features & CHIP_FEATURE_EMB_PSRAM ? "yes" : "no");
+#else
+    info_add(&used, "psram: none, this chip cannot have it\n");
+#endif
+
+    info_add(&used, "partition table: 0x%x\n", s_later_table ? LATER_TABLE_OFFSET : CONFIG_PARTITION_TABLE_OFFSET);
+    info_add(&used, "running slot: %s at 0x%lx, 0x%lx bytes\n", s_running->label,
+             (unsigned long)s_running->address, (unsigned long)s_running->size);
+    const esp_partition_t *next = fallback_slot();
+    if (next != NULL) {
+        info_add(&used, "fallback slot: %s at 0x%lx, 0x%lx bytes\n", next->label,
+                 (unsigned long)next->address, (unsigned long)next->size);
+    } else {
+        info_add(&used, "fallback slot: none\n");
+    }
+    info_gpio(&used);
+
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, s_upload_buffer, used < sizeof(s_upload_buffer) ? used : sizeof(s_upload_buffer));
 }
 
 /* Plain-text state for the host: which networks the bridge is on. */
@@ -276,7 +482,7 @@ static esp_err_t status_handler(httpd_req_t *req)
 {
     char body[192];
     uint32_t ip = s_sta_ip;
-    const char *fallback = s_no_fallback ? "fallback: none - an upload was cut off\n" : "";
+    const char *fallback = fallback_slot() == NULL ? "fallback: none - an upload was cut off\n" : "";
     if (ip != 0) {
         snprintf(body, sizeof(body), BRIDGE_NAME "\nhome network: joined " IPSTR "\n%s%s",
                  IP2STR((esp_ip4_addr_t *)&ip),
@@ -321,6 +527,9 @@ static bool query_number(const char *query, const char *key, size_t *value)
  * as it would without settings - under that name. */
 static esp_err_t tasmota_settings_handler(httpd_req_t *req)
 {
+    if (s_later_table) {
+        return refuse_on_later_table(req);
+    }
     char query[96];
     size_t pool, pool_size, ssid_index, password_index, crc;
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
@@ -409,7 +618,41 @@ static esp_err_t upload_error(httpd_req_t *req, const char *message)
     return httpd_resp_sendstr(req, message);
 }
 
+static esp_err_t upload(httpd_req_t *req);
+
 static esp_err_t update_handler(httpd_req_t *req)
+{
+    if (s_later_table) {
+        return refuse_on_later_table(req);
+    }
+    s_uploading = true;
+    esp_err_t result = upload(req);
+    s_uploading = false;
+    return result;
+}
+
+static esp_err_t restart_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const esp_partition_t *next = fallback_slot();
+    if (s_uploading) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "An upload is under way: not restarting.\n");
+    }
+    if (next == NULL) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "The next start would be this bridge again: not restarting.\n");
+    }
+    char body[96];
+    snprintf(body, sizeof(body), "Restarting into %s at 0x%08lx.\n", next->label, (unsigned long)next->address);
+    ESP_LOGI(TAG, "%s", body);
+    httpd_resp_sendstr(req, body);
+    xTaskCreate(delayed_restart, "restart", 2048, NULL, 5, NULL);
+    return ESP_OK;
+}
+
+static esp_err_t upload(httpd_req_t *req)
 {
     if (req->content_len <= 0 || req->content_len > BRIDGE_MAX_IMAGE_SIZE ||
         req->content_len > s_peer->size) {
@@ -645,6 +888,7 @@ static esp_err_t start_web_server(void)
     config.stack_size = 8192;
     config.recv_wait_timeout = 20;
     config.send_wait_timeout = 20;
+    config.max_uri_handlers = 12;
 
     httpd_handle_t server = NULL;
     ESP_ERROR_CHECK(httpd_start(&server, &config));
@@ -655,9 +899,7 @@ static esp_err_t start_web_server(void)
         .uri = "/update", .method = HTTP_POST, .handler = update_handler, .user_ctx = NULL,
     };
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &root));
-#ifndef BRIDGE_FLASH_READOUT
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &update));
-#endif
     const httpd_uri_t status = {
         .uri = "/status", .method = HTTP_GET, .handler = status_handler, .user_ctx = NULL,
     };
@@ -666,19 +908,12 @@ static esp_err_t start_web_server(void)
         .uri = "/tasmota-settings", .method = HTTP_POST,
         .handler = tasmota_settings_handler, .user_ctx = NULL,
     };
-#ifndef BRIDGE_FLASH_READOUT
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &tasmota_settings));
-#endif
 #ifdef BRIDGE_NVS_READOUT
     const httpd_uri_t nvs = {
         .uri = "/nvs", .method = HTTP_GET, .handler = nvs_handler, .user_ctx = NULL,
     };
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &nvs));
-#endif
-#ifdef BRIDGE_FLASH_READOUT
-    /* Deliberately unregistered in this build. */
-    (void)update;
-    (void)tasmota_settings;
 #endif
     const httpd_uri_t flash = {
         .uri = "/flash", .method = HTTP_GET, .handler = flash_handler, .user_ctx = NULL,
@@ -692,11 +927,21 @@ static esp_err_t start_web_server(void)
         .uri = "/flash-sha256", .method = HTTP_GET, .handler = flash_sha256_handler, .user_ctx = NULL,
     };
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &flash_sha256));
+    const httpd_uri_t info = {
+        .uri = "/info", .method = HTTP_GET, .handler = info_handler, .user_ctx = NULL,
+    };
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &info));
+    const httpd_uri_t restart = {
+        .uri = "/restart", .method = HTTP_POST, .handler = restart_handler, .user_ctx = NULL,
+    };
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &restart));
     return ESP_OK;
 }
 
 void app_main(void)
 {
+    register_later_table();
+
     /* Vendor OTA may leave a newly booted bridge pending verification.  Confirm
      * it before selecting another slot, otherwise the bootloader can later
      * classify this recovery image as aborted.  A non-pending image can return
@@ -725,7 +970,6 @@ void app_main(void)
         ESP_LOGI(TAG, "power-cycle fallback selected: %s at 0x%08lx",
                  s_peer->label, (unsigned long)s_peer->address);
     } else {
-        s_no_fallback = true;
         ESP_LOGW(TAG, "peer %s is not bootable (%s) - an upload into it was cut off; "
                  "no fallback, carrying on so it can be uploaded again",
                  s_peer->label, esp_err_to_name(err));

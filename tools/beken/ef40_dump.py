@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Enumerate EasyFlash V4 (EF40) KV40 nodes from an S61 flash dump.
 
 Config regions are stored raw (un-striped). A node is:

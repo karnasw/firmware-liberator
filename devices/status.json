@@ -1,0 +1,15 @@
+{
+  "sonoff-s60": "supported",
+  "sonoff-s61": "testers-wanted",
+  "sonoff-pow-elite": "testers-wanted",
+  "sonoff-powct": "testers-wanted",
+  "sonoff-th-elite": "testers-wanted",
+  "sonoff-dualr3": "testers-wanted",
+  "sonoff-basic-1gs": "testers-wanted",
+  "sonoff-nspanel": "not-supported",
+  "sonoff-basicr4": "readout-wanted",
+  "sonoff-minir4": "readout-wanted",
+  "sonoff-m5-1c": "not-supported",
+  "sonoff-m5-2c": "not-supported",
+  "sonoff-m5-3c": "not-supported"
+}

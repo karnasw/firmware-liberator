@@ -1,0 +1,80 @@
+// api.firmwareliberator.com: the project's API - the reports the tool sends
+// at the end of each run (reports.js), and the readouts it sends (index.js
+// says how each is guarded) - kept apart from the website's own Worker
+// (../wrangler.jsonc) so nothing sent here can affect the site. The website
+// workflow deploys it in a job of its own.
+//
+// Its secrets are set by tools/repo/cloudflare_settings.py apply, which
+// checks each is there (API_SECRETS), never by hand:
+// - DEVICE_HASH_KEY_PERMANENT, the key a device's hash is stored under (reports.js), never
+//   changed: a new key would make every device seen before a new one. Kept
+//   by the maintainer somewhere safe, as the Worker never gives it back;
+//   apply asks for it when the Worker lacks it.
+// - SENDER_KEY, the key a sender's address is hashed under (index.js), to
+//   count its readouts a day and keep two of one key from coming from it.
+//   Made by apply, and changed with `cloudflare_settings.py rotate SENDER_KEY`,
+//   which starts the day's counts again. Until it is set, no readout or
+//   report is taken.
+// - ALERTS_RECIPIENT_EMAIL, the maintainer's address, which the nightly job emails when a
+//   limit was reached (alerts.js): set by apply from Email Routing's rules,
+//   the address the domain's mail is forwarded to, never written here.
+{
+  "name": "firmware-liberator-api",
+  "main": "index.js",
+  "compatibility_date": "2026-11-01",
+  "routes": [
+    { "pattern": "api.firmwareliberator.com", "custom_domain": true }
+  ],
+  "workers_dev": false,
+  "preview_urls": false,
+  // Workers Logs and traces: every request, and any error or uncaught
+  // exception, kept by Cloudflare for seven days, so a failure can be looked
+  // into - a trace shows where the time of each went (the database, the
+  // buckets, email). A request's log holds the sender's address, and its
+  // trace the address's rough place and network; docs/what-the-tool-sends.md
+  // says so. Both are within what Workers Paid includes, at this traffic.
+  "observability": { "enabled": true, "head_sampling_rate": 1, "logs": { "enabled": true, "invocation_logs": true }, "traces": { "enabled": true, "head_sampling_rate": 1 } },
+  // Private, and kept for good: made by tools/repo/cloudflare_settings.py.
+  "r2_buckets": [
+    { "binding": "READOUTS", "bucket_name": "firmware-liberator-readouts" },
+    // Public: the figures the nightly job writes (nightly.js), served from
+    // stats.firmwareliberator.com, and nothing else.
+    { "binding": "STATS", "bucket_name": "firmware-liberator-stats" }
+  ],
+  // The nightly job (nightly.js), at 03:17 UTC: after the day it counts has
+  // ended everywhere it is evening, and before the website is built from it.
+  // And hourly, the confirmations' reminders alone (index.js remind), so each
+  // goes within the hour of its day being up.
+  "triggers": { "crons": ["17 3 * * *", "47 * * * *"] },
+  // The API's database (database.js): made, and brought up to date from
+  // migrations/, by tools/repo/cloudflare_settings.py apply, which writes its
+  // id here once it has made it, and commits it.
+  "d1_databases": [
+    { "binding": "DB", "database_name": "firmware-liberator-api", "migrations_dir": "migrations",
+      "database_id": "8a286f99-a420-4a72-a2b6-97c623aac2ec" }
+  ],
+  // Cloudflare Email Service (Workers Paid): the confirmation an address
+  // given to /notify is sent, from NOTIFY_FROM on the domain onboarded for it
+  // (cloudflare_settings.py's SENDING_DOMAIN), and the nightly job's alerts to ALERTS_RECIPIENT_EMAIL
+  // (alerts.js). Unbound, /notify takes no address, and no alert is sent.
+  // From NOTIFY_FROM alone (index.js), so no mistake here can send as any
+  // other address on the domain.
+  "send_email": [
+    { "name": "EMAIL", "allowed_sender_addresses": ["updates@firmwareliberator.com"] }
+  ],
+  // Two readouts a minute from one address: a device takes one. Three
+  // requests of reports: a run sends one, with any kept from before.
+  "ratelimits": [
+    { "name": "READOUT_LIMIT", "namespace_id": "1001", "simple": { "limit": 2, "period": 60 } },
+    { "name": "REPORT_LIMIT", "namespace_id": "1002", "simple": { "limit": 3, "period": 60 } }
+  ],
+  "vars": {
+    // "on" to take requests; anything else answers 503 on every path, and
+    // the tool keeps what it would send for later: the one switch, should
+    // something need looking at (website/README.md, Stopping the API).
+    "INGEST": "on",
+    // eWeLink product models enough readouts of are in, comma-separated:
+    // the next is thanked and not kept.
+    "ENOUGH": ""
+  }
+}

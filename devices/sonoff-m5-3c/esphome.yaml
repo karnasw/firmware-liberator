@@ -1,0 +1,209 @@
+# ESPHome for the Sonoff M5 3-gang wall switch. Not the Matter version, whose part
+# number ends in W: it is locked, and cannot be converted.
+#
+# The conversion tool installs this pre-built (artifacts/README.md says how it
+# is built), with no Wi-Fi and no passwords in it: it writes the device's own
+# Wi-Fi into the two placeholders below (tools/autoflash/imprint.py), and at
+# boot they are handed to wifi.configure. Kept in this one file, so that Home
+# Assistant can adopt the device from it (dashboard_import) and build it there.
+#
+# Its pins are as published (devices/sonoff-m5-3c/README.md says where). It has run in
+# the emulator only, which has no relay or other hardware to see.
+
+esphome:
+  # Named as every firmware the conversion installs is, whatever the device.
+  name: esphome
+  friendly_name: esphome
+  comment: Sonoff-M5-3C
+  name_add_mac_suffix: true
+  project:
+    name: liberator.sonoff-m5-3c
+    version: "1.0.0"
+  on_boot:
+    # Tasmota holds its output pins through a software restart, and the install
+    # ends with one: release them before anything drives them.
+    - priority: 1000
+      then:
+        - lambda: |-
+            gpio_hold_dis(GPIO_NUM_23);
+            gpio_hold_dis(GPIO_NUM_19);
+            gpio_hold_dis(GPIO_NUM_22);
+            gpio_hold_dis(GPIO_NUM_5);
+        # Before Wi-Fi starts (its priority is 250): the network to join, from
+        # the image, and its own network's name. Wi-Fi details saved earlier
+        # (from Home Assistant, say) take their place as Wi-Fi starts.
+        - lambda: |-
+            // Written by the conversion tool: each a marker, then filler, and
+            // each must appear exactly once in the image. Read through volatile
+            // pointers, so the compiler cannot fold in this build-time text.
+            static const char ssid[] = "AUTOFLASH-IMPRINT-SSID>.................................";
+            static const char password[] = "AUTOFLASH-IMPRINT-PASS>................................................................";
+            const char *volatile at_ssid = ssid;
+            const char *volatile at_password = password;
+            id(imprinted_ssid) = at_ssid;
+            id(imprinted_password) = at_password;
+            if (!id(imprinted_ssid).empty() && id(imprinted_ssid).rfind("AUTOFLASH-IMPRINT-", 0) != 0) {
+              wifi::WiFiAP sta;
+              sta.set_ssid(id(imprinted_ssid));
+              sta.set_password(id(imprinted_password));
+              wifi::global_wifi_component->set_sta(sta);
+            }
+            // Its own network has its name (esphome-abcdef), open, as
+            // Tasmota's has its own.
+            wifi::WiFiAP ap;
+            ap.set_ssid(App.get_name());
+            wifi::global_wifi_component->set_ap(ap);
+    # After Wi-Fi is set up: on the image's details (nothing saved before),
+    # saved, so they stay. Not wifi.configure, which - when its first try takes
+    # over 30 s, a router restarting, say - puts back what was there before
+    # (nothing, on a first boot) and saves that.
+    - priority: -100
+      then:
+        - lambda: |-
+            if (!id(imprinted_ssid).empty() && id(imprinted_ssid).rfind("AUTOFLASH-IMPRINT-", 0) != 0 &&
+                wifi::global_wifi_component->get_sta().get_ssid() == id(imprinted_ssid)) {
+              wifi::global_wifi_component->save_wifi_sta(id(imprinted_ssid), id(imprinted_password));
+            }
+            // Saved, too, where a build of this config with no Wi-Fi written
+            // in looks for them - one Home Assistant's ESPHome builder makes,
+            // say. ESPHome keys saved details by the whole config and its
+            // version when a build has a network at start-up, as this one has
+            // with the details written in, and by one fixed key when it has
+            // none: without this, that build finds none, and raises its own
+            // network. Kept to the network in use, written only when changed.
+            const auto &sta = wifi::global_wifi_component->get_sta();
+            if (!sta.get_ssid().empty()) {
+              auto fixed = global_preferences->make_preference<wifi::SavedWifiSettings>(88491487UL, true);
+              wifi::SavedWifiSettings saved{};
+              if (!fixed.load(&saved) || sta.get_ssid() != saved.ssid || sta.get_password() != saved.password) {
+                wifi::SavedWifiSettings save{};
+                strncpy(save.ssid, sta.get_ssid().c_str(), sizeof(save.ssid) - 1);
+                strncpy(save.password, sta.get_password().c_str(), sizeof(save.password) - 1);
+                fixed.save(&save);
+                global_preferences->sync();
+              }
+            }
+
+# Adopting the device in Home Assistant's ESPHome builder takes this config as
+# a package. update_firmware.py writes the release.
+dashboard_import:
+  package_import_url: github://adamsthws/firmware-liberator/devices/sonoff-m5-3c/esphome.yaml@v3.0.0
+  import_full_config: false
+
+globals:
+  - id: imprinted_ssid
+    type: std::string
+  - id: imprinted_password
+    type: std::string
+
+esp32:
+  variant: esp32
+  framework:
+    type: esp-idf
+  flash_size: 4MB
+
+# avoid frequent NVS write to save flash
+preferences:
+  flash_write_interval: 60s
+
+# The serial port's pins are not the meter's, but its log is of no use on a
+# device whose case is not opened.
+logger:
+  baud_rate: 0
+
+api:
+  # Not restarting when Home Assistant is away: it would cut the power to what
+  # the device runs every 15 minutes (the default).
+  reboot_timeout: 0s
+  actions:
+    # The Wi-Fi the device is on, for the conversion tool to hand to the next
+    # firmware when it leaves ESPHome: docs in devices/sonoff-s60/esphome.md.
+    - action: autoflash_wifi
+      supports_response: only
+      then:
+        - api.respond:
+            data: !lambda |-
+              root["ssid"] = wifi::global_wifi_component->get_sta().get_ssid();
+              root["password"] = wifi::global_wifi_component->get_sta().get_password();
+
+ota:
+  - platform: esphome
+
+web_server:
+  version: 3
+  # The page's code from the device itself, so it works where it has no internet.
+  local: true
+
+wifi:
+  reboot_timeout: 0s
+  ap: {}
+
+captive_portal:
+
+status_led:
+  pin:
+    number: GPIO5
+    inverted: true
+
+switch:
+  - id: relay
+    platform: gpio
+    name: "Relay"
+    pin: GPIO23
+    restore_mode: RESTORE_DEFAULT_OFF
+  - id: relay_2
+    platform: gpio
+    name: "Relay 2"
+    pin: GPIO19
+    restore_mode: RESTORE_DEFAULT_OFF
+  - id: relay_3
+    platform: gpio
+    name: "Relay 3"
+    pin: GPIO22
+    restore_mode: RESTORE_DEFAULT_OFF
+
+binary_sensor:
+  - platform: gpio
+    id: button_1
+    internal: true
+    pin:
+      number: GPIO4
+      mode: INPUT_PULLUP
+      inverted: true
+    filters:
+      - delayed_on: 10ms
+      - delayed_off: 10ms
+    on_press:
+      - switch.toggle: relay
+  - platform: gpio
+    id: button_2
+    internal: true
+    pin:
+      number: GPIO0
+      mode: INPUT_PULLUP
+      inverted: true
+    filters:
+      - delayed_on: 10ms
+      - delayed_off: 10ms
+    on_press:
+      - switch.toggle: relay_2
+  - platform: gpio
+    id: button_3
+    internal: true
+    pin:
+      number: GPIO15
+      mode: INPUT_PULLUP
+      inverted: true
+    filters:
+      - delayed_on: 10ms
+      - delayed_off: 10ms
+    on_press:
+      - switch.toggle: relay_3
+
+sensor:
+  # The conversion tool reads it (/sensor/WiFi Signal) before it changes the
+  # device's firmware: keep its name.
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    entity_category: diagnostic
+    update_interval: 60s

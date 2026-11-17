@@ -1,5 +1,5 @@
 """Supla GUI-Generic: the image the builder gave, the layout it runs on, and
-the plans and steps that put it on the plug."""
+the plans and steps that put it on the device."""
 import hashlib
 import json
 import struct
@@ -11,11 +11,11 @@ from types import SimpleNamespace
 from unittest import mock
 
 from tests.autoflash.test_imprint import build_image
-from tools.autoflash import esphome, kinds, plans, supla
+from tools.autoflash import kinds, plans, supla
 from tools.autoflash.errors import Abort
 from tools.autoflash.routes import espressif
 from tools.autoflash import join, prompts
-from tools.autoflash.routes.espressif import evidence, hub
+from tools.autoflash.routes.espressif import evidence, hub, images
 from tools.autoflash.routes.espressif import supla as route
 from tools.autoflash.state import RunState
 
@@ -30,7 +30,7 @@ def template(gpio=kinds.SONOFF_S60.tasmota_gpio) -> bytes:
 def gui_generic(*, extra=b"", markers=supla.MARKERS, size=0) -> bytes:
     """A made-up GUI-Generic app: an ESP32-C3 app description, Supla's
     markers and a device template - none of GUI-Generic itself."""
-    description = struct.pack("<I", esphome.APP_DESC_MAGIC) + b"\0" * 12 + b"6671d0b".ljust(32, b"\0")
+    description = struct.pack("<I", images.APP_DESC_MAGIC) + b"\0" * 12 + b"6671d0b".ljust(32, b"\0")
     description += b"arduino-lib-builder".ljust(32, b"\0") + b"\0" * 32 + b"v5.5.5".ljust(32, b"\0")
     payload = description + b"\0".join(markers) + b"\0" + extra
     return build_image(payload.ljust(size, b"\0"))
@@ -67,7 +67,7 @@ def plan_for(image: bytes) -> list:
 class LayoutTests(unittest.TestCase):
     def test_the_table_is_written_as_esp_idf_writes_one(self):
         # Sonoff's own table, read and written again, is the same to the byte.
-        sonoff = esphome.sonoff_table()
+        sonoff = images.sonoff_table()
         self.assertEqual(supla.encode_table(supla.decode_table(sonoff)), sonoff)
 
     def test_the_layout_is_pinned(self):
@@ -152,7 +152,7 @@ class BuildTests(unittest.TestCase):
             supla.check_app(gui_generic(size=supla.APP_SIZE), "big.bin")
 
     def test_another_layout_is_refused(self):
-        sonoffs = esphome.sonoff_table()
+        sonoffs = images.sonoff_table()
         with self.assertRaisesRegex(supla.ImageError, "layout this version of the tool does not know"):
             supla.check(self.load(**{"partitions.bin": sonoffs}))
 
@@ -204,7 +204,7 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(bytes(flash[plans.SUPLA_APP0:plans.SUPLA_APP0 + len(image)]), image)
 
     def test_sonoffs_boot_selection_goes_only_once_ota_0_holds_no_app(self):
-        # Until then the plug starts the Tasmota in ota_1 as it did; after,
+        # Until then the device starts the Tasmota in ota_1 as it did; after,
         # it tries each slot, and finds only that Tasmota.
         first, second = plan_for(gui_generic(size=0x180000))
         self.assertFalse(first.restart)
@@ -218,7 +218,7 @@ class PlanTests(unittest.TestCase):
     def test_the_bootloader_and_the_table_come_last(self):
         _, second = plan_for(gui_generic(size=0x180000))
         # A longer bootloader's end, left after the builder's, is cleared once
-        # the builder's is in place: before, it would cut short the one starting the plug.
+        # the builder's is in place: before, it would cut short the one starting the device.
         end = len(plans.padded(bootloader()))
         self.assertEqual(second.steps[-4:], [plans.Write("otadata", plans.SUPLA_OTADATA, whole=True),
                                              plans.Write("bootloader", 0, whole=True),
@@ -250,7 +250,7 @@ class PlanTests(unittest.TestCase):
 
     def test_anything_but_its_table_or_an_image_too_big_is_refused(self):
         with self.assertRaisesRegex(plans.PlanError, "Supla's partition table"):
-            plans.supla(b"\0" * 0x30000, bootloader(), esphome.sonoff_table(), boot_app0())
+            plans.supla(b"\0" * 0x30000, bootloader(), images.sonoff_table(), boot_app0())
         with self.assertRaisesRegex(plans.PlanError, "fit"):
             plan_for(b"\0" * (plans.SUPLA_APP_SIZE + 1))
 
@@ -291,7 +291,7 @@ class StepTests(unittest.TestCase):
     def ctx(self, image: bytes, **extra):
         path = builder_zip(self.dir / "GUI-Generic.ESP32C3.vNX26.11.08.2.S60.json.tmpl.pl.bin.zip", image)
         state = RunState.open(self.dir / "run")
-        state.set_input("plug_kind", kinds.SONOFF_S60.key)
+        state.set_input("device_kind", kinds.SONOFF_S60.key)
         return SimpleNamespace(state=state, supla_firmware=path, dry_run=False, device=None, **extra)
 
     def test_the_image_is_recorded_once_checked(self):
@@ -318,13 +318,13 @@ class StepTests(unittest.TestCase):
     def test_the_first_plan_is_not_run_again_once_it_finished(self):
         ctx = self.ctx(gui_generic(extra=template(), size=0x100000))
         route.step_image(ctx)
-        with mock.patch.object(join, "plug_signal", return_value=None), \
+        with mock.patch.object(join, "device_signal", return_value=None), \
                 mock.patch.object(join, "note_signal", return_value=None), \
                 mock.patch.object(hub, "run_plan", side_effect=[{}, RuntimeError("cut off")]) as run:
             with self.assertRaises(RuntimeError):
                 route.step_supla_install(ctx)
         self.assertEqual([call.args[1].name for call in run.call_args_list], ["supla_app", "supla_rest"])
-        with mock.patch.object(join, "plug_signal", return_value=None), \
+        with mock.patch.object(join, "device_signal", return_value=None), \
                 mock.patch.object(join, "note_signal", return_value=None), \
                 mock.patch.object(hub, "run_plan", return_value={"plan": "supla_rest"}) as run:
             route.step_supla_install(ctx)
@@ -333,7 +333,7 @@ class StepTests(unittest.TestCase):
     def test_supla_not_seen_on_the_wifi_still_ends_the_run(self):
         # It is written and checked; setting it up is GUI-Generic's own page's.
         ctx = self.ctx(gui_generic())
-        ctx.state.set_input("plug_ip", "192.0.2.50")
+        ctx.state.set_input("device_ip", "192.0.2.50")
         with mock.patch.object(prompts, "wait_for_ssid", return_value="SUPLA-ESP32C3-ABCD"), \
                 mock.patch.object(prompts, "section") as shown, \
                 mock.patch.object(prompts, "wait_for_key"):
@@ -347,7 +347,7 @@ class StepTests(unittest.TestCase):
         # As in the emulator, which cannot run GUI-Generic: it restarts over
         # and over, raising no network and answering nothing.
         ctx = self.ctx(gui_generic())
-        ctx.state.set_input("plug_ip", "192.0.2.50")
+        ctx.state.set_input("device_ip", "192.0.2.50")
         with mock.patch.object(prompts, "wait_for_ssid", return_value=None), \
                 mock.patch.object(prompts, "section"), mock.patch.object(prompts, "wait_for_key"), \
                 mock.patch.object(join, "wait_for", side_effect=Abort("not seen")):

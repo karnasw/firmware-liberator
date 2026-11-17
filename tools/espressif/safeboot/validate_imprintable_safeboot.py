@@ -44,6 +44,7 @@ SAFEBOOT_PARTITION_BYTES = 0xD0000
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("image", type=Path)
+    parser.add_argument("--chip-id", type=int, default=5, help="0 for a classic ESP32 (default: 5, an ESP32-C3)")
     args = parser.parse_args()
 
     try:
@@ -57,7 +58,7 @@ def main() -> int:
     try:
         report = parse_esp_image(image)
         checks.append(("valid ESP application image", True, ""))
-        checks.append(("targets ESP32-C3", report["chip_is_esp32_c3"], ""))
+        checks.append(("targets the chip", report["chip_id"] == args.chip_id, ""))
         checks.append(("checksum valid", report["checksum_valid"], ""))
         checks.append(("appended SHA-256 valid", report["sha256_valid"] is not False, ""))
     except ValueError as exc:

@@ -1,7 +1,8 @@
+#!/usr/bin/env python3
 """Wrap an rt_ota .rbl (e.g. an OpenBeken BK7238 build) in the CoolKit "FOTA"
 download container the S61's OTA client (ais_qota_task) expects, so it can be
-served to the plug through the eWeLink `upgrade` command the same way the S60 is
-converted - see docs/beken-s61-emulation.md#firmware-update-and-conversion-the-ota-path.
+served to the device through the eWeLink `upgrade` command the same way the S60 is
+converted - see docs/beken-research.md#the-update-path.
 
 The stock bootloader accepts a genuine third-party rt_ota image (no signature, no
 encryption, no secret key); OpenBeken already ships BK7238 images in this format
@@ -23,14 +24,14 @@ version-greater-than check, the `upgrade` command's digest (SHA-256 of the file)
 and, once the payload is in, its CRC-32 against the descriptor's. The payload is
 staged as it arrives, so one whose CRC does not match is still in the download
 slot - but the updater reports the update failed (`"ota":"fail"`) and does not
-restart, and the bootloader applies it only when the plug is next switched on.
+restart, and the bootloader applies it only when the device is next switched on.
 
 Usage:
     fota_wrap.py IN.rbl [-o OUT.fota] [--name NAME] [--version VER]
                      [--serve [HOST:PORT]]
 
 With --serve it hosts the container over HTTP (206 ranged, keep-alive) exactly as
-the plug fetches it, and prints the `upgrade` command params (downloadUrl + digest)
+the device fetches it, and prints the `upgrade` command params (downloadUrl + digest)
 to push over the IoT WebSocket (see tools/ewelink/probe_ota_command.py for the S60 push).
 Standard library only.
 """
@@ -90,11 +91,35 @@ def wrap(rbl: bytes, name: str = STAGING_NAME, version: str | None = None) -> by
     return bytes(header) + bytes(trailer) + bytes(desc) + rbl
 
 
+def unwrap(container: bytes) -> list[tuple[str, str, bytes]]:
+    """The images in a FOTA container, this tool's or one of Sonoff's official
+    files (whose u16 @12 is not 0): (name, version, payload) for each, with
+    every CRC checked as the device checks it."""
+    if len(container) < 16 or struct.unpack_from("<I", container, 0)[0] != 0x1beef11e:
+        raise ValueError("not a FOTA container (no 0x1beef11e magic)")
+    base = 16 + struct.unpack_from("<H", container, 12)[0]
+    trailer = container[base:base + 24]
+    if len(trailer) < 24 or zlib.crc32(trailer[:0x14]) & 0xffffffff != struct.unpack_from(">I", trailer, 0x14)[0]:
+        raise ValueError("the FOTA container's trailer is damaged")
+    images = []
+    for index in range(trailer[1]):
+        desc = container[base + 24 + 76 * index:base + 24 + 76 * (index + 1)]
+        if len(desc) < 76 or zlib.crc32(desc[:0x3c]) & 0xffffffff != struct.unpack_from(">I", desc, 0x3c)[0]:
+            raise ValueError("descriptor %d of the FOTA container is damaged" % index)
+        offset, size, crc = struct.unpack_from(">III", desc, 0x30)
+        payload = container[base + offset:base + offset + size]
+        if len(payload) != size or zlib.crc32(payload) & 0xffffffff != crc:
+            raise ValueError("image %d of the FOTA container is damaged" % index)
+        images.append((desc[:0x20].split(b"\0")[0].decode("ascii", "replace"),
+                       desc[0x20:0x30].split(b"\0")[0].decode("ascii", "replace"), payload))
+    return images
+
+
 def upgrade_command(register: dict, url: str, digest: str, version: str,
                     name: str = "user1.bin") -> dict:
-    """The eWeLink `upgrade` command that sends the plug to `url` for the FOTA
+    """The eWeLink `upgrade` command that sends the device to `url` for the FOTA
     container whose SHA-256 is `digest`: what the cloud pushes over the IoT
-    WebSocket, addressed to the plug as its `register` message named itself."""
+    WebSocket, addressed to the device as its `register` message named itself."""
     return {"action": "upgrade", "deviceid": register["deviceid"], "apikey": register.get("apikey", ""),
             "userAgent": "app", "sequence": str(int(time.time() * 1000)),
             "params": {"model": register.get("model", ""), "version": version,
@@ -109,7 +134,7 @@ def server(container: bytes, host: str, port: int, *, quiet: bool = False):
     import socketserver
 
     class Handler(http.server.BaseHTTPRequestHandler):
-        protocol_version = "HTTP/1.1"          # keep-alive: the plug reads several ranges per connection
+        protocol_version = "HTTP/1.1"          # keep-alive: the device reads several ranges per connection
 
         def log_message(self, *a):
             print("  [ota] %s %s" % (self.command, self.headers.get("Range", "-")), file=sys.stderr)

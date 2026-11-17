@@ -6,7 +6,7 @@ with their own choice of features and the device's template, so the tool
 publishes none: it takes the .zip the builder gave and checks it before
 anything is written.
 
-The plug is given what the builder made for it: its bootloader, its
+The device is given what the builder made for it: its bootloader, its
 partition table, its boot selection and the app at 0x10000, as flashing over
 USB would leave it.  Under ESPHome's bootloader, on Sonoff's layout, a real
 S60 ran GUI-Generic but could not mount its LittleFS settings partition, so
@@ -24,7 +24,9 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import esphome, imprint, kinds
+from tools.autoflash import imprint, kinds
+from tools.autoflash.routes.espressif import images
+from tools.espressif import chips
 
 # The builder's layout: two app slots, the second for the update GUI-Generic
 # takes later, and at the end of the flash the LittleFS partition its
@@ -169,7 +171,7 @@ def load(path: Path) -> Build:
                 data = archive.read(member)
                 if name.lower() in _PARTS:
                     parts[_PARTS[name.lower()]] = data
-                elif len(data) >= 64 and data[0] == 0xE9 and struct.unpack_from("<I", data, 32)[0] == esphome.APP_DESC_MAGIC:
+                elif len(data) >= 64 and data[0] == 0xE9 and struct.unpack_from("<I", data, 32)[0] == images.APP_DESC_MAGIC:
                     apps.append((data, name))
     except (zipfile.BadZipFile, OSError) as exc:
         raise ImageError(f"{path.name} cannot be read as a zip: {exc}") from exc
@@ -190,8 +192,8 @@ def check_app(image: bytes, label: str) -> None:
         raise ImageError(f"{label} is {len(image):,} bytes; Supla's layout on the device holds "
                          f"{APP_SIZE:,} in each of its two slots")
     try:
-        esphome.check_app(image, label)
-    except esphome.ImageError as exc:
+        images.check_app(image, label)
+    except images.ImageError as exc:
         raise ImageError(str(exc).replace("firmware.ota.bin, not firmware.factory.bin",
                                           "the app's .bin, not the bootloader or partitions.bin")) from exc
     if not all(marker in image for marker in MARKERS):
@@ -207,7 +209,7 @@ def check(build: Build) -> None:
     bootloader = build.bootloader
     if len(bootloader) < 64 or bootloader[0] != 0xE9:
         raise ImageError("bootloader.bin is not an ESP32 bootloader")
-    if struct.unpack_from("<H", bootloader, 12)[0] != esphome.ESP32_C3_CHIP_ID:
+    if struct.unpack_from("<H", bootloader, 12)[0] != chips.ESP32C3.chip_id:
         raise ImageError("bootloader.bin is not built for the device's ESP32-C3")
     if len(bootloader) > BOOTLOADER_LIMIT:
         raise ImageError("bootloader.bin is too big to fit before the partition table")

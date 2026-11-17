@@ -1,0 +1,585 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Adam Matthews <52178922+adamsthws@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 16:00:00 +0000
+Subject: [PATCH] wifi: several peers on the air at once
+
+The emulator held one Wi-Fi peer, which took either role: the access point
+a device joins, or a station joining the device's own network. A device that
+cannot join its home network raises its own while it goes on trying the
+home one (ESPHome's fallback access point, OpenBeken's), so both are on the
+air at once, and a test of a computer joining that network while the device
+still looks for the home one needs both.
+
+attach_wifi_peer called again now puts another peer on the air: every frame
+the device sends goes to each, and each is ticked, reset with the device and
+closed with the network. Each needs a MAC of its own. wifi_peer stays the
+first, for callers that attach one.
+
+A station peer takes only its own network's frames - management and data
+whose BSSID is the one it joined - not the device's frames to another peer.
+It takes a network silent for BEACON_LOSS_US (3 s) as gone and looks for
+one again, as a real station does, so it joins the device's network again
+after the device took it down and raised it once more.
+
+set_on_air(False) takes a peer off the air: it hears nothing and sends
+nothing, and forgets its links, so a device sees its access point gone, as
+when a router is switched off, and joins again once it is back on. An access
+point answers data from a station it does not know - one joined before it
+went off - with deauthentication, reason 7, at most once a second, as a real
+one does after a restart: the emulated firmware does not notice the beacons
+stop, and without it went on sending into nothing.
+
+tests/wifi_peers.py checks the two roles side by side, the loss of a
+network, and an access point off the air and back: on a TAP device too,
+and telling a station it forgot.
+
+A station joins the network it hears only while set_joining(True), the
+default; off, it still hears the network and leaves it with a
+deauthentication, as a computer does: a device then has a client on its
+own network only while one has joined it.
+---
+ src/emulator.py     |  37 +++++--
+ src/wifipeer.py     |  80 +++++++++++++-
+ tests/wifi_peers.py | 246 ++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 348 insertions(+), 15 deletions(-)
+ create mode 100644 tests/wifi_peers.py
+
+diff --git a/src/emulator.py b/src/emulator.py
+index 94b7bea..206ebaa 100644
+--- a/src/emulator.py
++++ b/src/emulator.py
+@@ -438,6 +438,10 @@ class BekenEmulator:
+         # the 1 MHz MAC clock, the ABS timers and the six MAC FIQ lines work,
+         # and a peer (src/wifipeer.py) can be attached to talk 802.11 to it.
+         self.wifimac = None
++        # Every peer on the air, each hearing every frame the device sends: the
++        # access point it joins and a station joining its own network, say.
++        # wifi_peer is the first, for callers that attach only one.
++        self.wifi_peers = []
+         self.wifi_peer = None
+         # On-chip timers restart from zero on watchdog reset, while the access
+         # point/router and packet-capture clock outside the chip do not.  Add
+@@ -1020,13 +1024,19 @@ class BekenEmulator:
+         """Wire a WifiPeer to the current MacHw instance."""
+         if peer is None or self.wifimac is None:
+             return
+-        self.wifimac.on_tx = peer.on_device_tx
++        self.wifimac.on_tx = self._wifi_tx
+         peer.inject = lambda f, decr=None: self.wifimac.inject(
+             f, self.state.insn_count, decr=decr)
+         peer.now_us = self._network_now_us
+         if reset_device:
+             peer.device_reset(self._network_now_us())
+ 
++    def _wifi_tx(self, frame, info=None):
++        """A frame the device sent, to every peer on the air: each takes what
++        is addressed to it, as radios on one channel do."""
++        for peer in self.wifi_peers:
++            peer.on_device_tx(frame, info)
++
+     def _write_mmio_reset_defaults(self):
+         """Write power-on reset values for UART FIFOs, SARADC, and WDT into MMIO."""
+         fifo_default = struct.pack("<I", 1 << 17 | 1 << 19 | 1 << 20)
+@@ -1196,11 +1206,10 @@ class BekenEmulator:
+     def _reset_peripheral_models(self):
+         """Reset on-chip radio engines while retaining their external peers."""
+         if self.wifimac is not None:
+-            peer = self.wifi_peer
+             self.wifimac = _wifimac.MacHw(
+                 SLOW_TICK_INSNS // (SLOW_TICK_MS * 1000), log=self.net_log)
+             self.wifimac.mem = self._guest_mem_callbacks()
+-            if peer is not None:
++            for peer in self.wifi_peers:
+                 # The access point/router is outside the emulated chip, so it
+                 # survives the reset.  Only the MAC endpoint is replaced.
+                 self._bind_wifi_peer(peer, reset_device=True)
+@@ -1553,9 +1562,16 @@ class BekenEmulator:
+         subscribes to a matching filter. tap names a host TAP device the
+         device's Ethernet is bridged to instead (src/tapnet.py): the network
+         is then the host's, and the options for the built-in one do not apply.
++
++        Called again, another peer joins the first on the air, each hearing
++        every frame the device sends and taking what is addressed to it: the
++        access point the device joins and a station joining the device's own
++        network at once, say. Each needs a peer_mac of its own.
+         """
+         if self.wifimac is None:
+             raise ValueError("a Wi-Fi peer needs the MAC model: pass wifi=True / --wifi")
++        if any(p.mac == (peer_mac or b"\x02\x00\x00\x00\x00\x01") for p in self.wifi_peers):
++            raise ValueError("a second Wi-Fi peer needs a MAC of its own (peer_mac)")
+         try:
+             from . import wifipeer as _wifipeer, netstack as _netstack
+         except ImportError:
+@@ -1600,8 +1616,9 @@ class BekenEmulator:
+             # failed to start (an unwritable pcap path) must not keep them.
+             net.close()
+             raise
++        self.wifi_peers.append(peer)
+         self._bind_wifi_peer(peer)
+-        self.wifi_peer = peer
++        self.wifi_peer = self.wifi_peers[0]
+         return peer
+ 
+     def close_network(self):
+@@ -1612,12 +1629,13 @@ class BekenEmulator:
+         same process (the GUI) calls this after run(), or the next run's
+         forward finds its port still taken.
+         """
+-        peer, self.wifi_peer = self.wifi_peer, None
+-        if peer is not None:
++        peers, self.wifi_peers, self.wifi_peer = self.wifi_peers, [], None
++        if peers:
+             # MacHw lives as long as the emulator object (the GUI keeps that
+             # object to display its final state).  Do not let its bound method
+             # keep the closed WifiPeer -> NetStack -> TLS credentials alive.
+             self.wifimac.on_tx = None
++        for peer in peers:
+             peer.close()
+ 
+     def _uart_write(self, data):
+@@ -2159,8 +2177,8 @@ class BekenEmulator:
+                 # The peer first (it may queue frames), then the MAC: ABS
+                 # timers, TX completions, RX delivery, TBTT. The six MAC FIQ
+                 # lines (ICU bits 16..22) are levels recomputed by the model.
+-                if self.wifi_peer is not None:
+-                    self.wifi_peer.tick(state.insn_count)
++                for peer in self.wifi_peers:
++                    peer.tick(state.insn_count)
+                 lines = self.wifimac.tick(state.insn_count)
+                 state.pending_irqs = (state.pending_irqs & ~_wifimac.LINE_MASK) | lines
+ 
+@@ -3550,12 +3568,11 @@ class BekenEmulator:
+             self.blecore = snap["blecore"]
+             self.blecore.mem = self._guest_mem_callbacks()
+         if snap["wifimac"] is not None:
+-            peer = self.wifi_peer
+             self.wifimac = snap["wifimac"]
+             self.wifimac.mem = self._guest_mem_callbacks()
+             self.wifimac.log = self.net_log      # not _print: --only-uart silences that
+             self.wifimac.debug = bool(os.environ.get("WIFIDBG"))
+-            if peer is not None:
++            for peer in self.wifi_peers:
+                 # a peer attached before the load binds to the restored MAC
+                 self._bind_wifi_peer(peer)
+         # The run starts where the snapshot was taken: a block boundary.
+diff --git a/src/wifipeer.py b/src/wifipeer.py
+index 5eecf64..64d5111 100644
+--- a/src/wifipeer.py
++++ b/src/wifipeer.py
+@@ -52,6 +52,13 @@ BEACON_INTERVAL_TU = 100
+ # (tuya_main.c "current product ssid name:tuya_mdev_test1").
+ FACTORY_TEST_SSIDS = ("tuya_mdev_test1", "tuya_mdev_test2")
+ TU_US = 1024
++# A station that has heard no beacon from its access point for this long takes
++# it as gone, as a real one does: it looks for a network again.
++BEACON_LOSS_US = 3_000_000
++# An access point tells a station it does not know that sends it data so -
++# deauthentication, reason 7 (a class 3 frame from a station not associated),
++# as after its restart - at most this often, as a real one does not flood it.
++DEAUTH_EVERY_US = 1_000_000
+ 
+ 
+ def mac2str(b):
+@@ -163,6 +170,9 @@ class WifiPeer:
+         self.sta_next_us = 0
+         self.sta_tries = 0
+         self.aid = 0
++        # STA role: whether to join the network it hears (set_joining). Off, it
++        # still hears its beacons, as a computer lists a network it is not on.
++        self.joining = True
+         # AP role state
+         self.stations = {}                       # mac -> dict(state, aid)
+         self.next_aid = 1
+@@ -170,6 +180,10 @@ class WifiPeer:
+         self.tsf_start = None
+         self._skipped_factory = set()
+         self.stats = {"tx": 0, "rx": 0}
++        # Off the air (set_on_air), the peer hears nothing and sends nothing:
++        # an access point switched off, the device's network out of range.
++        self.on_air = True
++        self._deauthed = {}                      # AP role: station mac -> when it was last told
+         if self.net is not None:
+             self.net.output = self.send_eth
+         self.events = []
+@@ -221,6 +235,8 @@ class WifiPeer:
+ 
+     # ---------------------------------------------------- from the IP stack
+     def send_eth(self, eth):
++        if not self.on_air:
++            return
+         dst, src, etype = eth[:6], eth[6:12], eth[12:14]
+         payload = LLC_SNAP + etype + eth[14:]
+         if self.active_role == "sta":
+@@ -263,7 +279,36 @@ class WifiPeer:
+         if self.net is not None:
+             self.net.device_reset(now)
+ 
++    def set_joining(self, on):
++        """As a station, join the network it hears (on) or leave it - with a
++        deauthentication, reason 3, as a computer leaving does - and only hear
++        it from then on (off)."""
++        if bool(on) == self.joining:
++            return
++        self.joining = bool(on)
++        if not on and self.bss is not None and self.sta_state in ("ASSOC", "RUN"):
++            self._send(self._mgmt(MGMT_DEAUTH, self.bss["bssid"], self.mac, self.bss["bssid"], struct.pack("<H", 3)))
++            self.log("[WIFI] left '%s'" % self.bss["ssid"])
++            self.sta_state = "AUTH"
++            self.aid = 0
++            if self.net is not None:
++                self.net.device_reset(self.now_us())
++
++    def set_on_air(self, on):
++        """Switch the peer off the air (on=False) or back on. Off, it forgets
++        every link it had - a station has to join again once it is back, as
++        after an access point's restart - but keeps its role and network."""
++        if bool(on) == self.on_air:
++            return
++        self.on_air = bool(on)
++        self.log("[WIFI] %s %s the air" % (self.ssid or mac2str(self.mac), "back on" if on else "off"))
++        role = self.active_role
++        self.device_reset()
++        self.active_role = role
++
+     def on_device_tx(self, frame, info=None):
++        if not self.on_air:
++            return
+         self.stats["rx"] += 1
+         if self.pcap:
+             self.pcap.write(frame, self.now_us())
+@@ -312,7 +357,10 @@ class WifiPeer:
+         if subtype in (MGMT_BEACON, MGMT_PROBE_RESP):
+             self._pick_role("sta", "it sends %s" % ("beacons" if subtype == MGMT_BEACON else "probe responses"))
+             if self.active_role == "sta":
+-                self._sta_learn_bss(sa, bssid, body, subtype)
++                if self.bss is not None and bssid == self.bss["bssid"]:
++                    self.bss["seen_us"] = self.now_us()
++                else:
++                    self._sta_learn_bss(sa, bssid, body, subtype)
+             return
+         if subtype == MGMT_PROBE_REQ:
+             self._pick_role("ap", "it probes for networks")
+@@ -345,7 +393,8 @@ class WifiPeer:
+             return
+         if self.bss is None:
+             self.bss = {"bssid": bssid, "ssid": ssid, "channel": ch[0] if ch else self.channel,
+-                        "caps": caps, "privacy": bool(caps & 0x10), "rsn": rsn, "bint": bint}
++                        "caps": caps, "privacy": bool(caps & 0x10), "rsn": rsn, "bint": bint,
++                        "seen_us": self.now_us()}
+             self.log("[WIFI] found BSS '%s' %s ch %d%s" % (ssid, mac2str(bssid), self.bss["channel"],
+                                                            " (privacy)" if self.bss["privacy"] else " (open)"))
+             if self.bss["privacy"]:
+@@ -355,7 +404,9 @@ class WifiPeer:
+                 self.sta_next_us = self.now_us() + 50_000
+ 
+     def _sta_mgmt(self, subtype, da, sa, bssid, body):
+-        if self.bss is None or da != self.mac:
++        # Only what the network joined sends this station: the device's frames
++        # to another peer on the air (an access point it joins) are not ours.
++        if self.bss is None or da != self.mac or bssid != self.bss["bssid"]:
+             return
+         if subtype == MGMT_AUTH and len(body) >= 6:
+             alg, seq, status = struct.unpack("<HHH", body[:6])
+@@ -403,12 +454,19 @@ class WifiPeer:
+         self._send(self._mgmt(MGMT_PROBE_REQ, BCAST, self.mac, BCAST, body))
+ 
+     def _sta_tick(self, now):
++        if self.bss is not None and now - self.bss.get("seen_us", now) > BEACON_LOSS_US:
++            self.log("[WIFI] lost BSS '%s': no beacon for %d s" % (self.bss["ssid"], BEACON_LOSS_US // 1_000_000))
++            self.bss = None
++            self.sta_state = "SCAN"
++            self.aid = 0
++            if self.net is not None:
++                self.net.device_reset(now)
+         if self.bss is None:
+             if now >= self.sta_next_us:
+                 self._sta_probe()
+                 self.sta_next_us = now + 1_000_000
+             return
+-        if self.sta_state == "AUTH" and now >= self.sta_next_us:
++        if self.sta_state == "AUTH" and self.joining and now >= self.sta_next_us:
+             self._sta_auth()
+             self.sta_tries += 1
+             self.sta_next_us = now + 1_000_000
+@@ -596,9 +654,17 @@ class WifiPeer:
+                 return
+             sa, da = a2, a3
+             if a2 not in self.stations or self.stations[a2]["state"] != "ASSOC":
++                # Data from a station this access point does not know - one
++                # joined before it restarted, say: told so, so it joins again,
++                # as on a real network, rather than sending into nothing.
++                now = self.now_us()
++                if a1 == self.ap_bssid and now - self._deauthed.get(a2, -DEAUTH_EVERY_US) >= DEAUTH_EVERY_US:
++                    self._deauthed[a2] = now
++                    self.log("[WIFI] data from %s, not associated: deauthenticated (reason 7)" % mac2str(a2))
++                    self._send(self._mgmt(MGMT_DEAUTH, a2, self.ap_bssid, self.ap_bssid, struct.pack("<H", 7)))
+                 return
+         elif self.active_role == "sta":
+-            if not from_ds:
++            if not from_ds or self.bss is None or a2 != self.bss["bssid"]:
+                 return
+             da, sa = a1, a3
+             if da != self.mac and not (da[0] & 1):
+@@ -624,6 +690,10 @@ class WifiPeer:
+     # ------------------------------------------------------------------ tick
+     def tick(self, insns=None):
+         now = self.now_us()
++        if not self.on_air:
++            if self.net is not None:
++                self.net.tick(now)   # what the network sends is lost (send_eth)
++            return
+         self._release(now)
+         if self.active_role == "sta":
+             self._sta_tick(now)
+diff --git a/tests/wifi_peers.py b/tests/wifi_peers.py
+new file mode 100644
+index 0000000..719bc21
+--- /dev/null
++++ b/tests/wifi_peers.py
+@@ -0,0 +1,246 @@
++"""Several Wi-Fi peers on the air at once: the access point a device joins,
++and a station joining the device's own network, each taking only what is
++addressed to it."""
++
++import os
++import socket
++import struct
++import sys
++import time
++from pathlib import Path
++
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT))
++
++from src.emulator import BekenEmulator
++from src import tapnet, wifipeer
++from src.wifipeer import (BCAST, MGMT_DEAUTH, IE_RATES, IE_SSID, LLC_SNAP, MGMT_ASSOC_RESP, MGMT_AUTH, MGMT_BEACON,
++                          MGMT_PROBE_REQ, RATES_BG, fc_fields, ie, str2mac)
++
++DEVICE = str2mac("12:34:56:ab:cd:01")      # the device as a station
++DEVICE_AP = str2mac("12:34:56:ab:cd:02")   # the device's own network
++HOME, VISITOR = str2mac("02:00:00:00:00:01"), str2mac("02:00:00:00:00:02")
++
++
++def on_air():
++    """An emulator with the home network's access point and a station for the
++    device's own network, on a clock the test moves, each peer's frames to
++    the device kept."""
++    emu = BekenEmulator(b"\xff" * 0x20000, None, b"", only_uart=True, wifi=True)
++    emu.setup()
++    home = emu.attach_wifi_peer(role="ap", ssid="HomeNet", peer_mac=HOME)
++    visitor = emu.attach_wifi_peer(role="sta", peer_mac=VISITOR)
++    clock = [0]
++    sent = {home.mac: [], visitor.mac: []}
++    for peer in (home, visitor):
++        peer.now_us = lambda: clock[0]
++        peer.latency_us = 0
++        peer.inject = lambda f, decr=None, mine=sent[peer.mac]: mine.append(f)
++    return emu, home, visitor, clock, sent
++
++
++def beacon(ssid):
++    body = struct.pack("<QHH", 0, 100, 0x0421) + ie(IE_SSID, ssid) + ie(IE_RATES, RATES_BG)
++    return wifipeer.WifiPeer(DEVICE_AP, None, None)._mgmt(MGMT_BEACON, BCAST, DEVICE_AP, DEVICE_AP, body)
++
++
++def joined(emu, visitor, clock):
++    """The station joined to the device's own network."""
++    emu._wifi_tx(beacon(b"esphome-000001"))
++    clock[0] += 100_000
++    visitor.tick()
++    emu._wifi_tx(visitor._mgmt(MGMT_AUTH, VISITOR, DEVICE_AP, DEVICE_AP, struct.pack("<HHH", 0, 2, 0)))
++    emu._wifi_tx(visitor._mgmt(MGMT_ASSOC_RESP, VISITOR, DEVICE_AP, DEVICE_AP, struct.pack("<HHH", 0x0421, 0, 0xC001)))
++    assert visitor.sta_state == "RUN"
++
++
++def test_a_second_peer_needs_a_mac_of_its_own():
++    emu, *_ = on_air()
++    try:
++        emu.attach_wifi_peer(role="sta", peer_mac=VISITOR)
++    except ValueError as e:
++        assert "a MAC of its own" in str(e)
++    else:
++        raise AssertionError("two peers with one MAC were accepted")
++    emu.close_network()
++
++
++def test_each_peer_hears_the_device_and_takes_its_own():
++    emu, home, visitor, clock, sent = on_air()
++    assert emu.wifi_peer is home and emu.wifi_peers == [home, visitor]
++    # The device looks for the home network: the access point answers, the
++    # station does not.
++    emu._wifi_tx(home._mgmt(MGMT_PROBE_REQ, BCAST, DEVICE, BCAST, ie(IE_SSID, b"HomeNet") + ie(IE_RATES, RATES_BG)))
++    assert sent[home.mac] and not sent[visitor.mac]
++    # The device's own network: the station joins it; the access point is
++    # still the home network's.
++    joined(emu, visitor, clock)
++    assert home.active_role == "ap" and home.ssid == "HomeNet"
++    # Data on the device's own network reaches the station alone, and the
++    # device's data to the home network the access point alone.
++    from_own = visitor._data(BCAST, DEVICE_AP, DEVICE_AP, LLC_SNAP + b"\x08\x06" + bytes(28), to_ds=False)
++    got = []
++    visitor.net.input = got.append
++    home.net.input = lambda eth: got.append(("home", eth))
++    emu._wifi_tx(from_own)
++    assert got == [BCAST + DEVICE_AP + b"\x08\x06" + bytes(28)]
++    home.stations[DEVICE] = {"state": "ASSOC", "aid": 1}
++    emu._wifi_tx(home._data(BCAST, DEVICE, HOME, LLC_SNAP + b"\x08\x06" + bytes(28), to_ds=True))
++    assert got[1][0] == "home" and len(got) == 2
++    # A frame from another network's access point is not the station's.
++    stranger = str2mac("12:34:56:ab:cd:09")
++    emu._wifi_tx(visitor._data(BCAST, stranger, stranger, LLC_SNAP + b"\x08\x06" + bytes(28), to_ds=False))
++    assert len(got) == 2
++    emu.close_network()
++    assert emu.wifi_peers == [] and emu.wifi_peer is None
++
++
++def test_the_station_loses_a_network_that_stops_beaconing():
++    emu, home, visitor, clock, sent = on_air()
++    joined(emu, visitor, clock)
++    clock[0] += wifipeer.BEACON_LOSS_US // 2
++    emu._wifi_tx(beacon(b"esphome-000001"))
++    clock[0] += wifipeer.BEACON_LOSS_US // 2 + 1
++    visitor.tick()
++    assert visitor.sta_state == "RUN", "lost while it still beacons"
++    clock[0] += wifipeer.BEACON_LOSS_US + 1
++    visitor.tick()
++    assert visitor.bss is None and visitor.sta_state == "SCAN"
++    # Up again, the station joins it again.
++    joined(emu, visitor, clock)
++    emu.close_network()
++
++
++def test_an_access_point_off_the_air_is_silent_until_back():
++    emu, home, visitor, clock, sent = on_air()
++    home.stations[DEVICE] = {"state": "ASSOC", "aid": 1}
++    home.set_on_air(False)
++    assert not home.stations
++    sent[home.mac].clear()
++    clock[0] += 1_000_000
++    home.tick()
++    emu._wifi_tx(home._mgmt(MGMT_PROBE_REQ, BCAST, DEVICE, BCAST, ie(IE_SSID, b"HomeNet") + ie(IE_RATES, RATES_BG)))
++    home.send_eth(BCAST + HOME + b"\x08\x06" + bytes(28))
++    assert sent[home.mac] == [], "off the air, it beacons, answers or sends nothing"
++    home.set_on_air(True)
++    clock[0] += 1_000_000
++    home.tick()
++    assert [fc_fields(f)[1] for f in sent[home.mac]] == [MGMT_BEACON] and home.active_role == "ap"
++    emu.close_network()
++
++
++def test_an_access_point_off_the_air_carries_nothing_on_its_tap_device():
++    # A datagram socket pair stands in for the TAP device, as in tests/tapnet.py.
++    host, mine = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
++    host.setblocking(False)
++    real_open = tapnet.open_tap
++    tapnet.open_tap = lambda name: os.dup(mine.fileno())
++    emu = BekenEmulator(b"\xff" * 0x20000, None, b"", only_uart=True, wifi=True)
++    emu.setup()
++    try:
++        home = emu.attach_wifi_peer(role="ap", ssid="HomeNet", peer_mac=HOME, tap="tap0")
++        home.latency_us = 0
++        delivered = []
++        home.inject = lambda f, decr=None: delivered.append(f) if f[0] & 0x0C == 0x08 else None
++        ether = b"\x08\x00" + b"\x45" + bytes(40)
++        up = home._data(BCAST, DEVICE, HOME, LLC_SNAP + ether, to_ds=True)
++        down = DEVICE + bytes.fromhex("020000000099") + ether
++
++        def carried():
++            emu._wifi_tx(up)
++            host.send(down)
++            for _ in range(20):
++                home.tick()
++                time.sleep(0.01)
++            try:
++                to_host = host.recv(65536)
++            except BlockingIOError:
++                to_host = None
++            got = list(delivered)
++            delivered.clear()
++            return to_host, got
++
++        home.stations[DEVICE] = {"state": "ASSOC", "aid": 1}
++        to_host, to_device = carried()
++        assert to_host == BCAST + DEVICE + ether and len(to_device) == 1, "on: both ways"
++        home.set_on_air(False)
++        assert carried() == (None, []), "off: neither way"
++        home.set_on_air(True)
++        assert not home.stations, "back on, the device has to join again"
++        emu._wifi_tx(home._mgmt(MGMT_AUTH, HOME, DEVICE, HOME, struct.pack("<HHH", 0, 1, 0)))
++        emu._wifi_tx(home._mgmt(wifipeer.MGMT_ASSOC_REQ, HOME, DEVICE, HOME,
++                                struct.pack("<HH", 0x0421, 10) + ie(IE_SSID, b"HomeNet")))
++        assert home.stations[DEVICE]["state"] == "ASSOC"
++        to_host, to_device = carried()
++        assert to_host == BCAST + DEVICE + ether and len(to_device) == 1, "joined again: both ways"
++    finally:
++        tapnet.open_tap = real_open
++        emu.close_network()
++        host.close()
++        mine.close()
++
++
++def test_an_access_point_back_on_the_air_tells_a_station_it_forgot():
++    # As a real one after a restart: data from a station it no longer knows is
++    # answered with deauthentication, reason 7, so the station joins again.
++    emu, home, visitor, clock, sent = on_air()
++    home.stations[DEVICE] = {"state": "ASSOC", "aid": 1}
++    home.set_on_air(False)
++    home.set_on_air(True)
++    sent[home.mac].clear()
++    data = home._data(BCAST, DEVICE, HOME, LLC_SNAP + b"\x08\x06" + bytes(28), to_ds=True)
++    emu._wifi_tx(data)
++    emu._wifi_tx(data)
++    deauths = [f for f in sent[home.mac] if fc_fields(f)[1] == wifipeer.MGMT_DEAUTH]
++    assert len(deauths) == 1 and deauths[0][4:10] == DEVICE and deauths[0][24:26] == b"\x07\x00", deauths
++    clock[0] += wifipeer.DEAUTH_EVERY_US
++    emu._wifi_tx(data)
++    assert len([f for f in sent[home.mac] if fc_fields(f)[1] == wifipeer.MGMT_DEAUTH]) == 2, "told again a second on"
++    # Data for another access point is not this one's to answer.
++    sent[home.mac].clear()
++    clock[0] += wifipeer.DEAUTH_EVERY_US
++    emu._wifi_tx(home._data(BCAST, DEVICE, str2mac("02:00:00:00:00:07"), LLC_SNAP + b"\x08\x06" + bytes(28), to_ds=True))
++    assert not sent[home.mac]
++    emu.close_network()
++
++
++def test_a_station_not_joining_hears_the_network_and_leaves_it_when_told():
++    emu, home, visitor, clock, sent = on_air()
++    visitor.set_joining(False)
++    for _ in range(3):
++        emu._wifi_tx(beacon(b"esphome-000001"))
++        clock[0] += 1_000_000
++        visitor.tick()
++    assert visitor.bss is not None and visitor.bss["ssid"] == "esphome-000001", "it hears the network"
++    assert MGMT_AUTH not in [fc_fields(f)[1] for f in sent[visitor.mac]], "and does not join it"
++    # Told to join, it does; told to leave, it says so and joins no more.
++    visitor.set_joining(True)
++    emu._wifi_tx(beacon(b"esphome-000001"))
++    clock[0] += 1_000_000
++    visitor.tick()
++    assert MGMT_AUTH in [fc_fields(f)[1] for f in sent[visitor.mac]]
++    joined(emu, visitor, clock)
++    sent[visitor.mac].clear()
++    visitor.set_joining(False)
++    assert [fc_fields(f)[1] for f in sent[visitor.mac]] == [MGMT_DEAUTH] and visitor.sta_state == "AUTH"
++    clock[0] += 2_000_000
++    emu._wifi_tx(beacon(b"esphome-000001"))
++    visitor.tick()
++    assert len(sent[visitor.mac]) == 1, "nothing sent once it has left"
++    emu.close_network()
++
++
++def main():
++    test_a_second_peer_needs_a_mac_of_its_own()
++    test_each_peer_hears_the_device_and_takes_its_own()
++    test_the_station_loses_a_network_that_stops_beaconing()
++    test_an_access_point_off_the_air_is_silent_until_back()
++    test_an_access_point_off_the_air_carries_nothing_on_its_tap_device()
++    test_an_access_point_back_on_the_air_tells_a_station_it_forgot()
++    test_a_station_not_joining_hears_the_network_and_leaves_it_when_told()
++    print("Wi-Fi peers self-tests passed.")
++
++
++if __name__ == "__main__":
++    main()

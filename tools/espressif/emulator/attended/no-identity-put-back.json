@@ -1,0 +1,59 @@
+{
+ "about": "Back to Sonoff from ESPHome with no backup, no Sonoff identity kept and none in the account (simulated): found only part way, so put back on ESPHome, not left part way",
+ "start": "stub-suite-tasmota-nobackup",
+ "prep": [
+  [
+   "convert",
+   "esphome"
+  ]
+ ],
+ "args": [
+  "--simulate-no-identity"
+ ],
+ "minutes": 40,
+ "answers": [
+  {
+   "when": "Which device is this run for",
+   "type": "1\r",
+   "optional": true
+  },
+  {
+   "when": "Press any key",
+   "type": "x"
+  },
+  {
+   "when": "Which firmware should the device have",
+   "type": "2\r"
+  },
+  {
+   "when": "This computer's password \\(for sudo\\)",
+   "type": "autoflash\r",
+   "times": 6,
+   "optional": true
+  },
+  {
+   "when": "Type .+ to go ahead",
+   "type": "PROCEED\r",
+   "times": 3
+  },
+  {
+   "when": "What next",
+   "type": "q\r"
+  },
+  {
+   "when": "\\(y/N[^)]*\\)|\\(Y/n[^)]*\\)",
+   "type": "y\r",
+   "times": 3,
+   "optional": true
+  },
+  {
+   "when": "\\[[Yy]/n\\]",
+   "type": "n\r",
+   "optional": true
+  }
+ ],
+ "expect": {
+  "exit": 0,
+  "result": "Put back on ESPHome"
+ }
+}

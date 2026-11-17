@@ -20,6 +20,7 @@ import collections
 import contextlib
 import datetime
 import ipaddress
+import json
 import os
 import platform
 import re
@@ -29,7 +30,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import IO, Callable
+from typing import IO, Callable, NamedTuple
 
 from . import __version__, interrupt
 
@@ -45,6 +46,29 @@ MAGENTA = "\x1b[35m"        # the same where only the basic colours are: rounded
 _lock = threading.RLock()
 # What the run log says as a Ctrl-C arrives; the fault suites look for it.
 CTRL_C_LOGGED = "Ctrl-C pressed"
+# What the run did, beside its log, one JSON object a line - {"at": seconds since
+# the epoch, "event": ..., and the event's own fields} - for a program (the fault
+# suites) to follow it by, not by its words, which change:
+#   run      a run began (version); ended: it ended
+#   began    a step began (step); done: it ended done; again: a later step found it
+#            had not taken, and it is done again (step, restarted: the device first)
+#   phase    a point within a step or readout that has no step of its own (phase:
+#            PHASES)
+#   resent   the upgrade command sent again, the device not having asked for its
+#            firmware (attempt; tools/ewelink/ota_push.py)
+#   join     the person was asked to join a device's network (network); joined:
+#            this computer has; home: asked to go back to their own Wi-Fi
+#   switch   the person was asked to switch the device off and on: now, while the
+#            run waits (now: true, asking_to_switch_now; key: true where it waits
+#            for a key once it is done), or once it has stopped (any other line it
+#            logs that SWITCH_OFF_AND_ON matches)
+EVENTS = "events.jsonl"
+PHASES = frozenset({"backup", "settings-reset", "template", "own-layout", "read", "read-done", "back",
+                    "back-done", "serving"})
+# Advice to switch the device off and on, however worded: each message saying it
+# matches, though wrapped over two lines (tests/autoflash/test_output.py holds
+# them to it).
+SWITCH_OFF_AND_ON = re.compile(r"switch (the device|it) off( and| for [^.]*?then) on", re.IGNORECASE)
 
 # Colour and hyperlink sequences, which take no room on screen.
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;[^\x1b]*\x1b\\")
@@ -63,8 +87,14 @@ class _State:
     stage_screen = ""                 # the same, number and name padded into columns
     name_width = 0                    # the longest stage name, so the columns line up
     most_stages = 0                   # the most the run may have, its numbers' column as wide
-    transient_rows: int | None = None  # rows on screen since transient_begin()
-    transient_blank = False           # a blank row was last on screen when it began
+    rows = 0                          # rows finished on screen, less those taken off again (mark)
+    status = "Underway"               # what the stage line says while it runs: "Retrying" for a step done again
+    underway_row: int | None = None   # where the stage's line was left on the screen, above what it showed
+    waited = False                    # the stage's clock drawn under its last note since: a new note stands apart
+    next_retrying = False             # the next stage begun is a step done again (retrying)
+    stage_mark: Mark | None = None    # the screen as the stage began (mark)
+    blocks: list[tuple[int, bool]] = []  # the open blocks (transient_begin), innermost last:
+                                      # `rows` as each began, and whether a blank row was last
     pending_prompt: str | None = None  # a question on screen, waiting for its answer
     pending_answer = ""
     stage_started = 0.0
@@ -87,6 +117,8 @@ class _State:
     cursor_hidden = False
     tool_tail: collections.deque = collections.deque(maxlen=40)  # the last helper's last lines
     stop_ticker = threading.Event()
+    switching_now: dict | None = None  # what is logged asks for it now: the event's fields (asking_to_switch_now)
+    last_logged = ""                  # the last line logged, whitespace collapsed (_note_switch_advice)
 
 
 _s = _State()
@@ -94,7 +126,7 @@ _s = _State()
 
 # ------------------------------------------------------------------ privacy
 # The log is meant to be shared when asking for help, so what identifies the
-# person, their network or their plug is replaced before it is written: the
+# person, their network or their device is replaced before it is written: the
 # values the run learns (private()), and anything shaped like one of them
 # (_PATTERNS) - a helper's output can carry them before the run knows them.
 # The screen is left alone: it is theirs.  Addresses on the home network stay,
@@ -108,8 +140,11 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
      r'\1"<redacted>"'),
     (re.compile(r"\bsign=[0-9a-fA-F]+"), "sign=<signature>"),
     (re.compile(r"[\w.%+-]+@[\w-]+(?:\.[\w-]+)+"), "<email>"),
+    # A phone number with its country code, as an eWeLink account made with
+    # one is signed in with (and eWeLink's answer repeats).
+    (re.compile(r"(?<![\w+])\+[1-9]\d{6,14}\b"), "<phone>"),
     (re.compile(r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b"), "<mac>"),
-    # An eWeLink device id; and a converted plug's name, which ends with the
+    # An eWeLink device id; and a converted device's name, which ends with the
     # MAC's (tasmota-abcdef, esphome-abcdef, openbeken-abcdef, ESPHome's
     # friendly name as its page shows it: esphome abcdef), and Tasmota's
     # default one; and ESPHome's friendly name as earlier builds gave it
@@ -157,15 +192,29 @@ def _public_ip(match: re.Match[str]) -> str:
 
 
 def start(log_path: Path | None, *, verbose: bool) -> None:
-    """Begin a run: open its log, and condense the terminal unless verbose."""
+    """Begin a run: open its log, and condense the terminal unless verbose.
+
+    Nothing of an earlier run in the same process carries over: a question
+    it left waiting (stopped at it), or its ticker, if it never finished.
+    Either would draw on this run's screen as if it were that one's - a
+    rewind erasing rows above it for a question long gone (seen in the
+    tests, a stage line erased), the spinner drawn on a screen that is no
+    terminal."""
+    _stop_ticker()
     with _lock:
+        _s.pending_prompt, _s.pending_answer = None, ""
+        _s.live, _s.live_is_stage, _s.notice_rows, _s.working = 0, False, 0, None
         if log_path is not None:
             log_path.parent.mkdir(parents=True, exist_ok=True)
             _s.log = log_path.open("a", encoding="utf-8")
             _s.log_path = log_path
+            _s.last_logged = ""
             _write_log(f"=== run started, tool version {__version__}{' (verbose)' if verbose else ''} ===")
+            event("run", version=__version__)
         _s.concise = not verbose
         _s.paused = False
+        _s.rows, _s.blocks, _s.stage_mark = 0, [], None
+        _s.status, _s.next_retrying = "Underway", False
         _s.name_width = _s.most_stages = 0   # the run's own route sets them (set_stage_width)
         _s.run_waited = 0.0
         _s.waiting_since = None   # a question left unanswered is not this run's wait
@@ -186,23 +235,36 @@ def finish() -> None:
     interrupt.shown_by(None)
     interrupt.logged_by(None)
     _s.draws_notice = False
-    _s.stop_ticker.set()
-    if _s.ticker is not None:
-        _s.ticker.join(2.0)
-        _s.ticker = None
+    _stop_ticker()
+    # A run ended with a stage still under way - stopped by a signal no
+    # handler ends it for, as SIGTERM's exit is - shows it stopped, its
+    # question and notes taken off, as one stopped by Ctrl-C does.
+    stage_end("stopped")
     with _lock:
         _break()
         _show_keys()
         if _s.log is not None:
             _write_log("=== run ended ===")
+            event("ended")
             _s.log.close()
         _s.log = _s.log_path = None
         _s.concise = False
-        _s.stage = None
-        _s.transient_rows = None
+        _s.stage = _s.underway_row = None
+        _s.waited = False
+        _s.blocks = []
+        _s.next_retrying = False
         _s.name_width = 0
         _s.after_stage = False
         _s.after_blank = False
+
+
+def _stop_ticker() -> None:
+    """The stage clock's thread ended, if one runs.  Not under the lock: a
+    tick waits for it, and would hold the join up."""
+    _s.stop_ticker.set()
+    if _s.ticker is not None:
+        _s.ticker.join(2.0)
+        _s.ticker = None
 
 
 def move_log(move: Callable[[], Path]) -> None:
@@ -221,6 +283,48 @@ def move_log(move: Callable[[], Path]) -> None:
 
 def log_path() -> Path | None:
     return _s.log_path
+
+
+def event(name: str, **fields: object) -> None:
+    """One of EVENTS's events, beside the run's log; nothing outside a run."""
+    with _lock:
+        path = events_path()
+        if path is not None:
+            write_event(path, name, **fields)
+
+
+def events_path() -> Path | None:
+    """The run's events file (EVENTS): for a helper it runs to add its own."""
+    return _s.log_path.parent / EVENTS if _s.log_path is not None else None
+
+
+def write_event(path: Path, name: str, **fields: object) -> None:
+    """One event (EVENTS) appended to the events file `path`: a whole line in one
+    write, so a helper's and the run's never split each other."""
+    line = json.dumps({"at": round(time.time(), 3), "event": name, **fields}) + "\n"
+    try:
+        with path.open("a", encoding="utf-8") as events:
+            events.write(line)
+    except OSError:
+        pass  # the run goes on without it, as without a log line
+
+
+def events(run_dir: Path) -> list[dict]:
+    """The events (EVENTS) of the runs whose log is in `run_dir`, oldest first:
+    none from a release before they were written, or a line cut off."""
+    try:
+        lines = (run_dir / EVENTS).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    found = []
+    for line in lines:
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(item, dict) and isinstance(item.get("event"), str):
+            found.append(item)
+    return found
 
 
 def concise() -> bool:
@@ -280,10 +384,12 @@ def hyperlink(url: str, title: str | None = None, width: int = 0) -> str:
     terminal that does not take the sequence still has it to pick out or
     copy.  Only the URL is the link: the title stays outside it, coloured
     wherever colour is, as some terminals repaint link text in their own
-    colour.  `width`: the title padded to it, so the URLs of a list line up.
+    colour; a URL with no title is coloured itself, so it looks a link as the
+    rest do.  `width`: the title padded to it, so the URLs of a list line up.
     """
     link = f"\x1b]8;;{url}\x1b\\{url}\x1b]8;;\x1b\\" if links_ok() else url
-    return f"{styled(title + ':', BOLD, _purple())}{' ' * (width - len(title))} {link}" if title else link
+    return (f"{styled(title + ':', BOLD, _purple())}{' ' * (width - len(title))} {link}" if title
+            else styled(link, BOLD, _purple()))
 
 
 def _purple() -> str:
@@ -359,24 +465,47 @@ def log_only(text: str) -> None:
         _write_log(text)
 
 
+@contextlib.contextmanager
+def asking_to_switch_now(*, key: bool = False):
+    """What is said within asks the person to switch the device off and on while
+    the run waits on - for a key once it is done, with `key`: its "switch"
+    event says "now" (and "key")."""
+    with _lock:
+        _s.switching_now = {"now": True, **({"key": True} if key else {})}
+        try:
+            yield
+        finally:
+            _s.switching_now = None
+
+
 def before_input(prompt: str = "") -> None:
     """Called just before reading the keyboard: the question must start on its own line."""
     with _lock:
         _break()
+        _settle_stage_line()
         _show_keys()
         _gap("?")
         # A question stands apart from the options or text above it.
         if not _s.after_blank:
             print("", flush=True)
             _s.after_blank = True
-            if _s.transient_rows is not None:
-                _s.transient_rows += 1
+            _counted(1)
         _s.paused = True
         if _s.waiting_since is None:
             _s.waiting_since = time.monotonic()
         _s.pending_prompt, _s.pending_answer = prompt, ""
         if prompt:
             _write_log(f"? {prompt.strip()}")
+
+
+def question_row(text: str, tail: str = "") -> str:
+    """The row question() would end on for `text`, for redrawing it in place
+    (a countdown's), with nothing else done: question() itself readies the
+    terminal for an answer, which would undo a single-key read's mode."""
+    with _lock:
+        body = text + tail
+        rows = _fit(body.rstrip(" ")).split("\n")
+        return rows[-1] + body[len(body.rstrip(" ")):]
 
 
 def question(text: str, tail: str = "", hint: str = "") -> str:
@@ -399,9 +528,9 @@ def question(text: str, tail: str = "", hint: str = "") -> str:
 def after_input() -> None:
     """The keyboard has been read: the stage line may be drawn again."""
     with _lock:
-        if _s.transient_rows is not None and _s.pending_prompt is not None:
+        if _s.pending_prompt is not None:
             # The question and the answer echoed after it, then Enter.
-            _s.transient_rows += _rows(_s.pending_prompt + _s.pending_answer)
+            _counted(_rows(_s.pending_prompt + _s.pending_answer))
         _s.pending_prompt, _s.pending_answer = None, ""
         _s.after_blank = False  # the answer's line
         _s.paused = False
@@ -438,45 +567,64 @@ def transient_begin(*, before_start: bool = False) -> None:
 
     `before_start`: a question asked before start(), which has no log yet and
     does not know whether the run will be verbose.
+
+    A block begun inside another is taken off on its own, and the outer
+    one, with whatever is left of it, when that ends.
     """
     with _lock:
-        if not ((_s.concise or before_start) and sys.stdout.isatty() and colour_ok()):
+        if not _drawn_over(before_start=before_start):
             return
-        _s.transient_rows = 0
+        began = _s.rows
         _break()  # the stage line, if drawn, is taken away and drawn again too
-        _s.transient_blank = _s.after_blank
+        _s.blocks.append((began, _s.after_blank))
+
+
+def transient_keep() -> None:
+    """Close the innermost block, leaving it on the screen: what it showed is
+    now why the stage stopped (until_done)."""
+    with _lock:
+        if _s.blocks:
+            _s.blocks.pop()
+
+
+@contextlib.contextmanager
+def until_done():
+    """A block - instructions, and what is said while they are followed - shown
+    while something is waited for, and taken off the screen once it is done:
+    joining a network, say.  Left on the screen if the wait stops the stage
+    instead, as it then says why."""
+    transient_begin()
+    try:
+        yield
+    except BaseException:
+        transient_keep()
+        raise
+    transient_end()
 
 
 def transient_end() -> None:
-    """Take the block since transient_begin() off the screen."""
+    """Take the innermost block since transient_begin() off the screen."""
     with _lock:
-        rows, _s.transient_rows = _s.transient_rows, None
-        if rows is None:
+        if not _s.blocks:
             return
-        if rows >= terminal_size((100, 24)).lines:
-            # Taller than the window (VS Code's terminal panel, say): the cursor
-            # cannot go up past the window's top, so erasing would leave the
-            # block's start and the stage line above it stranded. Keep it whole.
-            if _s.stage is not None and not _s.paused:
-                _draw_stage()
-            return
-        if _s.live:
-            sys.stdout.write("\r\x1b[K")  # a stage line redrawn after the answer
-            _s.live = 0
-        # Up a row and erase it, row by row.  Not one erase-to-end from the top:
-        # when the block starts on the screen's first row that clears the whole
-        # screen, which tmux (scroll-on-clear) and some terminals first copy
-        # into the scrollback - the block would stay there.
-        sys.stdout.write("\x1b[1F\x1b[2K" * rows)
-        sys.stdout.flush()
-        _s.after_blank = _s.transient_blank  # the screen as the block found it
+        began, blank = _s.blocks.pop()
+        # Taller than the window (VS Code's terminal panel, say), it stays whole.
+        if _erase(_s.rows - began):
+            _s.after_blank = blank  # the screen as the block found it
         if _s.stage is not None and not _s.paused:
             _draw_stage()
 
 
-# Rows a window needs for the run's questions to be taken off the screen once
-# answered: a block taller than the window has to stay (transient_end).
-MIN_ROWS = 20
+# Rows a window needs for the run's questions, and what a stage shows on the
+# way, to be taken off the screen once done with: more than the window holds
+# has to stay (transient_end, stage_end), and the stages with most to say
+# show up to about 20.  A shorter one is waited for to grow: 31, so that a
+# window opened at 30 rows (Windows Terminal's) is, as one at 24 (macOS's) is.
+MIN_ROWS = 31
+# Rows for the report at the end, up to about 38, to be seen whole as well: a
+# shorter window is only told so.  Most screens have them with the window
+# maximised; a window opened afresh is often 24 or 30.
+GOOD_ROWS = 40
 
 
 def start_at_top() -> None:
@@ -499,44 +647,102 @@ def start_at_top() -> None:
         _s.after_blank = True
 
 
+def window_rows(*, before_start: bool = False) -> int | None:
+    """The window's height in rows, where things are taken off the screen;
+    None where nothing is.  `before_start`: as for transient_begin()."""
+    return terminal_size((100, 24)).lines if _drawn_over(before_start=before_start) else None
+
+
 def short_window(*, before_start: bool = False) -> int | None:
     """The window's height in rows, when answered questions are being taken
     off the screen but the window is too short for that to always work.
     `before_start`: as for transient_begin()."""
-    if not ((_s.concise or before_start) and sys.stdout.isatty() and colour_ok()):
+    if not _drawn_over(before_start=before_start):
         return None
     rows = terminal_size((100, 24)).lines
     return rows if rows < MIN_ROWS else None
 
 
-def transient_mark() -> tuple[int, bool, bool] | None:
-    """Where the open block has got to, for transient_rewind() to go back to.
-    None when nothing is being taken off the screen."""
+class Mark(NamedTuple):
+    """Where the screen had got to (mark): the rows finished on it, whether
+    the stage's line or a blank row was last, and how many blocks were open."""
+    rows: int
+    after_stage: bool
+    after_blank: bool
+    blocks: int
+
+
+def mark() -> Mark | None:
+    """Where the screen has got to, for rewind() to go back to: before a
+    question that may be asked again, or a try of a step that may be tried
+    again.  None where nothing can be taken off the screen - outside a block
+    (transient_begin), only a concise run's own screen can be."""
     with _lock:
-        if _s.transient_rows is None:
+        if not (_s.blocks or _drawn_over()):
             return None
         _break()
-        return _s.transient_rows, _s.after_stage, _s.after_blank
+        return Mark(_s.rows, _s.after_stage, _s.after_blank, len(_s.blocks))
 
 
-def transient_rewind(mark: tuple[int, bool, bool] | None) -> bool:
-    """Take the rows since transient_mark() off the screen and keep the block
-    open, so a question asked again does not pile up under its earlier tries
-    - a block taller than the window could no longer be taken away at all.
-    True when they were taken off; the log keeps them regardless."""
+def rewind(to: Mark | None) -> bool:
+    """Take everything shown since mark() off the screen - a wrong answer and
+    its question, or a try that failed - so that what comes again does not
+    pile up under it until it is taller than the window and cannot be taken
+    away at all.  A block begun since goes with it; one open at the mark
+    stays, though it began on the same row (a question asked as its block
+    began: seen, a yes/no question answered wrongly first was left on the
+    screen once answered).  True when it was; the log keeps it regardless."""
     with _lock:
-        if mark is None or _s.transient_rows is None:
+        if to is None:
             return False
-        rows = _s.transient_rows - mark[0]
-        if rows >= terminal_size((100, 24)).lines:
-            return False  # the cursor cannot reach their first row
-        if _s.live:
-            sys.stdout.write("\r\x1b[K")  # a stage line drawn since
-            _s.live = 0
-        sys.stdout.write("\x1b[1F\x1b[2K" * rows)
-        sys.stdout.flush()
-        _s.transient_rows, _s.after_stage, _s.after_blank = mark
+        if not _erase(_s.rows - to.rows):
+            return False
+        _s.blocks = _s.blocks[:to.blocks]
+        _s.after_stage, _s.after_blank = to.after_stage, to.after_blank
         return True
+
+
+def _drawn_over(*, before_start: bool = False) -> bool:
+    """Whether rows can be taken off the screen again: on a terminal that can
+    move the cursor back up, showing a concise run (or, `before_start`, a
+    question before one)."""
+    return (_s.concise or before_start) and sys.stdout.isatty() and colour_ok()
+
+
+def _erase(rows: int) -> bool:
+    """Take the last `rows` finished rows off the screen, the cursor left at
+    the start of the first.  Not when there are as many as the window has: the
+    cursor cannot go up past its top, so erasing would leave their start, and
+    the stage line above it, stranded."""
+    if rows >= terminal_size((100, 24)).lines:
+        return False
+    if _s.pending_prompt is not None:
+        # A question still waiting for its answer - the run stopped at it, by
+        # a signal that never let it be answered: its rows, the one the cursor
+        # is on and any it took above, go first, or the rows above it would be
+        # erased from under it and it left below their blank rows.
+        above = _rows(_s.pending_prompt + _s.pending_answer) - 1
+        sys.stdout.write("\r\x1b[2K" + "\x1b[1F\x1b[2K" * above)
+        _s.pending_prompt, _s.pending_answer = None, ""
+    if _s.live:
+        sys.stdout.write(_clear_notice() + "\r\x1b[K")  # a stage line drawn since, and its notice
+        _s.live = 0
+    elif _s.notice_rows:
+        sys.stdout.write(_clear_notice())   # a Ctrl-C notice under the notes
+    # Up a row and erase it, row by row.  Not one erase-to-end from the top:
+    # when the rows start on the screen's first that clears the whole screen,
+    # which tmux (scroll-on-clear) and some terminals first copy into the
+    # scrollback - the rows would stay there.
+    sys.stdout.write("\x1b[1F\x1b[2K" * rows)
+    sys.stdout.flush()
+    _s.rows -= rows
+    if _s.underway_row is not None and _s.rows <= _s.underway_row:
+        # The stage's line left above what it showed is gone with it: drawn
+        # live again (_draw_stage), with nothing under it for a note to stand
+        # apart from - else what comes after the stage's outcome gets two blank
+        # rows, its own and _gap's.
+        _s.underway_row, _s.waited = None, False
+    return True
 
 
 # ------------------------------------------------------------------- stages
@@ -549,6 +755,7 @@ def hold():
     row the block does not count."""
     with _lock:
         before, _s.held = _s.held, True
+        _settle_stage_line()
     try:
         yield
     finally:
@@ -558,12 +765,16 @@ def hold():
 
 @contextlib.contextmanager
 def working(text: str):
-    """A short wait outside any stage - the report being put together after
-    the last one - shown as `text` and the stages' spinner on a row of its
-    own, below a blank one, and taken away once it is over.  On a terminal
-    in concise mode only: elsewhere what the wait does is shown as it is."""
+    """A wait outside any stage - the report being put together after the
+    last one, a readout's - shown as `text` and the stages' spinner on a row
+    of its own, below a blank one, and taken away once it is over.  On a
+    terminal in concise mode only: elsewhere, or within a stage, whose own
+    spinner turns, `text` is said as a line, as any other."""
     with _lock:
         shown = _s.concise and _s.ticker is not None and _s.stage is None
+    if not shown:
+        say(text)
+    with _lock:
         if shown:
             _break()
             if not _s.after_blank:
@@ -588,6 +799,16 @@ def set_stage_width(width: int, most: int = 0) -> None:
     _s.name_width, _s.most_stages = width, most
 
 
+def stage_width() -> int:
+    """The stage names' column, as set_stage_width() left it."""
+    return _s.name_width
+
+
+def most_stages() -> int:
+    """The most stages the run may have, as set_stage_width() left it."""
+    return _s.most_stages
+
+
 def stage_begin(number: int, name: str) -> None:
     """No total: a run from Sonoff's firmware learns its route only part way
     through, and every stage line says the same either way."""
@@ -596,6 +817,9 @@ def stage_begin(number: int, name: str) -> None:
         if _s.stage == label:
             return  # already begun: keep its line and its clock
         _break()
+        _s.stage_mark = Mark(_s.rows, _s.after_stage, _s.after_blank, len(_s.blocks)) if _drawn_over() else None
+        _s.status, _s.next_retrying = ("Retrying" if _s.next_retrying else "Underway"), False
+        _s.underway_row, _s.waited = None, False
         digits = len(str(max(_s.most_stages, number)))
         _s.stage = label
         _s.stage_prefix = f"Stage {number:>{digits}}"
@@ -607,21 +831,44 @@ def stage_begin(number: int, name: str) -> None:
             if sys.stdout.isatty():
                 _draw_stage()
             else:
-                _print(f"{_s.stage_screen} - Underway", stage=True)
+                _print(f"{_s.stage_screen} - {_s.status}", stage=True)
         else:
             _print("")
             _print(f"== {_s.stage}", stage=True)
 
 
+# Outcomes of a stage that passed: all it showed is taken off the screen.
+PASSED = ("complete", "already done", "skipped")
+
+
+def retrying() -> None:
+    """The next stage begun is a step done again - tried again after it
+    failed, or gone back to (GoBack): its line says "Retrying" while it runs,
+    not "Underway", so the person sees why it is there again."""
+    with _lock:
+        _s.next_retrying = True
+
+
 def stage_end(outcome: str) -> None:
     """outcome: "complete", "stopped", "already done" or "skipped" (a stage
-    the run does not need, passed over).  A block - a note and its question
-    - still open is taken off first: one cut short by Ctrl-C or q would
-    otherwise stay, the stage's underway line with it above its last."""
+    the run does not need, passed over).  Any block - a note and its
+    question - still open is taken off first: one cut short by Ctrl-C or q
+    would otherwise stay, the stage's underway line with it above its last.
+
+    A stage that passed leaves just its line: what it showed while under
+    way - notes, instructions, a part that went again - is taken off the
+    screen; the log, and the report, keep what matters of it.  One that
+    stopped leaves everything: that is why it stopped."""
     with _lock:
         if _s.stage is None:
             return
-        transient_end()
+        while _s.blocks:
+            transient_end()
+        _settle_stage_line()   # a stage that stopped leaves it, above why
+        if outcome in PASSED and _s.stage_mark is not None and _s.rows > _s.stage_mark.rows:
+            # Taller than the window, it has to stay.
+            if _erase(_s.rows - _s.stage_mark.rows):
+                _s.after_stage, _s.after_blank = _s.stage_mark.after_stage, _s.stage_mark.after_blank
         elapsed = _elapsed(_stage_seconds())
         timing = f" ({elapsed})" if outcome == "complete" else ""
         line = f"{_s.stage} - {outcome}{timing}"   # its time in the log and the report, not on screen
@@ -640,12 +887,13 @@ def stage_end(outcome: str) -> None:
                 pad = " " * max(0, _s.live - len(ANSI_RE.sub("", first)))
                 sys.stdout.write(_clear_notice() + "\r" + first + pad + ("\n" + rest if rest else "") + "\n")
                 sys.stdout.flush()
+                _counted(_rows(first + ("\n" + rest if rest else "")))
                 _s.live = 0
                 _s.after_stage = True
                 _s.after_blank = False
             else:
                 _print(text, stage=True)
-        _s.stage = None
+        _s.stage, _s.stage_mark, _s.underway_row = None, None, None
 
 
 def progress(text: str = "") -> None:
@@ -825,7 +1073,7 @@ def _notice_drawn() -> bool:
     """Whether the ticker draws a Ctrl-C notice now: read from the signal
     handler, so without the lock the interrupted code may hold."""
     return (_s.concise and _s.ticker is not None and _s.stage is not None and not _s.paused
-            and not _s.held and _s.transient_rows is None)
+            and not _s.held and not _s.blocks)
 
 
 def _notice_rows() -> list[str]:
@@ -841,11 +1089,25 @@ def _notice_rows() -> list[str]:
 
 def _notice_text() -> str | None:
     """What a first Ctrl-C writes out where the ticker does not draw it: an
-    unfinished line ended first.  Called from the signal handler, so it
-    takes no lock."""
+    unfinished line ended first.  Its rows are counted as any others, so a
+    block it lands in takes it off with the rest (seen: written uncounted
+    before the first stage, it stayed for the whole run).  Called from the
+    signal handler, so it takes no lock: it only adds to the count."""
     if _notice_drawn():
         return None
-    return ("\n" if _s.live else "") + "".join(f"{row}\n" for row in _notice_rows())
+    rows = _notice_rows()
+    if not rows:
+        return None
+    start = ""
+    if _s.live:
+        # As _break(): a stage line stays, a wait's goes and is drawn again
+        # under the notice.
+        start = "\n" if _s.live_is_stage else "\r" + " " * _s.live + "\r"
+        _counted(1 if _s.live_is_stage else 0)
+        _s.live = 0
+    _counted(len(rows))
+    _s.after_blank = False
+    return start + "".join(f"{row}\n" for row in rows)
 
 
 def _tick() -> None:
@@ -855,9 +1117,9 @@ def _tick() -> None:
     seconds) - the spinner's line would be a second stage line in the block."""
     with _lock:
         if (_s.concise and _s.stage is not None and not _s.paused and not _s.held
-                and _s.transient_rows is None):
+                and not _s.blocks):
             _draw_stage()
-        elif _s.working and not _s.paused and not _s.held and _s.transient_rows is None:
+        elif _s.working and not _s.paused and not _s.held and not _s.blocks:
             _draw_working()
 
 
@@ -881,16 +1143,59 @@ def spinner_frames() -> str:
     return BRAILLE_FRAMES
 
 
+def _stage_line(spinner: str = "") -> tuple[str, str]:
+    """The stage's underway line, plain and as shown: with `spinner`, and a
+    space after it so the terminal's cursor sits clear of it."""
+    tail = f" {spinner} " if spinner else ""
+    line = f"{MARGIN}{_s.stage_screen} - {_s.status}{tail}"
+    shown = f"{MARGIN}{_s.stage_screen} - {styled(_s.status, BOLD)}{tail}"
+    if _clip(line) != line:
+        line = shown = _clip(line)
+    return line, shown
+
+
+def _rows_up_to_stage_line() -> int | None:
+    """How many rows up from the cursor the stage under way's line is, left
+    above what it shows (_break), when it can be redrawn there: nothing drawn at
+    the cursor, a terminal that moves the cursor, and the line still in the
+    window - with room for a Ctrl-C notice under the cursor, which may scroll
+    it - as the cursor cannot go up into the scrollback."""
+    if _s.stage is None or _s.underway_row is None or _s.live or not (sys.stdout.isatty() and colour_ok()):
+        return None
+    up = _s.rows - _s.underway_row
+    if up < 1 or up + len(interrupt.notice()) >= terminal_size((100, 24)).lines:
+        return None
+    return up
+
+
+def _settle_stage_line() -> None:
+    """The stage's line above what it shows, without its spinner: nothing
+    turns while a question waits, or once the stage is over."""
+    up = _rows_up_to_stage_line()
+    if up is not None:
+        sys.stdout.write(_clear_notice() + f"\x1b[{up}A\r{_stage_line()[1]}\x1b[K\x1b[{up}B\r")
+        sys.stdout.flush()
+
+
 def _draw_stage() -> None:
     frames = spinner_frames()
     spinner = frames[int(_stage_seconds() / SPIN_EVERY) % len(frames)]
-    # A space after the spinner: the terminal's cursor sits clear of it.
-    line = f"{MARGIN}{_s.stage_screen} - Underway {spinner} "
-    shown = f"{MARGIN}{_s.stage_screen} - {styled('Underway', BOLD)} {spinner} "
-    if _clip(line) != line:
-        line = shown = _clip(line)
+    line, shown = _stage_line(spinner)
     if _s.live and not _s.live_is_stage:
         _break()
+    up = _rows_up_to_stage_line()
+    if up is not None:
+        # One line a stage: the one left above what it shows turns, in place,
+        # the cursor back under the last note after.  A Ctrl-C notice goes
+        # under the notes, the cursor's empty row the gap above it.
+        rows = _notice_rows()[1:] if _s.draws_notice else []
+        notice = "".join(f"\n{row}\x1b[K" for row in rows) + (f"\x1b[{len(rows)}A\r" if rows else "")
+        clear = _clear_notice() if len(rows) < _s.notice_rows else ""
+        sys.stdout.write(clear + f"\x1b[{up}A\r{shown}\x1b[K\x1b[{up}B\r" + notice)
+        sys.stdout.flush()
+        _s.notice_rows = len(rows)
+        _s.waited = True   # time has passed: a note said next stands apart (_print)
+        return
     # Below it, a first Ctrl-C's notice while it lasts (interrupt.notice),
     # the cursor back at the end of the stage line after it.
     # Each row written over the last draw's, not erased first, so it does
@@ -973,17 +1278,23 @@ def _rows(text: str) -> int:
 
 def _break() -> None:
     """Finish an unfinished line so the next output starts on a fresh one."""
+    if not _s.live and _s.notice_rows:
+        sys.stdout.write(_clear_notice())   # a Ctrl-C notice under the notes (_draw_stage)
     if _s.live:
-        if _s.live_is_stage:
+        if _s.live_is_stage and _s.underway_row is not None and _s.rows > _s.underway_row:
+            # Left once above what the stage showed already, but out of the
+            # cursor's reach (_rows_up_to_stage_line), so its clock went on
+            # under the last note: taken off again, not left under each note,
+            # which would take two rows a note and say nothing new.
+            sys.stdout.write(_clear_notice() + "\r\x1b[K")
+            _s.waited = True
+        elif _s.live_is_stage:
             # The underway line stays, without its spinner: only the stage
             # under way now has one, on the line drawn for it last.
-            line = f"{MARGIN}{_s.stage_screen} - Underway"
-            shown = f"{MARGIN}{_s.stage_screen} - {styled('Underway', BOLD)}"
-            if _clip(line) != line:
-                line = shown = _clip(line)
+            _s.underway_row = _s.rows
+            line, shown = _stage_line()
             sys.stdout.write(_clear_notice() + "\r" + shown + " " * max(0, _s.live - len(line)) + "\n")
-            if _s.transient_rows is not None:
-                _s.transient_rows += 1
+            _counted(1)
             _s.after_stage = True
             _s.after_blank = False
         else:
@@ -994,6 +1305,13 @@ def _break() -> None:
 
 def _print(text: str, *, stage: bool = False) -> None:
     _break()
+    if _s.waited and not stage and ANSI_RE.sub("", text).strip() and not _s.after_blank:
+        # Said after a wait - what came next, not more of the note above: a
+        # blank row between them, as a section has above it.
+        print("", flush=True)
+        _s.after_blank = True
+        _counted(1)
+    _s.waited = False
     if _s.after_blank and not ANSI_RE.sub("", text).strip():
         # Never two blank rows in a row: a block taken off the screen leaves
         # the blank row above it, and what comes next may start with its own.
@@ -1005,10 +1323,14 @@ def _print(text: str, *, stage: bool = False) -> None:
     text = _fit(text)
     print(text, flush=True)
     _s.after_blank = not ANSI_RE.sub("", text).strip()
-    if _s.transient_rows is not None:
-        _s.transient_rows += _rows(text)
+    _counted(_rows(text))
     if stage:
         _s.after_stage = True
+
+
+def _counted(rows: int) -> None:
+    """`rows` more finished on the screen, for taking them off again."""
+    _s.rows += rows
 
 
 def _screen_width() -> int | None:
@@ -1091,8 +1413,7 @@ def _gap(text: str) -> None:
     if ANSI_RE.sub("", text).strip("\r\n\t "):
         print("", flush=True)
         _s.after_blank = True
-        if _s.transient_rows is not None:
-            _s.transient_rows += 1
+        _counted(1)
 
 
 def _log_ctrl_c() -> None:
@@ -1119,4 +1440,16 @@ def _write_log(text: str) -> None:
     stamp = datetime.datetime.now().strftime("%H:%M:%S")
     for line in scrub(str(text)).split("\n"):
         _s.log.write(f"[{stamp}] {line}\n")
+        _note_switch_advice(line)
     _s.log.flush()
+
+
+def _note_switch_advice(line: str) -> None:
+    """A "switch" event for advice to switch the device off and on in `line`, or
+    begun in the line before: a message wrapped by hand breaks it over two
+    (arrival.NOT_BACK_LINES)."""
+    line = " ".join(line.split())
+    before = _s.last_logged
+    _s.last_logged = line
+    if any(found.end() > len(before) for found in SWITCH_OFF_AND_ON.finditer(f"{before} {line}")):
+        event("switch", **(_s.switching_now or {}))

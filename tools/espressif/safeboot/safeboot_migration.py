@@ -16,8 +16,10 @@ from pathlib import Path
 from typing import Any, Iterable
 
 try:
+    from tools.espressif import chips
     from tools.espressif.analyze_vendor_ota import parse_esp_image
 except ModuleNotFoundError:
+    import chips  # type: ignore[no-redef]
     from analyze_vendor_ota import parse_esp_image
 
 
@@ -31,7 +33,10 @@ PARTITION_MAGIC = 0x50AA
 MD5_MAGIC = 0xEBEB
 
 SOURCE_TABLE_SHA256 = "f63f66bbf23b9e291c7eb5dcf24be820190dacf4bf52af515d9664526a4f4daf"
-TARGET_TABLE_SHA256 = "619e5a9b645198b25d04949997221f587776965dfd13cbceddf9862c53e655c1"
+# Tasmota's own table, in its factory image: devices converted before the
+# identity was kept have it (target_table).
+OFFICIAL_TABLE_SHA256 = "619e5a9b645198b25d04949997221f587776965dfd13cbceddf9862c53e655c1"
+TARGET_TABLE_SHA256 = "32993d6fc6af861fff9686c15f4b53144e20ae3493a123f36f96ef1f0e79e93f"
 
 SOURCE_PARTITIONS = (
     ("nvs", 0x01, 0x02, 0x009000, 0x010000, 0x0),
@@ -42,13 +47,23 @@ SOURCE_PARTITIONS = (
     ("ota_1", 0x00, 0x11, 0x210000, 0x1F0000, 0x0),
 )
 
-TARGET_PARTITIONS = (
+OFFICIAL_PARTITIONS = (
     ("nvs", 0x01, 0x02, 0x009000, 0x005000, 0x0),
     ("otadata", 0x01, 0x00, 0x00E000, 0x002000, 0x0),
     ("safeboot", 0x00, 0x00, 0x010000, 0x0D0000, 0x0),
     ("app0", 0x00, 0x10, 0x0E0000, 0x2D0000, 0x0),
     ("spiffs", 0x01, 0x82, 0x3B0000, 0x050000, 0x0),
 )
+# The table a conversion writes: Tasmota's, its filesystem one sector shorter,
+# and that sector at the top of the flash a data partition of its own, where
+# the device's Sonoff identity is kept (tools/espressif/sonoff_identity.py). Its
+# subtype is one of those ESP-IDF leaves for custom data; nothing Tasmota does
+# reads or writes it.
+IDENTITY_PARTITION = ("sonoff", 0x01, 0x40, 0x3FF000, 0x001000, 0x0)
+TARGET_PARTITIONS = (*OFFICIAL_PARTITIONS[:4], ("spiffs", 0x01, 0x82, 0x3B0000, 0x04F000, 0x0),
+                     IDENTITY_PARTITION)
+# Either is a Tasmota layout this tool converted to.
+TASMOTA_TABLES = (TARGET_TABLE_SHA256, OFFICIAL_TABLE_SHA256)
 
 CANONICAL_NVS_OFFSET = 0x9000
 CANONICAL_NVS_SIZE = 0x5000
@@ -63,7 +78,7 @@ SAFEBOOT_SIZE = 0xD0000
 APP0_OFFSET = 0xE0000
 APP0_SIZE = 0x2D0000
 SPIFFS_OFFSET = 0x3B0000
-SPIFFS_SIZE = 0x50000
+SPIFFS_SIZE = 0x4F000
 SAFEBOOT_STAGE_OFFSET = OLD_OTA0_OFFSET
 
 # The commit copies Safeboot into place over where Sonoff's layout keeps the
@@ -88,7 +103,7 @@ INTERIM_PARTITIONS = (
 )
 INTERIM_TABLE_SHA256 = "cfb1e1c46fa209a6c1eada92123a02847ab8e72f67c0044afbcb1c29ead4c936"
 
-# The official Tasmota release a converted plug ends on, as firmware.json pins
+# The official Tasmota release a converted device ends on, as firmware.json pins
 # it: tools/repo/update_firmware.py writes it, docs/updating-firmware.md says when.
 # The files come from the release's own page on GitHub, which keeps them as
 # they were released (tasmota/install, where they were taken from up to 15.6.0,
@@ -96,9 +111,10 @@ INTERIM_TABLE_SHA256 = "cfb1e1c46fa209a6c1eada92123a02847ab8e72f67c0044afbcb1c29
 FIRMWARE = json.loads(
     (Path(__file__).resolve().parents[3] / "artifacts" / "firmware.json").read_text(encoding="utf-8")
 )
-OFFICIAL_TASMOTA_VERSION = FIRMWARE["tasmota"]["version"]
-OFFICIAL_TASMOTA_TAG = FIRMWARE["tasmota"]["tag"]
-OFFICIAL_TASMOTA_COMMIT = FIRMWARE["tasmota"]["commit"]
+OFFICIAL_TASMOTA = FIRMWARE["espressif"]["esp32c3"]["tasmota"]
+OFFICIAL_TASMOTA_VERSION = OFFICIAL_TASMOTA["version"]
+OFFICIAL_TASMOTA_TAG = OFFICIAL_TASMOTA["tag"]
+OFFICIAL_TASMOTA_COMMIT = OFFICIAL_TASMOTA["commit"]
 
 
 def release_urls(release: dict[str, Any]) -> dict[str, str]:
@@ -107,7 +123,7 @@ def release_urls(release: dict[str, Any]) -> dict[str, str]:
     return {name: f"{base}/{file['name']}" for name, file in release["files"].items()}
 
 
-OFFICIAL_URLS = release_urls(FIRMWARE["tasmota"])
+OFFICIAL_URLS = release_urls(OFFICIAL_TASMOTA)
 # The Tasmota the interim firmware is made from, which need not follow the
 # official release: the recovery Safeboot is built from this source with this
 # project's patches, and the settings template D1 gives the Berry build below
@@ -131,7 +147,7 @@ PINNED_ARTIFACTS = {
     },
     **{
         name: {"size": file["size"], "sha256": file["sha256"]}
-        for name, file in FIRMWARE["tasmota"]["files"].items()
+        for name, file in OFFICIAL_TASMOTA["files"].items()
     },
 }
 
@@ -259,6 +275,18 @@ def require_exact_partitions(
         raise ValueError(f"partition entries differ\nactual={actual!r}\nexpected={wanted!r}")
 
 
+def require_tasmota_table(report: dict[str, Any]) -> None:
+    """A Tasmota table this tool converts to: the one with the identity's sector,
+    or Tasmota's own, which a run begun before that sector, or a device converted
+    by an earlier version, has. Either, with the reviewed bytes."""
+    for entries, sha256 in ((TARGET_PARTITIONS, TARGET_TABLE_SHA256), (OFFICIAL_PARTITIONS, OFFICIAL_TABLE_SHA256)):
+        if tuple(partition_tuple(entry) for entry in report["entries"]) == tuple(entries):
+            if report["sha256"] != sha256:
+                raise ValueError("target table differs from the reviewed official sector")
+            return
+    require_exact_partitions(report, TARGET_PARTITIONS)
+
+
 SOURCE_TABLE_FILE = Path(__file__).resolve().parents[3] / "artifacts" / "sonoff-s60-partition-table.bin"
 
 
@@ -282,10 +310,61 @@ def interim_table(source: bytes | None = None) -> bytes:
     return bytes(table)
 
 
-def official_release(release: dict[str, Any] | None = None) -> dict[str, str]:
+def target_table(official: bytes) -> bytes:
+    """The table a conversion writes (TARGET_PARTITIONS), from Tasmota's own as
+    its factory image has it: the filesystem's entry shortened, the identity's
+    added after it, the MD5 made again - and checked against the reviewed one."""
+    report = parse_partition_sector(official)
+    require_exact_partitions(report, OFFICIAL_PARTITIONS)
+    if report["sha256"] != OFFICIAL_TABLE_SHA256:
+        raise ValueError("that is not Tasmota's official partition table")
+    table = bytearray(official)
+    spiffs = (len(OFFICIAL_PARTITIONS) - 1) * PARTITION_ENTRY_SIZE
+    struct.pack_into("<I", table, spiffs + 8, TARGET_PARTITIONS[4][4])
+    label, kind, subtype, offset, size, flags = IDENTITY_PARTITION
+    entry = struct.pack("<HBBII16sI", PARTITION_MAGIC, kind, subtype, offset, size,
+                        label.encode("ascii"), flags)
+    md5_at = len(TARGET_PARTITIONS) * PARTITION_ENTRY_SIZE
+    table[md5_at - PARTITION_ENTRY_SIZE:md5_at] = entry
+    table[md5_at:md5_at + PARTITION_ENTRY_SIZE] = struct.pack("<H", MD5_MAGIC) + b"\xff" * 14 + bytes(16)
+    table[md5_at + 16:md5_at + 32] = hashlib.md5(table[:md5_at]).digest()
+    require_exact_partitions(parse_partition_sector(bytes(table)), TARGET_PARTITIONS)
+    if sha256_bytes(bytes(table)) != TARGET_TABLE_SHA256:
+        raise ValueError("the table with the identity's entry differs from the reviewed one")
+    return bytes(table)
+
+
+def manifest_chip(manifest: dict[str, Any]) -> chips.Chip:
+    """The chip a bundle is for. One built before there were two is an ESP32-C3's."""
+    return chips.of(manifest.get("chip", chips.ESP32C3.key))
+
+
+def tasmota_pin(chip: chips.Chip) -> dict[str, Any]:
+    """The official release pinned for `chip`."""
+    return OFFICIAL_TASMOTA if chip is chips.ESP32C3 else chip.pin("tasmota")
+
+
+def pinned_artifacts(chip: chips.Chip) -> dict[str, dict[str, Any]]:
+    """The interim Tasmota and the official files a bundle for `chip` must hold."""
+    if chip is chips.ESP32C3:
+        return PINNED_ARTIFACTS
+    return {"bluetooth": {field: chip.pin("interim")[field] for field in ("size", "sha256")},
+            **{name: {"size": file["size"], "sha256": file["sha256"]}
+               for name, file in chip.pin("tasmota")["files"].items()}}
+
+
+def published_recovery_file(chip: chips.Chip) -> Path:
+    return PUBLISHED_RECOVERY_FILE if chip is chips.ESP32C3 else chip.file("recovery")
+
+
+def published_recovery_sha256(chip: chips.Chip) -> str:
+    return PUBLISHED_RECOVERY_SHA256 if chip is chips.ESP32C3 else chip.pin("recovery")["sha256"]
+
+
+def official_release(release: dict[str, Any] | None = None, chip: chips.Chip = chips.ESP32C3) -> dict[str, str]:
     """The official release a bundle is made for, as its manifest names it:
     the one pinned now, or `release`, one pinned before."""
-    release = release or FIRMWARE["tasmota"]
+    release = release or tasmota_pin(chip)
     return {"tag": release["tag"], "tasmota_commit": release["commit"]}
 
 
@@ -296,7 +375,7 @@ def earlier_release(manifest: dict[str, Any]) -> dict[str, Any] | None:
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, dict):
         return None
-    for earlier in FIRMWARE["tasmota"].get("earlier", []):
+    for earlier in tasmota_pin(manifest_chip(manifest)).get("earlier", []):
         if all(isinstance(artifacts.get(name), dict)
                and (artifacts[name].get("size"), artifacts[name].get("sha256")) == (file["size"], file["sha256"])
                for name, file in earlier["files"].items()):
@@ -308,14 +387,15 @@ def require_pinned_artifacts(manifest: dict[str, Any], current_only: bool = Fals
     """Refuse substitution of the frozen Bluetooth/official firmware set: the
     official release pinned now, or (unless `current_only`) one pinned before."""
     release = manifest.get("official_release")
-    pinned = PINNED_ARTIFACTS
-    if release != official_release():
+    chip = manifest_chip(manifest)
+    pinned = pinned_artifacts(chip)
+    if release != official_release(chip=chip):
         earlier = None if current_only else earlier_release(manifest)
         if earlier is None:
             raise ValueError(
                 "manifest official-release identity differs from the reviewed frozen set"
             )
-        pinned = {"bluetooth": PINNED_ARTIFACTS["bluetooth"],
+        pinned = {"bluetooth": pinned["bluetooth"],
                   **{name: {"size": file["size"], "sha256": file["sha256"]}
                      for name, file in earlier["files"].items()}}
     artifacts = manifest.get("artifacts")
@@ -366,24 +446,25 @@ def require_imprinted_manifest(manifest_path: Path, manifest: dict[str, Any]) ->
         raise ValueError("imprinted manifest has no imprinted_safeboot provenance")
     if provenance.get("artifact") != RECOVERY_ARTIFACT:
         raise ValueError("imprinted manifest selects an unexpected artifact")
-    if provenance.get("published_sha256") != PUBLISHED_RECOVERY_SHA256:
+    chip = manifest_chip(manifest)
+    if provenance.get("published_sha256") != published_recovery_sha256(chip):
         raise ValueError(
             "the manifest was built from a different published recovery image "
             "than this checkout ships"
         )
 
     try:
-        published = PUBLISHED_RECOVERY_FILE.read_bytes()
+        published = published_recovery_file(chip).read_bytes()
     except OSError as exc:
         raise ValueError(f"cannot read the published recovery image: {exc}") from exc
-    if sha256_bytes(published) != PUBLISHED_RECOVERY_SHA256:
+    if sha256_bytes(published) != published_recovery_sha256(chip):
         raise ValueError("the published recovery image in this checkout has been altered")
 
     image = artifact_bytes(manifest_path, manifest, RECOVERY_ARTIFACT)
-    validate_native_image(image, SAFEBOOT_SIZE, "recovery Safeboot")
+    validate_native_image(image, SAFEBOOT_SIZE, "recovery Safeboot", chip)
     if RECOVERY_MARKER not in image:
         raise ValueError("recovery Safeboot marker is absent")
-    if sha256_bytes(image) == PINNED_ARTIFACTS["safeboot"]["sha256"]:
+    if sha256_bytes(image) == pinned_artifacts(chip)["safeboot"]["sha256"]:
         raise ValueError("recovery Safeboot unexpectedly equals the official image")
     require_imprinted(image)
     if not derived_from(image, published):
@@ -456,12 +537,13 @@ def require_recovery_manifest(manifest_path: Path, manifest: dict[str, Any]) -> 
         raise ValueError("recovery credential-header identity differs")
 
 
-def validate_native_image(data: bytes, maximum_size: int, label: str) -> dict[str, Any]:
+def validate_native_image(data: bytes, maximum_size: int, label: str,
+                          chip: chips.Chip = chips.ESP32C3) -> dict[str, Any]:
     if len(data) > maximum_size:
         raise ValueError(f"{label} is too large: {len(data)} > {maximum_size}")
     report = parse_esp_image(data)
-    if not report["chip_is_esp32_c3"]:
-        raise ValueError(f"{label} does not target ESP32-C3")
+    if report["chip_id"] != chip.chip_id:
+        raise ValueError(f"{label} does not target {chip.label}")
     if not report["checksum_valid"]:
         raise ValueError(f"{label} has an invalid ESP checksum")
     if report["sha256_valid"] is False:

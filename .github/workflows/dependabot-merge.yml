@@ -2,7 +2,9 @@
 # been open MERGE_AFTER_DAYS with the checks main requires passed. With
 # Dependabot's own cooldown, a release is two weeks old before it is used:
 # time for a broken or compromised one to be found and pulled first. One
-# labelled `hold` is left alone.
+# labelled `hold` is left alone. One whose checks failed on a main that has
+# since moved on is brought up to date with it and checked again, as
+# Dependabot rebases only on a conflict.
 #
 # A merge by this workflow's token starts no workflow, so it starts main's
 # checks and the website's deploy itself.
@@ -36,6 +38,20 @@ jobs:
         run: |
           cutoff=$(date -u -d "-${MERGE_AFTER_DAYS} days" +%Y-%m-%dT%H:%M:%SZ)
           merged=0
+          # Behind main: main merged into it, and the checks main requires run on it
+          # again (a branch this token updates starts no workflow by itself).
+          brought_up_to_date() {
+              local number=$1 head branch behind
+              read -r head branch < <(gh pr view -R "$GITHUB_REPOSITORY" "$number" --json headRefOid,headRefName \
+                  --jq '"\(.headRefOid) \(.headRefName)"')
+              behind=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$head" --jq .behind_by)
+              [ "$behind" -gt 0 ] || return 1
+              gh api -X PUT "repos/$GITHUB_REPOSITORY/pulls/$number/update-branch" --silent
+              for workflow in emulator-check.yml lint.yml leak-scan.yml; do
+                  gh workflow run -R "$GITHUB_REPOSITORY" "$workflow" --ref "$branch"
+              done
+              echo "#$number: $behind commits behind main; brought up to date, and checked again."
+          }
           for number in $(gh pr list -R "$GITHUB_REPOSITORY" --state open --author app/dependabot \
                   --json number,createdAt,labels \
                   --jq ".[] | select(.createdAt <= \"$cutoff\") | select([.labels[].name] | index(\"hold\") | not) | .number"); do
@@ -47,10 +63,13 @@ jobs:
               DIRTY)
                   # Dependabot rebases its own pull request on a conflict.
                   echo "#$number: conflicts with main; waiting for Dependabot to rebase it." ;;
+              BEHIND)
+                  brought_up_to_date "$number" || echo "#$number: behind main, but GitHub says not by how much." ;;
               BLOCKED|UNSTABLE)
                   if gh pr checks -R "$GITHUB_REPOSITORY" "$number" --required --json bucket --jq '.[].bucket' \
                           | grep -qx fail; then
-                      echo "::warning::#$number: a check main requires failed; not merged."
+                      # A failure on a main since fixed is not the pull request's.
+                      brought_up_to_date "$number" || echo "::warning::#$number: a check main requires failed; not merged."
                   else
                       echo "#$number: its checks have not all finished; looked at again tomorrow."
                   fi ;;

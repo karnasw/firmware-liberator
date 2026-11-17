@@ -1,22 +1,32 @@
-# Moves the firmware the tool installs to each settled Tasmota and ESPHome
-# release, by itself (docs/updating-firmware.md):
+# Moves the firmware the tool installs to each settled Tasmota, ESPHome and
+# OpenBeken release, by itself (docs/updating-firmware.md):
 #
 #   1. due      which release of each is settled now (update_firmware.py due);
 #               an issue if the pinned Tasmota release has gone
-#   2. update   the update made, its docs written, the unit tests and the
-#               final-firmware emulator test run, and a pull request opened
-#               with what they found
-#   3. merge    a pull request whose tests passed, open SETTLE_MERGE_DAYS with
-#               no `hold` label, merged - which is the release, started here
-#               (a merge by this workflow's token does not start one itself)
+#   2. update   the update made for every device, its docs written, the unit
+#               tests run - with a new OpenBeken, its six scenarios on the S61's
+#               emulator too - all with a token that can only read: the
+#               releases' own build tools run here
+#   3. publish  that commit, checked to change only what an update does,
+#               pushed and a pull request opened with what the tests found, and
+#               on it the emulator check of every device (emulator-check.yml),
+#               which main requires
+#   4. merge    a pull request this workflow opened whose tests passed, open
+#               MERGE_AFTER_DAYS with no `hold` label, merged - which is the
+#               release, started here (a merge by this workflow's token does
+#               not start one itself)
 #
-# Weekly, or by hand: with `tasmota` / `esphome` to take a given release, and
-# `dry_run` to do everything but push, open or merge.
+# Weekly, or by hand: with `tasmota` / `esphome` / `openbeken` to take a given release, and
+# `dry_run` to do everything but push, open or merge. On the first of each month
+# a dry run takes the releases already pinned, so that every step - each
+# device's build, its docs, the tests and OpenBeken's scenarios - is run when no
+# release is due, and found broken before one is.
 name: Firmware update
 
 on:
   schedule:
     - cron: "0 6 * * 1"   # Mondays, 06:00 UTC
+    - cron: "0 6 1 * *"   # the monthly dry run of what is pinned (REHEARSAL below)
   workflow_dispatch:
     inputs:
       tasmota:
@@ -24,6 +34,9 @@ on:
         required: false
       esphome:
         description: "Build with this ESPHome release (e.g. 2026.11.2), whether settled or not"
+        required: false
+      openbeken:
+        description: "Build on this OpenBeken release (e.g. 1.18.321), whether settled or not"
         required: false
       dry_run:
         description: "Make and test the update, but push, open and merge nothing"
@@ -38,8 +51,6 @@ concurrency:
 
 env:
   MERGE_AFTER_DAYS: "7"
-  GH_TOKEN: ${{ github.token }}
-  GITHUB_TOKEN: ${{ github.token }}
 
 jobs:
   due:
@@ -48,9 +59,13 @@ jobs:
     permissions:
       contents: read
       issues: write   # the issue below
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}   # GitHub's API, read for the releases
     outputs:
       tasmota: ${{ steps.due.outputs.tasmota }}
       esphome: ${{ steps.due.outputs.esphome }}
+      openbeken: ${{ steps.due.outputs.openbeken }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -60,24 +75,33 @@ jobs:
         env:
           INPUT_TASMOTA: ${{ inputs.tasmota }}
           INPUT_ESPHOME: ${{ inputs.esphome }}
+          INPUT_OPENBEKEN: ${{ inputs.openbeken }}
+          REHEARSAL: ${{ github.event.schedule == '0 6 1 * *' }}
         run: |
           python3 tools/repo/update_firmware.py due > due.json
           tasmota=$(python3 -c 'import json; print(json.load(open("due.json"))["tasmota"]["due"] or "")')
           esphome=$(python3 -c 'import json; print(json.load(open("due.json"))["esphome"]["due"] or "")')
+          openbeken=$(python3 -c 'import json; print(json.load(open("due.json"))["openbeken"]["due"] or "")')
           [ -z "$INPUT_TASMOTA" ] || tasmota=$INPUT_TASMOTA
           [ -z "$INPUT_ESPHOME" ] || esphome=$INPUT_ESPHOME
+          [ -z "$INPUT_OPENBEKEN" ] || openbeken=$INPUT_OPENBEKEN
+          if [ "$REHEARSAL" = true ]; then
+              # What is pinned, built again: every step run, nothing released.
+              tasmota=""
+              esphome=$(python3 -c 'from tools.repo import update_firmware as u; print(u.pinned_version(u.load_pins(), "esphome"))')
+              openbeken=$(python3 -c 'from tools.repo import update_firmware as u; print(u.pinned_version(u.load_pins(), "openbeken"))')
+          fi
           # Release numbers only: they name a branch and go into commands below.
-          for version in "$tasmota" "$esphome"; do
+          for version in "$tasmota" "$esphome" "$openbeken"; do
               if [ -n "$version" ] && ! [[ "$version" =~ ^v?[0-9]+(\.[0-9]+){1,3}$ ]]; then
                   echo "::error::$version is not a release number"; exit 1
               fi
           done
-          echo "tasmota=$tasmota" >> "$GITHUB_OUTPUT"
-          echo "esphome=$esphome" >> "$GITHUB_OUTPUT"
-          { echo "### Due"; echo; echo "Tasmota: ${tasmota:-nothing}; ESPHome: ${esphome:-nothing}";
+          { echo "tasmota=$tasmota"; echo "esphome=$esphome"; echo "openbeken=$openbeken"; } >> "$GITHUB_OUTPUT"
+          { echo "### Due"; echo; echo "Tasmota: ${tasmota:-nothing}; ESPHome: ${esphome:-nothing}; OpenBeken: ${openbeken:-nothing}";
             echo; echo '```json'; python3 -m json.tool due.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: An issue if the pinned Tasmota release has gone
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && github.event.schedule != '0 6 1 * *' }}
         run: |
           missing=$(python3 -c 'import json; s=json.load(open("due.json"))["tasmota"]; print(s["pinned"] if s["pinned_missing"] else "")')
           [ -n "$missing" ] || exit 0
@@ -89,7 +113,7 @@ jobs:
           (docs/updating-firmware.md)."
           fi
       - name: An issue if this check is about to be switched off
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && github.event.schedule != '0 6 1 * *' }}
         run: |
           # GitHub switches a public repository's schedules off after 60 days
           # with no activity, and this check with them: said at 50.
@@ -104,20 +128,28 @@ jobs:
           (Firmware update, Enable workflow)."
           fi
 
+  # The releases' own build tools run here - ESPHome's image, PlatformIO's
+  # downloads, OpenBeken's makefiles - so its token can only read, as any step
+  # of a job can reach the job's token. Its commit goes to the publish job as a
+  # git bundle.
   update:
     needs: due
-    if: ${{ needs.due.outputs.tasmota != '' || needs.due.outputs.esphome != '' }}
+    if: ${{ needs.due.outputs.tasmota != '' || needs.due.outputs.esphome != '' || needs.due.outputs.openbeken != '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
-      contents: write        # push the branch
-      pull-requests: write   # open the pull request
-      issues: write          # its labels
-      actions: write         # start the checks on it
+      contents: read
+      pull-requests: read   # whether its pull request is open already
+    outputs:
+      publish: ${{ steps.made.outputs.publish }}
+      passed: ${{ steps.made.outputs.passed }}
     env:
       TASMOTA: ${{ needs.due.outputs.tasmota }}
       ESPHOME: ${{ needs.due.outputs.esphome }}
-      DRY_RUN: ${{ inputs.dry_run }}
+      OPENBEKEN: ${{ needs.due.outputs.openbeken }}
+      DRY_RUN: ${{ inputs.dry_run || github.event.schedule == '0 6 1 * *' }}
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}   # GitHub's API, read for the releases
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -126,7 +158,7 @@ jobs:
       - name: Not made already
         id: branch
         run: |
-          branch="firmware/tasmota-${TASMOTA:-same}-esphome-${ESPHOME:-same}"
+          branch="firmware/tasmota-${TASMOTA:-same}-esphome-${ESPHOME:-same}-openbeken-${OPENBEKEN:-same}"
           echo "BRANCH=$branch" >> "$GITHUB_ENV"
           if [ -n "$(gh pr list --state open --head "$branch" --json number --jq '.[].number')" ]; then
               echo "A pull request for $branch is open already."
@@ -151,7 +183,10 @@ jobs:
               .venv/bin/python tools/repo/update_firmware.py tasmota "$TASMOTA" 2>&1 | tee -a update.txt
           fi
           if [ -n "$ESPHOME" ]; then
-              .venv/bin/python tools/repo/update_firmware.py esphome "$ESPHOME" 2>&1 | tee -a update.txt
+              .venv/bin/python tools/repo/update_firmware.py esphome "$ESPHOME" --every-device 2>&1 | tee -a update.txt
+          fi
+          if [ -n "$OPENBEKEN" ]; then
+              .venv/bin/python tools/repo/update_firmware.py openbeken "$OPENBEKEN" --every-device 2>&1 | tee -a update.txt
           fi
           git add -A -- . ':!update.txt'
           # Asked by hand for what it installs already: nothing to make, test or open.
@@ -161,7 +196,12 @@ jobs:
               exit 0
           fi
           echo "changed=yes" >> "$GITHUB_OUTPUT"
-          title="Install${TASMOTA:+ Tasmota $TASMOTA}${TASMOTA:+${ESPHOME:+ and}}${ESPHOME:+ ESPHome built with $ESPHOME}"
+          made=()
+          [ -z "$TASMOTA" ] || made+=("Tasmota $TASMOTA")
+          [ -z "$ESPHOME" ] || made+=("ESPHome built with $ESPHOME")
+          [ -z "$OPENBEKEN" ] || made+=("OpenBeken $OPENBEKEN")
+          joined=$(IFS=,; echo "${made[*]}")
+          title="Install ${joined//,/, }"
           echo "TITLE=$title" >> "$GITHUB_ENV"
           git commit -q -m "$title" -m "Made by the firmware-update workflow: tools/repo/update_firmware.py, then the unit tests and the final-firmware emulator test (the pull request says what they found)."
       - name: Nothing in it that should not be there
@@ -173,27 +213,34 @@ jobs:
         continue-on-error: true
         run: |
           PYTHONUNBUFFERED=1 .venv/bin/python -m unittest discover -s tests > unit.txt 2>&1
-      - name: The final firmware on the emulator
-        if: steps.branch.outputs.made != 'yes' && steps.update.outputs.changed == 'yes'
-        id: emulator
+      - name: OpenBeken's six scenarios on the S61 in the Beken emulator
+        if: steps.branch.outputs.made != 'yes' && steps.update.outputs.changed == 'yes' && env.OPENBEKEN != ''
+        id: openbeken
         continue-on-error: true
         run: |
+          # What this project's driver and patches do on OpenBeken, each once, on
+          # the new image: the emulator check runs no faults, these do.
           set -o pipefail
-          .venv/bin/python -I tools/espressif/emulator/public_plugs.py fetch
-          .venv/bin/python -I tools/espressif/emulator/public_plugs.py test | tee emulator.txt
-      - name: The pull request
+          tools/beken/emulator/beken-emu.sh dump
+          tools/beken/emulator/fault_suite.py prep
+          tools/beken/emulator/fault_suite.py list openbeken > openbeken.txt
+          AUTOFLASH_BEKEN_EMU_SUITE_DIR=captures/emulation/beken/suite-openbeken AUTOFLASH_BEKEN_EMU_WORKERS=2 \
+              tools/beken/emulator/fault_suite.py batch openbeken.txt 2>&1 | tee scenarios.txt
+      - name: The pull request's text, and the commit for the publish job
         if: steps.branch.outputs.made != 'yes' && steps.update.outputs.changed == 'yes'
+        id: made
         env:
           UNIT: ${{ steps.unit.outcome }}
-          EMULATOR: ${{ steps.emulator.outcome }}
+          SCENARIOS: ${{ steps.openbeken.outcome }}
         run: |
-          passed=$([ "$UNIT" = success ] && [ "$EMULATOR" = success ] && echo yes || echo no)
+          passed=$([ "$UNIT" = success ] && [ "$SCENARIOS" != failure ] && echo yes || echo no)
           merge_on=$(date -u -d "+${MERGE_AFTER_DAYS} days" +%Y-%m-%d)
           {
             echo "Made by the [firmware-update workflow]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) under the settled-release rule ([docs/updating-firmware.md](docs/updating-firmware.md))."
             echo
             [ -z "$TASMOTA" ] || echo "- **Tasmota $TASMOTA**: [release notes](https://github.com/arendst/Tasmota/releases/tag/v$TASMOTA)"
             [ -z "$ESPHOME" ] || echo "- **ESPHome built with $ESPHOME**: [release notes](https://github.com/esphome/esphome/releases/tag/$ESPHOME)"
+            [ -z "$OPENBEKEN" ] || echo "- **OpenBeken $OPENBEKEN**: [release notes](https://github.com/openshwprojects/OpenBK7231T_App/releases/tag/$OPENBEKEN)"
             echo
             if [ "$passed" = yes ]; then
               echo "**Tests passed.** This merges itself on or after **$merge_on** (${MERGE_AFTER_DAYS} days), which releases it, unless it is labelled \`hold\`."
@@ -203,8 +250,14 @@ jobs:
             echo
             echo "### The final firmware on the emulator"
             echo
-            echo '```'; cat emulator.txt 2>/dev/null || echo "(did not run)"; echo '```'
+            echo "Every device's, by the emulator-check workflow started on this branch: its checks below. It merges only once they pass."
             echo
+            if [ -n "$OPENBEKEN" ]; then
+              echo "### OpenBeken's six scenarios on the S61 in the Beken emulator"
+              echo
+              echo '```'; grep -E "^(PASS|FAIL|ERROR|MISTIMED|NOT-)" scenarios.txt 2>/dev/null || echo "(did not run)"; echo '```'
+              echo
+            fi
             echo "### Unit tests"
             echo
             echo '```'; grep -E "^(Ran [0-9]+ tests|OK|FAILED)" unit.txt || echo "(did not finish)"
@@ -214,21 +267,70 @@ jobs:
             echo
             echo '<details><summary>update_firmware.py</summary>'; echo; echo '```'; cat update.txt; echo '```'; echo '</details>'
             echo
-            echo "- [ ] Converted a real plug with it (optional: the workflow merges without)"
+            echo "- [ ] Converted a real device with it (optional: the workflow merges without)"
           } > body.md
           cat body.md >> "$GITHUB_STEP_SUMMARY"
           if [ "$DRY_RUN" = true ]; then
               echo "Dry run: nothing pushed or opened."
               exit 0
           fi
+          mkdir update
+          mv body.md update/
+          git bundle create update/update.bundle "$GITHUB_SHA..$BRANCH"
+          { echo "publish=yes"; echo "passed=$passed"; } >> "$GITHUB_OUTPUT"
+      - name: Keep it for the publish job
+        if: steps.made.outputs.publish == 'yes'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: update
+          path: update/
+          retention-days: 7
+
+  # Pushes the update job's commit and opens its pull request. It runs nothing
+  # of the update's - no build tool, nothing the commit holds - only this
+  # commit's own checks of it: one commit on it, changing only what an update
+  # does (update_firmware.py publishable), with nothing in it that should not
+  # be there.
+  publish:
+    needs: [due, update]
+    if: ${{ needs.update.outputs.publish == 'yes' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write        # push the branch
+      pull-requests: write   # open the pull request
+      issues: write          # its labels
+      actions: write         # start the checks on it
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH: firmware/tasmota-${{ needs.due.outputs.tasmota || 'same' }}-esphome-${{ needs.due.outputs.esphome || 'same' }}-openbeken-${{ needs.due.outputs.openbeken || 'same' }}
+      PASSED: ${{ needs.update.outputs.passed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: update
+          path: ${{ runner.temp }}/update
+      - name: Only what an update changes
+        run: |
+          git fetch -q "$RUNNER_TEMP/update/update.bundle" "refs/heads/$BRANCH"
+          python3 tools/repo/update_firmware.py publishable "$GITHUB_SHA" FETCH_HEAD
+          python3 tools/repo/leak_scan.py range "$GITHUB_SHA..FETCH_HEAD"
+          echo "UPDATE=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_ENV"
+      - name: The pull request
+        run: |
+          title=$(git log -1 --format=%s "$UPDATE")
           gh label create firmware-update --color 0E8A16 --description "Made by the firmware-update workflow" 2>/dev/null || true
           gh label create hold --color B60205 --description "Never merged by the firmware-update workflow" 2>/dev/null || true
           gh label create tests-failed --color D93F0B --description "The firmware-update workflow's tests failed" 2>/dev/null || true
           gh auth setup-git   # the checkout keeps no credentials
-          git push -q origin "$BRANCH"
+          git push -q origin "$UPDATE:refs/heads/$BRANCH"
           labels=(--label firmware-update)
-          [ "$passed" = yes ] || labels+=(--label tests-failed)
-          gh pr create --base main --head "$BRANCH" --title "$TITLE" --body-file body.md \
+          [ "$PASSED" = yes ] || labels+=(--label tests-failed)
+          gh pr create --base main --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/update/body.md" \
               "${labels[@]}"
           # A pull request opened with this workflow's token starts no workflow
           # (GitHub's rule), so the checks main requires are started on its branch.
@@ -236,8 +338,11 @@ jobs:
               gh workflow run "$workflow" --ref "$BRANCH"
           done
 
+  # Only a pull request this workflow opened, from a branch of its own here:
+  # the label alone is anyone's a maintainer gives it, a fork's pull request too,
+  # whose checks run its own workflows.
   merge:
-    if: ${{ !inputs.dry_run }}
+    if: ${{ !inputs.dry_run && github.event.schedule != '0 6 1 * *' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -245,6 +350,8 @@ jobs:
       pull-requests: write   # comment on, close
       issues: write          # the tests-failed label
       actions: write         # start the release
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -254,8 +361,9 @@ jobs:
         run: |
           cutoff=$(date -u -d "-${MERGE_AFTER_DAYS} days +2 hours" +%Y-%m-%dT%H:%M:%SZ)
           merged=0
-          for number in $(gh pr list --state open --label firmware-update --json number,createdAt,labels \
-                  --jq ".[] | select(.createdAt <= \"$cutoff\") | select([.labels[].name] | (index(\"hold\") or index(\"tests-failed\")) | not) | .number"); do
+          for number in $(gh pr list --state open --label firmware-update --author app/github-actions \
+                  --json number,createdAt,labels,headRefName,isCrossRepository \
+                  --jq ".[] | select(.isCrossRepository | not) | select(.headRefName | startswith(\"firmware/\")) | select(.createdAt <= \"$cutoff\") | select([.labels[].name] | (index(\"hold\") or index(\"tests-failed\")) | not) | .number"); do
               # Tested on main as it is now: main is in it, it merges cleanly,
               # and the checks main requires passed.
               git fetch -q origin main "pull/$number/head:pr-$number"

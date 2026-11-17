@@ -1,14 +1,14 @@
-"""Prove the router redirects the plug's update download, and nothing else.
+"""Prove the router redirects the device's update download, and nothing else.
 
-The rule is specific to the plug's address, so the only way to test it from
-this computer is to borrow that address for a few seconds while the plug is
+The rule is specific to the device's address, so the only way to test it from
+this computer is to borrow that address for a few seconds while the device is
 unplugged. Two connections are made to the vendor's update server:
 
-  1. from the plug's address - must NOT reach the vendor (it is redirected to
+  1. from the device's address - must NOT reach the vendor (it is redirected to
      this computer, where nothing is listening yet, so it is refused);
   2. from this computer's own address - must still reach the vendor.
 
-The same test as tools/espressif/test_ota_firewall.sh, made to run on Linux, macOS and
+The same test as tools/espressif/check_ota_firewall.sh, made to run on Linux, macOS and
 Windows. Adding and removing the borrowed address needs administrator rights,
 asked for through the system's own prompt.
 """
@@ -42,7 +42,7 @@ def reaches(source: str, target: str, port: int, timeout: float = 6.0) -> bool:
 def run(
     *,
     interface: str,
-    plug_ip: str,
+    device_ip: str,
     own_ip: str,
     vendor_ip: str,
     vendor_port: int,
@@ -51,19 +51,19 @@ def run(
     connect: Callable[[str, str, int], bool] = reaches,
 ) -> None:
     """Raise RedirectTestError unless both checks pass.  Always gives the address back."""
-    if plug_ip in hostsys.local_addresses():
-        raise RedirectTestError(f"{plug_ip} is already one of this computer's addresses")
-    if hostsys.ping_ok(plug_ip):
+    if device_ip in hostsys.local_addresses():
+        raise RedirectTestError(f"{device_ip} is already one of this computer's addresses")
+    if hostsys.ping_ok(device_ip):
         raise RedirectTestError(
-            f"something still answers at {plug_ip} - unplug the device first, or two "
+            f"something still answers at {device_ip} - switch the device off first, or two "
             "devices would share one address"
         )
-    add, remove = hostsys.alias_commands(interface, plug_ip)
+    add, remove = hostsys.alias_commands(interface, device_ip)
     if elevated(add) != 0:
-        raise RedirectTestError(f"could not borrow {plug_ip}: {hostsys.display(add)}")
+        raise RedirectTestError(f"could not borrow {device_ip}: {hostsys.display(add)}")
     try:
         log("Test 1 of 2: a connection from the device's address is redirected")
-        if connect(plug_ip, vendor_ip, vendor_port):
+        if connect(device_ip, vendor_ip, vendor_port):
             raise RedirectTestError(
                 "a connection from the device's address reached Sonoff's server, so "
                 "the router rule is not catching it"
@@ -78,6 +78,6 @@ def run(
         log("  PASS - this computer still reaches Sonoff's server")
     finally:
         if elevated(remove) == 0:
-            log(f"Gave {plug_ip} back.")
+            log(f"Gave {device_ip} back.")
         else:
-            log(f"Could not give {plug_ip} back - run: {hostsys.display(remove)}")
+            log(f"Could not give {device_ip} back - run: {hostsys.display(remove)}")

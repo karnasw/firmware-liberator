@@ -9,6 +9,7 @@ on:
   push:
     paths:
       - tools/espressif/emulator/emu.Dockerfile
+      - tools/espressif/emulator/UPSTREAM
       - tools/espressif/emulator/patches/**
       - tools/espressif/emulator/container/**
       - tools/espressif/emulator/image.sh

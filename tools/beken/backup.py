@@ -1,23 +1,24 @@
+#!/usr/bin/env python3
 """Back up a converted S61's stock per-device data from OpenBeken.
 
-The conversion leaves everything that makes the plug *this* plug untouched: the
+The conversion leaves everything that makes the device *this* device untouched: the
 factory TLV store (MAC, radio calibration) at 0x3e0000, the EasyFlash config
 store (Wi-Fi creds, energy-meter calibration, eWeLink identity) and the system
 ENV, all in 0x3e0000-0x400000. OpenBeken can read flash over its REST API, so
-right after the plug joins we copy that region out and file it the way the S60
+right after the device joins we copy that region out and file it the way the S60
 conversion files its Sonoff backup:
 
-    captures/plugs/<mac-with-dashes>/sonoff-backup/
+    captures/devices/<mac-with-dashes>/sonoff-backup/
         config-0x3e0000.bin   the 128 KiB per-device region, as read
         stock-app-1.0.2.rbl   the generic stock app, repackaged for the stock
                               bootloader's download slot (when --stock-rbl is given)
         backup.json           what this is: model, offsets, hashes, when
 
-With these a plug can be put back to stock later whatever happens: stage the
+With these a device can be put back to stock later whatever happens: stage the
 stock RBL (AutoflashRevertToStock), and if the config region were ever lost,
 rewrite it from the copy. The backup is never overwritten once made.
 
-  python3 backup.py --plug http://192.168.99.100 [--stock-rbl stock_app_1.0.2.rbl]
+  python3 backup.py --device http://192.168.99.100 [--stock-rbl stock_app_1.0.2.rbl]
 """
 from __future__ import annotations
 
@@ -33,7 +34,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from tools.autoflash import plugs  # noqa: E402  (shares the S60's captures layout)
+from tools.autoflash import records  # noqa: E402  (shares the S60's captures layout)
 
 REGION_START = 0x3E0000
 REGION_END = 0x400000
@@ -88,15 +89,20 @@ def factory_mac(region: bytes) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Back up a converted S61's stock config region from OpenBeken.")
-    ap.add_argument("--plug", required=True, help="OpenBeken base URL, e.g. http://192.168.99.100")
+    ap.add_argument("--device", required=True, help="OpenBeken base URL, e.g. http://192.168.99.100")
     ap.add_argument("--stock-rbl", default=None, help="repackaged stock app RBL to file beside it")
     ap.add_argument("--captures", default=None, help="captures directory (default: the repository's)")
     a = ap.parse_args()
+    if not a.captures:
+        try:
+            records.take_over_earlier_names()
+        except records.EarlierNames as error:
+            sys.exit(str(error))
 
-    region = read_flash(a.plug, REGION_START, REGION_END - REGION_START)
+    region = read_flash(a.device, REGION_START, REGION_END - REGION_START)
     mac = factory_mac(region)
-    plugs_dir = (Path(a.captures) / "plugs") if a.captures else plugs.PLUGS
-    backup = plugs_dir / plugs.folder_name(mac) / plugs.BACKUP
+    devices_dir = (Path(a.captures) / "devices") if a.captures else records.DEVICES
+    backup = devices_dir / records.folder_name(mac) / records.BACKUP
     if (backup / BACKUP_BIN).exists():
         print("backup already exists, never overwritten: %s" % (backup / BACKUP_BIN))
         return 0

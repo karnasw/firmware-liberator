@@ -2,21 +2,21 @@
 sector sent after its image, through the same update.
 
 A run to ESPHome from Sonoff's firmware installs OpenBeken first, to back the
-plug up through it, then has it fetch ESPHome. The stock updater writes the
+device up through it, then has it fetch ESPHome. The stock updater writes the
 whole file it is sent into the download slot, and the stock bootloader applies
 the rt_ota image at its start and erases only the slot's first sector after
 (the image's header): so whatever follows the image stays in the slot. B2
 sends the OpenBeken image, 0xff to the next 4 KB boundary (from the image's
 start, the slot's), and this sector. On the first boot after the install
 the tool's OpenBeken driver (tools/beken/openbeken/drv_autoflash.c)
-finds it, names the plug as an interim firmware - autoflash-recovery-CDEF -
+finds it, names the device as an interim firmware - autoflash-recovery-CDEF -
 and erases it, so it is used once. A run to OpenBeken sends the image alone.
 
 The marker names the app its image installs - the size and FNV-1a hash of
 the firmware unpacked, from the image's RBL header, which the bootloader
 checks the app against once it has written it - and the module acts on one
 only when that is the app running: a marker left in the slot by anything
-else, or for another image, never names a plug the interim firmware. One
+else, or for another image, never names a device the interim firmware. One
 that is not for the app running is erased.
 
 The sector: 28 bytes, then 0xff. All little-endian.

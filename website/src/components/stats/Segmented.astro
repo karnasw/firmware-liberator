@@ -1,0 +1,20 @@
+---
+// One whole split into its parts: a tall segmented bar, each part's share
+// printed in it where it fits, its names in a legend in the same order.
+const { parts, label: name } = Astro.props;
+const whole = parts.reduce((sum, part) => sum + part.value, 0) || 1;
+const colours = ["series-1", "series-2", "series-3"];
+---
+<figure class="chart">
+  <div class="segments" role="img" aria-label={`${name}: ${parts.map((part) => `${part.label} ${Math.round((100 * part.value) / whole)}%`).join(", ")}`}>
+    {parts.map((part, index) => (
+      <span class={`segment ${colours[index]}`} style={`flex-grow: ${part.value}`} tabindex="0"
+        data-tip={`${part.label}: ${part.value.toLocaleString("en")} runs`}>
+        {(100 * part.value) / whole >= 9 && `${Math.round((100 * part.value) / whole)}%`}
+      </span>
+    ))}
+  </div>
+  <ul class="legend">
+    {parts.map((part, index) => <li><span class={`swatch ${colours[index]}`}></span>{part.label}</li>)}
+  </ul>
+</figure>

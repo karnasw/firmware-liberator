@@ -1,15 +1,15 @@
 #!/bin/bash
-# Test the conversion on Windows from a Linux machine: the emulated plug in
+# Test the conversion on Windows from a Linux machine: the emulated device in
 # Docker as usual (emu.sh --windows), and beside it Windows Server 2025 (Server
 # Core) in a container of its own (windows/vm.Dockerfile) - one layer of KVM, nothing
-# nested. Windows is wired onto the plug's home network, you work in it in a
+# nested. Windows is wired onto the device's home network, you work in it in a
 # browser (noVNC) or over Remote Desktop, and every run starts from a clean copy of it.
 #
 #   tools/espressif/emulator/windows-test.sh [--cloud|--stub-cloud] [--fresh] [--no-firewall] [--rebuild]
-#       [--plug=MAC] [--classic-console] [--first-run] [--rebuild-layer=installed|rig|tool]
+#       [--device=MAC] [--classic-console] [--first-run] [--rebuild-layer=installed|rig|tool]
 #
 # Options as emu.sh's (a conversion from stock needs --cloud, or --stub-cloud with a
-# plug a Linux run converted against the stub: docs/emulator.md); which backed-up plug runs
+# device a Linux run converted against the stub: docs/emulator.md); which backed-up device runs
 # is asked first when there are several. The conversion runs in
 # OpenConsole, Windows Terminal's own console, as on Windows 11; with
 # --classic-console in Windows' classic one, as on Windows 10. Windows is kept
@@ -20,18 +20,21 @@
 # again before the run, with those above it - a few minutes, or 5-10 for
 # installed; --rebuild-layer does it anyway. The first run lists what this
 # computer needs and gets it after one question. Windows gets 2 GB and 2 CPUs
-# (AUTOFLASH_WINDOWS_RAM=3G, AUTOFLASH_WINDOWS_CPUS=4). SSH reaches it on 127.0.0.1:2222
-# (AUTOFLASH_WINDOWS_SSH_PORT), with tools/espressif/emulator/windows-ssh.sh. See docs/emulator.md.
+# (AUTOFLASH_EMU_WINDOWS_RAM=3G, AUTOFLASH_EMU_WINDOWS_CPUS=4). SSH reaches it on
+# 127.0.0.1:2222 (AUTOFLASH_EMU_WINDOWS_SSH_PORT), with
+# tools/espressif/emulator/windows-ssh.sh. See docs/emulator.md.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
-CACHE=${AUTOFLASH_WINDOWS_CACHE:-$HOME/.cache/autoflash-emu/windows}
+# shellcheck source=/dev/null
+. "$ROOT/tools/repo/emulator-room.sh"
+CACHE=${AUTOFLASH_EMU_WINDOWS_CACHE:-$HOME/.cache/autoflash-emu/windows}
 VM_IMAGE=autoflash-win
 NETWORK=${AUTOFLASH_EMU_NETWORK:-autoflash-emu}   # the emulator's network (emu.sh), which Windows joins
 # Microsoft's Windows Server 2025 evaluation ISO (en-US, build 26100.32230),
 # from the Evaluation Center. Pinned: a changed file is reported, never used unseen.
 ISO_URL="https://go.microsoft.com/fwlink/?linkid=2345730"
-ISO_SHA256=${AUTOFLASH_WINDOWS_ISO_SHA256:-7b052573ba7894c9924e3e87ba732ccd354d18cb75a883efa9b900ea125bfd51}
+ISO_SHA256=${AUTOFLASH_EMU_WINDOWS_ISO_SHA256:-7b052573ba7894c9924e3e87ba732ccd354d18cb75a883efa9b900ea125bfd51}
 # Windows Terminal's release, for its console, OpenConsole: Terminal itself
 # cannot start on Server Core, which has no XAML. Pinned like the ISO.
 TERMINAL_URL="https://github.com/microsoft/terminal/releases/download/v1.25.2733.0/Microsoft.WindowsTerminal_1.25.2733.0_x64.zip"
@@ -47,26 +50,26 @@ PASSWORD=Windows-emulator
 # What Windows gets: Server Core with only the tool to run is content in 2 GB.
 # Its container is capped at that plus 1 GB for QEMU itself and the disk tools
 # between runs, without swap, so it can never take more of this computer.
-RAM=${AUTOFLASH_WINDOWS_RAM:-2G}
-CPUS=${AUTOFLASH_WINDOWS_CPUS:-2}
+RAM=${AUTOFLASH_EMU_WINDOWS_RAM:-2G}
+CPUS=${AUTOFLASH_EMU_WINDOWS_CPUS:-2}
 if [[ $RAM =~ ^([1-9][0-9]*)G$ ]]; then ram_mb=$(( BASH_REMATCH[1] * 1024 ))
 elif [[ $RAM =~ ^([1-9][0-9]*)M$ ]]; then ram_mb=${BASH_REMATCH[1]}
-else echo "AUTOFLASH_WINDOWS_RAM is a size such as 2G or 3072M, not $RAM"; exit 2
+else echo "AUTOFLASH_EMU_WINDOWS_RAM is a size such as 2G or 3072M, not $RAM"; exit 2
 fi
 cap_mb=$(( ram_mb + 1024 ))
-SSH_PORT=${AUTOFLASH_WINDOWS_SSH_PORT:-2222}
+SSH_PORT=${AUTOFLASH_EMU_WINDOWS_SSH_PORT:-2222}
 
-emu_flags=() rebuild=0 console=openconsole from=tool rebuild_layer="" fresh=0 plug=""
+emu_flags=() rebuild=0 console=openconsole from=tool rebuild_layer="" fresh=0 device=""
 for arg in "$@"; do
     case "$arg" in
-    --plug=*) plug=${arg#--plug=} ;;
+    --device=*) device=${arg#--device=} ;;
     --first-run) from=rig ;;
     --rebuild-layer=installed|--rebuild-layer=rig|--rebuild-layer=tool) rebuild_layer=${arg#*=} ;;
     --classic-console) console=classic ;;
     --fresh) fresh=1; emu_flags+=("$arg") ;;
     --cloud|--stub-cloud|--no-firewall|--pcap) emu_flags+=("$arg") ;;
     --rebuild) rebuild=1; emu_flags+=("$arg") ;;
-    *) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    *) sed -n '2,/^set -euo/{/^#/p}' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
     esac
 done
 
@@ -74,8 +77,8 @@ done
 # to start again. A lock held by this process alone (systemd-inhibit) - no
 # setting of the computer's is changed, and the lock goes when this exits,
 # however it exits. It cannot hold off a flat battery: that is warned of.
-if [ -z "${AUTOFLASH_AWAKE:-}" ] && systemd-inhibit --what=sleep:idle true 2>/dev/null; then
-    exec env AUTOFLASH_AWAKE=1 systemd-inhibit --what=sleep:idle --who="Autoflash emulator" \
+if [ -z "${AUTOFLASH_EMU_WINDOWS_AWAKE:-}" ] && systemd-inhibit --what=sleep:idle true 2>/dev/null; then
+    exec env AUTOFLASH_EMU_WINDOWS_AWAKE=1 systemd-inhibit --what=sleep:idle --who="Autoflash emulator" \
         --why="Windows set-up or a test run" --mode=block "$0" "$@"
 fi
 
@@ -92,7 +95,7 @@ on_battery() {  # true on a laptop running on its battery
     return $battery
 }
 if on_battery; then
-    say "This computer is running on its battery. Plug it in: a Windows install or a"
+    say "This computer is running on its battery. Connect its charger: a Windows install or a"
     say "conversion cut off by a flat battery has to start again."
 fi
 
@@ -126,11 +129,11 @@ if [ "$(uname -s)" != Linux ] || [ ! -e /dev/kvm ]; then
     say "tools/espressif/emulator/windows-bootstrap.ps1 (docs/emulator.md, \"On a Windows computer\")."
     exit 1
 fi
-# Which plug, asked now rather than after Windows has started.
+# Which device, asked now rather than after Windows has started.
 chosen=$(mktemp)
-python3 -I "$ROOT/tools/espressif/emulator/choose_plug.py" --out "$chosen" ${plug:+--plug "$plug"} ||
+python3 -I "$ROOT/tools/espressif/emulator/choose_device.py" --out "$chosen" ${device:+--device "$device"} ||
     { rm -f "$chosen"; exit 1; }
-emu_flags+=("--plug=$(sed -n 2p "$chosen")")
+emu_flags+=("--device=$(sed -n 2p "$chosen")")
 rm -f "$chosen"
 
 sudo_steps=() user_steps=() plan=()
@@ -216,7 +219,7 @@ if [ ${#plan[@]} -gt 0 ]; then
                 got=$(sha256sum "$CACHE/server2025-eval.iso.part" | cut -d' ' -f1)
                 if [ "$got" != "$ISO_SHA256" ]; then
                     say "Microsoft's ISO is not the one this was made for (SHA-256 $got)."
-                    say "If they have published a new one, try it with AUTOFLASH_WINDOWS_ISO_SHA256=$got"
+                    say "If they have published a new one, try it with AUTOFLASH_EMU_WINDOWS_ISO_SHA256=$got"
                     exit 1
                 fi
                 mv "$CACHE/server2025-eval.iso.part" "$CACHE/server2025-eval.iso"
@@ -260,6 +263,7 @@ vm() {  # vm DOCKER-RUN-OPTIONS... -- VM-RUN-COMMAND...: the Windows VM containe
     local options=()
     while [ "$1" != -- ]; do options+=("$1"); shift; done
     shift
+    checkout_files "$ROOT" > "$CACHE/repo-files"  # what vm-run copies of the checkout
     docker run "${options[@]}" --device /dev/kvm -e "KEYBOARD=${LANG:-}" -e "WINDOWS_PASSWORD=$PASSWORD" \
         -e "HOST_UID=$(id -u)" -e "HOST_GID=$(id -g)" \
         -e "RAM=$RAM" -e "CPUS=$CPUS" --memory "${cap_mb}m" --memory-swap "${cap_mb}m" --cpus "$CPUS" \
@@ -268,7 +272,7 @@ vm() {  # vm DOCKER-RUN-OPTIONS... -- VM-RUN-COMMAND...: the Windows VM containe
 avail_mb=$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo)
 if [ "$avail_mb" -lt "$(( cap_mb + 256 ))" ]; then  # the emulator's container too
     say "Windows and the emulator may use up to $(( cap_mb + 256 )) MB; this computer has ${avail_mb} MB free."
-    say "Close what you can, or give Windows less (AUTOFLASH_WINDOWS_RAM=1536M), or it may be slow."
+    say "Close what you can, or give Windows less (AUTOFLASH_EMU_WINDOWS_RAM=1536M), or it may be slow."
 fi
 for name in "${stale[@]}"; do
     rm -f "$CACHE/$name.built-from"  # until it is set up again
@@ -289,7 +293,7 @@ for name in autoflash-emu autoflash-win; do
         exit 1
     fi
 done
-# Its own output stays: with --cloud it asks you to confirm the real plug is unplugged.
+# Its own output stays: with --cloud it asks you to confirm the real device is unplugged.
 "$ROOT/tools/espressif/emulator/emu.sh" --windows --detach "${emu_flags[@]}"
 routed=0
 stop_all() {
@@ -300,11 +304,11 @@ stop_all() {
 }
 trap stop_all EXIT
 emu_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' autoflash-emu)
-# The plug's own address, http://192.168.60.50 - the link the conversion ends
-# with - reachable from this computer's browser: a route to the plug's network
+# The device's own address, http://192.168.60.50 - the link the conversion ends
+# with - reachable from this computer's browser: a route to the device's network
 # through the emulator, for as long as this runs. Set by a container on the
 # host's network, so without sudo; the emulator forwards only this computer's
-# connections to the plug (entrypoint.sh). Not over a route of this
+# connections to the device (entrypoint.sh). Not over a route of this
 # computer's own to that network, which would be its real one.
 host_route() {  # replace|del
     docker run --rm --network host --cap-add NET_ADMIN --entrypoint ip autoflash-emu \
@@ -317,7 +321,7 @@ bridge=br-$(docker network inspect -f '{{.Id}}' "$NETWORK" | cut -c1-12)
 if [ -z "$existing" ] || [[ $existing == *"dev docker0"* ]] || [[ $existing == *"dev $bridge"* ]]; then
     host_route replace && routed=1
 fi
-[ "$routed" = 1 ] || say "This computer has a network of its own at 192.168.60.0/24, so the plug's page is at http://localhost:8080 only."
+[ "$routed" = 1 ] || say "This computer has a network of its own at 192.168.60.0/24, so the device's page is at http://localhost:8080 only."
 docker rm -f autoflash-win >/dev/null 2>&1 || true
 # The key windows-ssh.sh logs on with, made once and kept with the disks.
 if [ ! -f "$CACHE/ssh/id_ed25519" ]; then
@@ -327,7 +331,7 @@ fi
 vm -d --name autoflash-win --network "$NETWORK" --stop-timeout 150 -e "LINK_HOST=$emu_ip" -e "CONSOLE=$console" -e "LAYER=$from" -e "FRESH=$fresh" \
     -p 127.0.0.1:3389:3389 -p 127.0.0.1:5900:5900 -p 127.0.0.1:6080:6080 -p "127.0.0.1:$SSH_PORT:22" -- run >/dev/null
 
-[ "$routed" = 1 ] && say "The plug's page is at http://192.168.60.50, as the conversion's last link says (or http://localhost:8080)."
+[ "$routed" = 1 ] && say "The device's page is at http://192.168.60.50, as the conversion's last link says (or http://localhost:8080)."
 say "Windows is starting (about a minute). Open it in your browser:"
 say "    http://localhost:6080    (copy and paste: the clipboard in noVNC's side panel)"
 say "or with Remote Desktop, localhost:3389, user autoflash, password $PASSWORD, e.g."
@@ -335,7 +339,7 @@ say "    xfreerdp /v:localhost /u:autoflash /p:$PASSWORD /cert:ignore /clipboard
 say "or a VNC viewer on localhost:5900, or SSH (PowerShell) from another terminal:"
 say "    tools/espressif/emulator/windows-ssh.sh     (windows-ssh.sh log -f follows the run's log)"
 say "Windows opens the link and a window to run the conversion in."
-say "This terminal is the emulator: plug restart, plug log, ... -"
+say "This terminal is the emulator: device restart, device log, ... -"
 say "leaving it (exit, or Ctrl-b d) shuts Windows down too."
 read -r -p "Press Enter to open the emulator here. " _
 # Its own client, not docker attach: a container started detached takes no

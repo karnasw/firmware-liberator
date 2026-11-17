@@ -1,0 +1,78 @@
+{
+ "about": "From Sonoff's firmware to Tasmota in a window 80 wide, the device switched off as its interim firmware goes on, and on again once the run says to: it carries on to the end, what it said while waiting taken off",
+ "start": "fresh",
+ "size": "80x40",
+ "minutes": 40,
+ "answers": [
+  {
+   "when": "Press any key",
+   "type": "x"
+  },
+  {
+   "when": "Which firmware should the device have",
+   "type": "1\r"
+  },
+  {
+   "when": "Stage +\\d+ - Installing interim firmware +- Underway",
+   "power": "off",
+   "anywhere": true
+  },
+  {
+   "when": "No answer from the device: switch it off and on",
+   "power": "on",
+   "anywhere": true
+  },
+  {
+   "when": "Which device is this run for",
+   "type": "1\r",
+   "optional": true
+  },
+  {
+   "when": "This computer's password \\(for sudo\\)",
+   "type": "autoflash\r",
+   "times": 6,
+   "optional": true
+  },
+  {
+   "when": "Type .+ to go ahead",
+   "type": "PROCEED\r",
+   "times": 3,
+   "optional": true
+  },
+  {
+   "when": "Which eWeLink account is this device in",
+   "type": "2\r",
+   "optional": true
+  },
+  {
+   "when": "eWeLink account email or phone number",
+   "type": "someone@example.invalid\r",
+   "optional": true
+  },
+  {
+   "when": "eWeLink password for",
+   "type": "made-up-password\r",
+   "optional": true
+  },
+  {
+   "when": "What next",
+   "type": "q\r",
+   "optional": true
+  },
+  {
+   "when": "\\[[Yy]/n\\]",
+   "type": "n\r",
+   "optional": true
+  },
+  {
+   "when": "\\(y/N[^)]*\\)|\\(Y/n[^)]*\\)",
+   "type": "y\r",
+   "times": 3,
+   "optional": true
+  }
+ ],
+ "expect": {
+  "exit": 0,
+  "result": "Converted"
+ }
+}

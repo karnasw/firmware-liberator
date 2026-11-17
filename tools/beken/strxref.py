@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Locate code by the log/format string it uses.
 
 For each string it finds the bytes in the logical image, the literal-pool words

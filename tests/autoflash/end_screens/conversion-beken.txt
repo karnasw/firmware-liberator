@@ -1,0 +1,17 @@
+ Stage 18 - Verifying conversion - Complete
+
+ Conversion complete!
+ The device is running OpenBeken.
+
+     Liberator: 3.0.0                                Firmware: OpenBeken
+     OS:        Ubuntu 24.04.5 LTS                   From:     Sonoff 1.0.2
+     Python:    3.12.3 (venv)                        Model:    S61STPF
+     Retries:   None                                 Backup:   Completed
+     Checks:    Pass                                 Signal:   -45 dBm
+
+ You've reached the bit where I hold out my hat!
+ Free software, not free biscuits... Throw your friendly neighbourhood dev a biscuit:
+     GitHub: https://github.com/sponsors/adamsthws
+     Ko-fi:  https://ko-fi.com/adamsthws
+     PayPal: https://www.paypal.me/adamsthws
+     (Ctrl+click to open)

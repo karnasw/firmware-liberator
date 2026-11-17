@@ -11,27 +11,23 @@ from typing import Any
 
 try:
     from tools.espressif.safeboot.safeboot_migration import (
-        TARGET_PARTITIONS,
-        TARGET_TABLE_SHA256,
         load_manifest,
         is_recovery_manifest,
         require_pinned_artifacts,
         require_recovery_manifest,
         parse_partition_sector,
-        require_exact_partitions,
+        require_tasmota_table,
         verify_manifest_files,
     )
     from tools.espressif.safeboot.serve_safeboot_migration import LOCK_PATH
 except ModuleNotFoundError:
     from safeboot_migration import (
-        TARGET_PARTITIONS,
-        TARGET_TABLE_SHA256,
         load_manifest,
         is_recovery_manifest,
         require_pinned_artifacts,
         require_recovery_manifest,
         parse_partition_sector,
-        require_exact_partitions,
+        require_tasmota_table,
         verify_manifest_files,
     )
     from serve_safeboot_migration import LOCK_PATH
@@ -93,9 +89,7 @@ def main() -> int:
         target = parse_partition_sector(
             (manifest_path.parent / manifest["artifacts"]["target_table"]["file"]).read_bytes()
         )
-        require_exact_partitions(target, TARGET_PARTITIONS)
-        if target["sha256"] != TARGET_TABLE_SHA256:
-            raise ValueError("target table differs from the reviewed official sector")
+        require_tasmota_table(target)
         phases = ("preflight", "stage", "commit", "restore") if recovery_mode else (
             "preflight",
             "stage",

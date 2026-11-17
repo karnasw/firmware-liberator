@@ -7,7 +7,18 @@ body:
       value: |
         Thank you for reporting it. [docs/troubleshooting.md](https://github.com/adamsthws/firmware-liberator/blob/main/docs/troubleshooting.md) covers what has happened before - worth a look first.
 
-        A run that **worked**, or one you only want to tell about, is just as welcome in [Conversions In The Wild](https://github.com/adamsthws/firmware-liberator/discussions/1).
+        A run that **worked** needs nothing more: its report tells the project how it went ([what the tool sends](https://firmwareliberator.com/docs/what-the-tool-sends)).
+  - type: input
+    id: report
+    attributes:
+      label: The report's ID
+      description: The tool shows it where it says to open an issue, and it is under the report on your clipboard. It lets the maintainer find this run's report, which says nothing about you.
+  - type: textarea
+    id: run_report
+    attributes:
+      label: The run's report
+      description: The report the tool showed at the end of the run. It is put on your clipboard for you to paste here.
+      render: text
   - type: textarea
     id: what
     attributes:

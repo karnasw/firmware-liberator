@@ -1,10 +1,15 @@
 import base64
+import http.client
 import json
+import os
+import ssl
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -14,7 +19,7 @@ from tools.autoflash import hostsys, redirect_test
 class FirewallCommandTests(unittest.TestCase):
     """The add and remove commands must undo each other exactly."""
 
-    def test_ufw_rule_admits_only_the_plug_on_both_ports(self):
+    def test_ufw_rule_admits_only_the_device_on_both_ports(self):
         add, remove = hostsys.firewall_commands("ufw", "192.0.2.50", [8088, 8089])
         self.assertEqual(add, ["ufw", "allow", "from", "192.0.2.50", "to", "any", "port",
                                "8088,8089", "proto", "tcp", "comment", "Autoflash"])
@@ -27,7 +32,7 @@ class FirewallCommandTests(unittest.TestCase):
         self.assertEqual(add[1].replace("--add-", "--remove-"), remove[1])
         self.assertIn("source address=192.0.2.50", add[1])
 
-    def test_windows_rule_is_named_per_plug_and_removed_by_name(self):
+    def test_windows_rule_is_named_per_device_and_removed_by_name(self):
         add, remove = hostsys.firewall_commands("windows", "192.0.2.50", [8088, 8089])
         self.assertIn("name=Autoflash 192.0.2.50", add)
         self.assertIn("remoteip=192.0.2.50", add)
@@ -134,7 +139,7 @@ class WindowsFirewallTests(unittest.TestCase):
                 mock.patch.object(hostsys, "interface_towards", return_value=interface):
             return hostsys.windows_firewall("192.0.2.50")
 
-    def test_the_plugs_network_decides_which_profile_counts(self):
+    def test_the_devices_network_decides_which_profile_counts(self):
         state = self.read(self.STATE)
         self.assertTrue(state["enabled"])
         self.assertTrue(state["local_rules"])          # Private takes local rules...
@@ -146,8 +151,17 @@ class WindowsFirewallTests(unittest.TestCase):
         hostsys._firewall_cache.clear()
         with mock.patch.object(hostsys, "powershell", return_value=None):
             self.assertIsNone(hostsys.windows_firewall()["enabled"])
+            # Nor taken for a policy that ignores the rule the tool adds: that is said only when seen.
+            self.assertTrue(hostsys.windows_firewall()["local_rules"])
+            self.assertFalse(hostsys.windows_firewall()["domain"])  # nor an organisation's computer
             with mock.patch.object(hostsys, "IS_WINDOWS", True):
                 self.assertEqual(hostsys.active_firewall(), "windows")
+
+    def test_one_seen_on_is_the_active_firewall_and_one_seen_off_is_not(self):
+        for enabled, expected in ((True, "windows"), (False, None)):
+            with mock.patch.object(hostsys, "IS_WINDOWS", True), \
+                    mock.patch.object(hostsys, "windows_firewall", return_value={"enabled": enabled}):
+                self.assertEqual(hostsys.active_firewall(), expected)
 
     def test_advice_names_what_the_tool_cannot_change(self):
         public = dict(self.STATE, networks=[{"interface": "Wi-Fi", "category": "Public"}])
@@ -300,8 +314,61 @@ class MacFirewallTests(unittest.TestCase):
         added.assert_not_called()
         self.assertTrue(rule.detail["preexisting"])
 
+    def blocks_all(self, said: str) -> bool:
+        completed = subprocess.CompletedProcess([], 0, stdout=said, stderr="")
+        with mock.patch.object(hostsys, "IS_MAC", True), \
+                mock.patch.object(hostsys.Path, "exists", return_value=True), \
+                mock.patch.object(hostsys, "_run", return_value=completed):
+            return hostsys.mac_blocks_all()
+
+    def test_block_all_is_read_in_each_wording(self):
+        for said in ("Firewall has block all state set to enabled.\n", "Block all ENABLED!\n",
+                     "Firewall is set to block all non-essential incoming connections\n"):
+            self.assertTrue(self.blocks_all(said), said)
+        for said in ("Firewall has block all state set to disabled.\n", "Block all DISABLED!\n", ""):
+            self.assertFalse(self.blocks_all(said), said)
+
+    def test_block_all_is_named_before_and_after_a_failure(self):
+        with mock.patch.object(hostsys, "IS_MAC", True), \
+                mock.patch.object(hostsys, "mac_local_network_note", return_value=[]):
+            with mock.patch.object(hostsys, "mac_blocks_all", return_value=True):
+                for after_failure in (False, True):
+                    text = " ".join(hostsys.firewall_advice("192.0.2.50", [8088], after_failure=after_failure))
+                    self.assertIn("Block all incoming connections", text)
+            with mock.patch.object(hostsys, "mac_blocks_all", return_value=False):
+                self.assertEqual(hostsys.firewall_advice("192.0.2.50", [8088]), [])
+
+    def local_network_note(self, release: str, terminal: str | None) -> list[str]:
+        environ = {} if terminal is None else {"TERM_PROGRAM": terminal}
+        with mock.patch.object(hostsys, "IS_MAC", True), \
+                mock.patch.object(hostsys.platform, "mac_ver", return_value=(release, ("", "", ""), "")), \
+                mock.patch.dict(hostsys.os.environ, environ, clear=True):
+            return hostsys.mac_local_network_note()
+
+    def test_local_network_permission_is_named_for_a_terminal_that_needs_it(self):
+        text = " ".join(self.local_network_note("15.1", "iTerm.app"))
+        self.assertIn("Local Network", text)
+        self.assertIn("iTerm.app", text)
+        self.assertIn("Local Network", " ".join(self.local_network_note("26.0", None)))
+        # Apple's Terminal is exempt, and macOS before 15 has no such permission.
+        self.assertEqual(self.local_network_note("15.1", "Apple_Terminal"), [])
+        self.assertEqual(self.local_network_note("14.6", "iTerm.app"), [])
+
+    def test_local_network_permission_is_said_when_the_device_does_not_answer(self):
+        note = ["NOTE"]
+        with mock.patch.object(hostsys, "IS_MAC", True), \
+                mock.patch.object(hostsys, "mac_blocks_all", return_value=False), \
+                mock.patch.object(hostsys, "mac_local_network_note", return_value=note):
+            self.assertEqual(hostsys.security_software_note(), note)
+            self.assertEqual(hostsys.firewall_advice("192.0.2.50", [8088], after_failure=True), note)
+            self.assertEqual(hostsys.firewall_advice("192.0.2.50", [8088]), [])
+
 
 class CommandOutputTests(unittest.TestCase):
+    def test_the_reviewed_tools_run_from_the_repositorys_root(self):
+        self.assertEqual(hostsys.run_tool.__defaults__[0], hostsys.ROOT)
+        self.assertTrue((hostsys.ROOT / "tools" / "autoflash" / "hostsys.py").is_file())
+
     def test_output_that_does_not_decode_is_not_fatal(self):
         # A German netsh's umlaut, say, in a code page Python did not expect.
         completed = hostsys._run([sys.executable, "-c",
@@ -340,6 +407,30 @@ class PythonScriptTests(unittest.TestCase):
         completed = self.run_isolated(hostsys.python_script(self.script, "--email", "a b", unbuffered=True))
         self.assertEqual(completed.stdout, "found --email a b\n", completed.stderr)
         self.assertEqual(completed.returncode, 3)
+
+
+@unittest.skipUnless(hasattr(os, "fork"), "a process is handed to another as its parent goes on Linux and macOS")
+class ParentGoneTests(unittest.TestCase):
+    def test_a_script_is_told_once_the_program_that_started_it_has_gone(self):
+        self.assertFalse(hostsys.parent_gone()())   # this test's own parent is still here
+        with tempfile.TemporaryDirectory() as folder:
+            said = Path(folder, "said")
+            child = ("import sys, time; sys.path.insert(0, sys.argv[1]); from tools.autoflash import hostsys; "
+                     "gone = hostsys.parent_gone(); open(sys.argv[2], 'w').write('started'); "
+                     "deadline = time.monotonic() + 20\n"
+                     "while not gone() and time.monotonic() < deadline: time.sleep(0.05)\n"
+                     "open(sys.argv[2], 'w').write('gone' if gone() else 'still there')")
+            # A parent that starts the child and exits at once, as the tool killed would.
+            parent = ("import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', sys.argv[1], *sys.argv[2:]]); "
+                      "deadline = time.monotonic() + 20\n"
+                      "import os\n"
+                      "while not os.path.exists(sys.argv[3]) and time.monotonic() < deadline: time.sleep(0.05)")
+            subprocess.run([sys.executable, "-c", parent, child, str(Path(hostsys.__file__).resolve().parents[2]),
+                            str(said)], check=True, timeout=30)
+            deadline = time.monotonic() + 20
+            while said.read_text(encoding="utf-8") != "gone" and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(said.read_text(encoding="utf-8"), "gone")
 
 
 class WindowsElevationTests(unittest.TestCase):
@@ -393,6 +484,8 @@ class SystemCommandTests(unittest.TestCase):
     def test_mac_addresses_are_normalised(self):
         self.assertEqual(hostsys.normalise_mac("AA-BB-CC-7E-81-9F"), "aa:bb:cc:7e:81:9f")
         self.assertEqual(hostsys.normalise_mac("2:b1:c2:d:3e:4f"), "02:b1:c2:0d:3e:4f")
+        # As the DualR3's firmware reports it to eWeLink.
+        self.assertEqual(hostsys.normalise_mac("123456E32D07"), "12:34:56:e3:2d:07")
 
     def test_checksum_listing_is_verified_without_sha256sum(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -407,7 +500,7 @@ class SystemCommandTests(unittest.TestCase):
 
 
 class RedirectTestTests(unittest.TestCase):
-    """The router-rule test: borrow the plug's address, try both sources, give it back."""
+    """The router-rule test: borrow the device's address, try both sources, give it back."""
 
     def run_test(self, reaches):
         calls = []
@@ -419,7 +512,7 @@ class RedirectTestTests(unittest.TestCase):
         with mock.patch.object(hostsys, "local_addresses", return_value={"192.0.2.20"}), \
              mock.patch.object(hostsys, "ping_ok", return_value=False):
             try:
-                redirect_test.run(interface="eth0", plug_ip="192.0.2.50", own_ip="192.0.2.20",
+                redirect_test.run(interface="eth0", device_ip="192.0.2.50", own_ip="192.0.2.20",
                                   vendor_ip="203.0.113.10", vendor_port=8088, log=lambda _: None,
                                   elevated=elevated, connect=lambda src, *_: reaches[src])
                 result = None
@@ -441,11 +534,11 @@ class RedirectTestTests(unittest.TestCase):
         error, _ = self.run_test({"192.0.2.50": False, "192.0.2.20": False})
         self.assertIn("cannot tell", str(error))
 
-    def test_a_plug_still_powered_stops_the_test(self):
+    def test_a_device_still_powered_stops_the_test(self):
         with mock.patch.object(hostsys, "local_addresses", return_value=set()), \
              mock.patch.object(hostsys, "ping_ok", return_value=True):
-            with self.assertRaisesRegex(redirect_test.RedirectTestError, "unplug"):
-                redirect_test.run(interface="eth0", plug_ip="192.0.2.50", own_ip="192.0.2.20",
+            with self.assertRaisesRegex(redirect_test.RedirectTestError, "switch the device off first"):
+                redirect_test.run(interface="eth0", device_ip="192.0.2.50", own_ip="192.0.2.20",
                                   vendor_ip="203.0.113.10", vendor_port=8088,
                                   elevated=lambda _: self.fail("must not borrow the address"))
 
@@ -466,6 +559,21 @@ class PortTests(unittest.TestCase):
             self.assertTrue(hostsys.port_is_free("127.0.0.1", free))
             self.assertEqual(hostsys.first_free_port("127.0.0.1", [busy, free]), free)
             self.assertIsNone(hostsys.first_free_port("127.0.0.1", [busy]))
+
+    def test_a_port_left_in_time_wait_is_free(self):
+        # An earlier run's server closed its end first, which leaves the port in
+        # TIME_WAIT: a new one may listen there all the same.
+        import socket
+        with socket.socket() as server:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # as http.server's
+            server.bind(("127.0.0.1", 0))
+            server.listen()
+            port = server.getsockname()[1]
+            with socket.create_connection(("127.0.0.1", port)) as client:
+                accepted, _ = server.accept()
+                accepted.close()
+                client.recv(1)
+        self.assertTrue(hostsys.port_is_free("127.0.0.1", port))
 
 
 class SudoPromptTests(unittest.TestCase):
@@ -547,8 +655,68 @@ class AdminPasswordTests(unittest.TestCase):
         self.assertEqual(shown.call_count, 2)  # "try again" twice, not after the last
 
 
-if __name__ == "__main__":
-    unittest.main()
+class DownloadTests(unittest.TestCase):
+    """Seen in the fault suite: one TLS handshake timing out stopped a run, and on
+    2026-11-08 GitHub's release downloads answered 504 for minutes at a time."""
+
+    def fetch(self, *answers):
+        replies = iter(answers)
+        said, waited = [], []
+
+        def urlopen(*_, **__):
+            reply = next(replies)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+        with mock.patch.object(hostsys, "urlopen", side_effect=urlopen) as opened, \
+                mock.patch.object(hostsys.time, "sleep", side_effect=waited.append):
+            try:
+                found = hostsys.download("https://example.invalid/file", say=said.append)
+            except OSError as exc:
+                found = exc
+        return found, opened.call_count, waited, said
+
+    @staticmethod
+    def http_error(code):
+        return urllib.error.HTTPError("https://example.invalid/file", code, "no", None, None)
+
+    @staticmethod
+    def good():
+        reply = mock.MagicMock()
+        reply.__enter__.return_value.read.return_value = b"file"
+        return reply
+
+    def test_a_passing_trouble_is_tried_again(self):
+        for trouble in (TimeoutError("The handshake operation timed out"), ConnectionResetError(),
+                        urllib.error.URLError("no route"), self.http_error(500), self.http_error(503),
+                        self.http_error(504),
+                        self.http_error(429), http.client.IncompleteRead(b"fi", 2)):
+            found, tries, _, said = self.fetch(trouble, self.good())
+            self.assertEqual((found, tries), (b"file", 2), trouble)
+            self.assertIn("trying again in 5s", said[0])
+
+    def test_a_server_turning_it_away_for_minutes_is_waited_out_longer_each_time(self):
+        found, tries, waited, _ = self.fetch(*[self.http_error(504)] * 5, self.good())
+        self.assertEqual((found, tries), (b"file", 6))
+        self.assertEqual(waited, list(hostsys.DOWNLOAD_WAITS))
+        self.assertGreaterEqual(sum(hostsys.DOWNLOAD_WAITS), 120)
+
+    def test_it_gives_up_after_its_tries_with_the_error_its_callers_expect(self):
+        tries_in_all = len(hostsys.DOWNLOAD_WAITS) + 1
+        found, tries, _, _ = self.fetch(*[TimeoutError("timed out")] * tries_in_all)
+        self.assertIsInstance(found, TimeoutError)
+        self.assertEqual(tries, tries_in_all)
+        found, tries, _, _ = self.fetch(*[http.client.IncompleteRead(b"fi", 2)] * tries_in_all)
+        self.assertIsInstance(found, OSError)
+        self.assertIn("cut off", str(found))
+        self.assertEqual(tries, tries_in_all)
+
+    def test_what_would_only_fail_again_is_not_tried_again(self):
+        inspected = urllib.error.URLError(ssl.SSLCertVerificationError("certificate verify failed"))
+        for lasting in (self.http_error(404), self.http_error(403), inspected):
+            found, tries, waited, _ = self.fetch(lasting)
+            self.assertIs(found, lasting)
+            self.assertEqual((tries, waited), (1, []))
 
 
 class LanAddressesTests(unittest.TestCase):
@@ -628,6 +796,89 @@ class LanAddressesTests(unittest.TestCase):
                 self.assertEqual(hostsys.lan_networks(), {})   # a tool that fails: nothing beyond the default
             self.assertEqual(run.call_args_list[0].args[0], expected)
 
+    def test_its_tools_answers_are_read_only_when_both_worked(self):
+        links = "2: eth0: <BROADCAST,UP> mtu 1500 state UP\\    link/ether 12:34:56:ab:cd:ef brd ff:ff:ff:ff:ff:ff\n"
+        addresses = "2: eth0    inet 192.0.2.10/24 brd 192.0.2.255 scope global eth0\\       valid_lft forever\n"
+        ok = lambda stdout: mock.Mock(returncode=0, stdout=stdout)
+        cases = (([ok(addresses), ok(links)], {"192.0.2.10": 24}),
+                 ([ok(addresses), None], {}),
+                 ([mock.Mock(returncode=1, stdout=addresses), ok(links)], {}),
+                 ([ok(addresses), mock.Mock(returncode=1, stdout=links)], {}))
+        for answers, expected in cases:
+            with self.subTest(answers=answers), mock.patch.object(hostsys, "IS_LINUX", True), \
+                    mock.patch.object(hostsys, "_run", side_effect=answers):
+                self.assertEqual(hostsys.lan_networks(), expected)
+        ifconfig = "en0: flags=8863<UP,BROADCAST> mtu 1500\n\tether 12:34:56:ab:cd:ef\n\tinet 192.0.2.10 netmask 0xffffff00\n"
+        with mock.patch.object(hostsys, "IS_LINUX", False), mock.patch.object(hostsys, "IS_MAC", True), \
+                mock.patch.object(hostsys, "_run", return_value=ok(ifconfig)):
+            self.assertEqual(hostsys.lan_networks(), {"192.0.2.10": 24})
+
+
+class ConnectionTests(unittest.TestCase):
+    """What carries this computer to the device's network, and whether a VPN is
+    up, for the run's report: read from the system's own words."""
+
+    def test_linux_tells_wifi_from_ethernet_by_the_interfaces_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name, parts in (("wlp2s0", ["wireless", "device"]), ("enp3s0", ["device"]), ("br0", [])):
+                for part in parts:
+                    (root / name / part).mkdir(parents=True)
+                (root / name).mkdir(exist_ok=True)
+            self.assertEqual([hostsys.connection_linux(root / name) for name in ("wlp2s0", "enp3s0", "br0")],
+                             ["wifi", "ethernet", "other"])
+
+    def test_macos_reads_the_hardware_port(self):
+        ports = ("Hardware Port: Wi-Fi\nDevice: en0\nEthernet Address: 12:34:56:ab:cd:01\n\n"
+                 "Hardware Port: USB 10/100/1000 LAN\nDevice: en5\nEthernet Address: 12:34:56:ab:cd:02\n\n"
+                 "Hardware Port: Thunderbolt Bridge\nDevice: bridge0\nEthernet Address: 12:34:56:ab:cd:03\n")
+        self.assertEqual([hostsys.connection_mac(ports, name) for name in ("en0", "en5", "bridge0", "utun3")],
+                         ["wifi", "ethernet", "other", "other"])
+
+    def test_windows_reads_the_adapters_type(self):
+        self.assertEqual([hostsys.connection_windows(kind) for kind in (71, 6, 53, None)],
+                         ["wifi", "ethernet", "other", None])
+
+    def test_a_vpn_is_a_tunnel_carrying_ipv4(self):
+        links = ("2: wlp2s0: <BROADCAST,UP> mtu 1500 state UP link/ether 12:34:56:ab:cd:01 brd ff:ff:ff:ff:ff:ff\n"
+                 "3: wg0: <POINTOPOINT,NOARP,UP> mtu 1420 state UNKNOWN link/none\n")
+        lan = "1: lo    inet 127.0.0.1/8 scope host lo\n2: wlp2s0    inet 192.0.2.10/24 brd 192.0.2.255\n"
+        self.assertFalse(hostsys.vpn_linux(lan, links))
+        self.assertTrue(hostsys.vpn_linux(lan + "3: wg0    inet 10.8.0.2/24 scope global wg0\n", links))
+        own = ("en0: flags=8863<UP,BROADCAST,RUNNING> mtu 1500\n\tether 12:34:56:ab:cd:01\n\tinet 192.0.2.10 netmask 0xffffff00\n"
+               "utun0: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1380\n\tinet6 fe80::1%utun0 prefixlen 64\n")
+        self.assertFalse(hostsys.vpn_mac(own), "macOS's own utuns carry IPv6 alone")
+        self.assertTrue(hostsys.vpn_mac(own + "utun4: flags=8051<UP,POINTOPOINT,RUNNING> mtu 1280\n"
+                                              "\tinet 100.64.0.7 --> 100.64.0.7 netmask 0xffffffff\n"))
+        up, down = hostsys.IF_OPER_STATUS_UP, 2
+        lan_rows = [("192.0.2.10", 24, 71, up, 6, 3), ("127.0.0.1", 8, 24, up, 0, 1),
+                    ("169.254.9.9", 16, 53, up, 0, 9), ("10.8.0.2", 24, 53, down, 0, 7)]
+        self.assertFalse(hostsys.vpn_windows(lan_rows))
+        self.assertTrue(hostsys.vpn_windows([*lan_rows, ("10.8.0.2", 24, 53, up, 0, 8)]), "Wintun")
+        self.assertTrue(hostsys.vpn_windows([*lan_rows, ("10.9.0.2", 24, 23, up, 6, 10)]), "PPP")
+
+    def test_administrator_rights_asked_for_are_noted(self):
+        self.addCleanup(setattr, hostsys, "asked_for_admin", False)
+        hostsys.asked_for_admin = False
+        with mock.patch.object(hostsys, "IS_WINDOWS", False), mock.patch.object(hostsys, "sudo_will_ask", return_value=False), \
+                mock.patch.object(hostsys, "password_asker", lambda: "x"), \
+                mock.patch.object(hostsys.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="")), \
+                mock.patch.object(hostsys.output, "log_only"):
+            hostsys.elevated_output(["true"])
+        self.assertTrue(hostsys.asked_for_admin)
+
+    def test_the_note_on_other_security_software_is_noted_when_given(self):
+        self.addCleanup(setattr, hostsys, "security_note_shown", False)
+        hostsys.security_note_shown = False
+        with mock.patch.object(hostsys, "IS_MAC", False), mock.patch.object(hostsys, "IS_WINDOWS", True), \
+                mock.patch.object(hostsys, "windows_firewall", return_value={"others": []}):
+            self.assertEqual(hostsys.security_software_note(), [])
+        self.assertFalse(hostsys.security_note_shown)
+        with mock.patch.object(hostsys, "IS_MAC", False), mock.patch.object(hostsys, "IS_WINDOWS", True), \
+                mock.patch.object(hostsys, "windows_firewall", return_value={"others": ["Example AV"]}):
+            self.assertTrue(hostsys.security_software_note())
+        self.assertTrue(hostsys.security_note_shown)
+
 
 class NetworkOfTests(unittest.TestCase):
     """A sweep covers the network as this computer has it, no wider than a /22."""
@@ -645,7 +896,7 @@ class NetworkOfTests(unittest.TestCase):
         self.assertEqual(self.width("10.20.5.9", {"10.20.5.9": 16}), ("10.20.4.0/22", 1022))
 
     def test_an_address_on_another_of_its_networks_takes_that_ones_size(self):
-        # The plug's address, on the computer's /23: the plug's half of it, not a /24.
+        # The device's address, on the computer's /23: the device's half of it, not a /24.
         self.assertEqual(self.width("10.20.4.200", {"10.20.5.9": 23, "192.0.2.10": 24}), ("10.20.4.0/23", 510))
 
     def test_a_network_this_computer_does_not_know_is_a_24(self):
@@ -691,7 +942,7 @@ class SweepTests(unittest.TestCase):
 
     def test_what_was_seen_counts_though_the_table_dropped_it_since(self):
         # The kernel drops entries not renewed for 5 s once its table is full:
-        # a plug seen early in a wide sweep is kept from the reads along the way.
+        # a device seen early in a wide sweep is kept from the reads along the way.
         tables = [{"10.20.4.37": "12:34:56:ab:cd:ef"}, {"10.20.6.8": "12:34:56:ab:cd:01"}]
         reads = threading.Event()
         calls = []
@@ -713,6 +964,16 @@ class SweepTests(unittest.TestCase):
             seen = hostsys.sweep("10.20.5.9")
         self.assertEqual(seen, {"10.20.4.37": "12:34:56:ab:cd:ef", "10.20.6.8": "12:34:56:ab:cd:01"})
 
+    def test_what_answered_last_is_read_once_the_pings_are_done(self):
+        # The watcher reads only every SWEEP_READ_EVERY: a reply at the end is still caught.
+        with mock.patch.object(hostsys, "IS_LINUX", True), \
+                mock.patch.object(hostsys, "SWEEP_READ_EVERY", 60), \
+                mock.patch.object(hostsys, "lan_networks", return_value={}), \
+                mock.patch.object(hostsys, "neighbour_table", return_value={"10.0.0.37": "12:34:56:ab:cd:ef"}), \
+                mock.patch.object(hostsys, "_ping_quietly"), \
+                mock.patch.object(hostsys.time, "sleep"):
+            self.assertEqual(hostsys.sweep("10.0.0.2"), {"10.0.0.37": "12:34:56:ab:cd:ef"})
+
     def test_no_more_pings_at_once_than_files_allow(self):
         resource = __import__("resource")
         for soft, workers in ((1024, 240), (1048576, 256), (256, 48), (80, 16), (resource.RLIM_INFINITY, 256)):
@@ -722,7 +983,7 @@ class SweepTests(unittest.TestCase):
 
 
 class FindByMacTests(unittest.TestCase):
-    def test_a_plug_the_sweep_saw_is_found_though_the_table_dropped_it(self):
+    def test_a_device_the_sweep_saw_is_found_though_the_table_dropped_it(self):
         with mock.patch.object(hostsys, "neighbour_table", return_value={}), \
                 mock.patch.object(hostsys, "sweep", return_value={"10.20.4.37": "12:34:56:ab:cd:ef"}):
             self.assertEqual(hostsys.find_by_mac("12:34:56:ab:cd:ef", "10.20.5.9"), "10.20.4.37")
@@ -740,3 +1001,30 @@ class NeighbourTableTests(unittest.TestCase):
                 mock.patch.object(hostsys, "_run", return_value=mock.Mock(returncode=0, stdout=arp)):
             self.assertEqual(hostsys.neighbour_table(), {"192.168.60.50": "12:34:56:ab:cd:ef"})
 
+
+
+class ClipboardTests(unittest.TestCase):
+    def test_a_tool_that_stays_behind_holding_the_selection_does_not_hold_the_run(self):
+        # As xclip and xsel do: the copy is theirs once they have read it, but
+        # they keep running, and their output with them.
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = Path(tmp) / "xclip"
+            tool.write_text("#!/bin/sh\ncat > /dev/null\n( sleep 30 ) &\nexit 0\n", encoding="utf-8")
+            tool.chmod(0o755)
+            with mock.patch.object(hostsys, "IS_WINDOWS", False), mock.patch.object(hostsys, "IS_MAC", False), \
+                    mock.patch.object(hostsys.shutil, "which",
+                                      side_effect=lambda name: str(tool) if name == "xclip" else None), \
+                    mock.patch.dict(hostsys.os.environ, {"PATH": f"{tmp}:/usr/bin:/bin", "AUTOFLASH_NO_CLIPBOARD": ""}):
+                started = time.monotonic()
+                self.assertTrue(hostsys.copy_to_clipboard("the report"))
+            self.assertLess(time.monotonic() - started, 3)
+
+    def test_none_where_told_to_leave_the_clipboard_alone(self):
+        with mock.patch.dict(hostsys.os.environ, {"AUTOFLASH_NO_CLIPBOARD": "1"}), \
+                mock.patch.object(hostsys.subprocess, "run") as ran:
+            self.assertFalse(hostsys.copy_to_clipboard("the report"))
+        ran.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

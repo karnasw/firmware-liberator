@@ -1,24 +1,24 @@
 # ESPHome for the Sonoff S60 (UK S60TPG and EU S60TPF: the same pins).
 #
 # The conversion tool installs this pre-built (artifacts/README.md says how it
-# is built), with no Wi-Fi and no passwords in it: it writes the plug's own
+# is built), with no Wi-Fi and no passwords in it: it writes the device's own
 # Wi-Fi into the two placeholders below (tools/autoflash/imprint.py), and at
 # boot they are handed to wifi.configure. Kept in this one file, so that Home
-# Assistant can adopt the plug from it (dashboard_import) and build it there.
+# Assistant can adopt the device from it (dashboard_import) and build it there.
 
 esphome:
-  # Named as every firmware the conversion installs is, whatever the plug:
+  # Named as every firmware the conversion installs is, whatever the device:
   # the firmware and the last three bytes of its MAC (esphome-abcdef), its
   # own network too; ESPHome adds them to the friendly name with a space
-  # (esphome abcdef). The comment says what plug it is, which the tool tells
+  # (esphome abcdef). The comment says what device it is, which the tool tells
   # it by - one for every model of the S60.
   name: esphome
   friendly_name: esphome
   comment: Sonoff-S60
   name_add_mac_suffix: true
   project:
-    name: adamsthws.sonoff-s60
-    version: "1.6.0"
+    name: liberator.sonoff-s60
+    version: "2026.10.0-2"
   # System headers only: adoption takes this one file
   includes:
     - <nvs.h>
@@ -26,7 +26,7 @@ esphome:
   on_boot:
     # Tasmota holds the relay and LED pins through a software restart, and
     # the install ends with one: release them before anything drives them,
-    # or the relay stays as Tasmota left it until the plug is unplugged.
+    # or the relay stays as Tasmota left it until the device is unplugged.
     - priority: 1000
       then:
         - lambda: |-
@@ -56,7 +56,7 @@ esphome:
             wifi::WiFiAP ap;
             ap.set_ssid(App.get_name());
             wifi::global_wifi_component->set_ap(ap);
-    # After globals are restored (800), before the meter is read: the plug's
+    # After globals are restored (800), before the meter is read: the device's
     # factory calibration and board factor, as the stock firmware applies them.
     - priority: 600
       then:
@@ -113,7 +113,7 @@ esphome:
               }
             }
 
-            // Else the one the conversion tool gave from the plug's Sonoff
+            // Else the one the conversion tool gave from the device's Sonoff
             // backup (autoflash_calibration), once Sonoff's NVS has none.
             const char *source;
             if (numbers.size() == 20) {
@@ -127,7 +127,7 @@ esphome:
             }
             id(calibration_status) = std::string(source) + ", factor " + (all_high ? "1.00" : "1.02");
             ESP_LOGI("s60", "Calibration: %s", id(calibration_status).c_str());
-    # Once, after globals are restored: the energy totals of 1.3.0 and before,
+    # Once, after globals are restored: the energy totals of the first builds,
     # integration sensors, each saved (Wh, a float) under its sensor's name.
     - priority: 600
       then:
@@ -171,13 +171,13 @@ esphome:
               }
             }
 
-# Adopting the plug in Home Assistant's ESPHome builder takes this config as
-# a package: the plug's own config names it, with the plug's name, API key
+# Adopting the device in Home Assistant's ESPHome builder takes this config as
+# a package: the device's own config names it, with the device's name, API key
 # and Wi-Fi. It names the release this image came out in, which cannot change,
-# so nothing of ours reaches an adopted plug until its owner names a newer one.
+# so nothing of ours reaches an adopted device until its owner names a newer one.
 # update_firmware.py writes the release.
 dashboard_import:
-  package_import_url: github://adamsthws/firmware-liberator/devices/sonoff-s60/esphome.yaml@v2.3.0
+  package_import_url: github://adamsthws/firmware-liberator/devices/sonoff-s60/esphome.yaml@v3.0.0
   import_full_config: false
 
 globals:
@@ -214,8 +214,8 @@ globals:
   - id: calibration_status
     type: std::string
     initial_value: '"unknown"'
-  # The factory calibration the conversion tool gave from the plug's Sonoff
-  # backup, for a plug whose Sonoff NVS no longer has it.
+  # The factory calibration the conversion tool gave from the device's Sonoff
+  # backup, for a device whose Sonoff NVS no longer has it.
   - id: calibration_from_backup
     type: std::array<double, 18>
     restore_value: true
@@ -260,12 +260,12 @@ preferences:
 logger:
 
 api:
-  # Not restarting when Home Assistant is away: a plug without it would cut
+  # Not restarting when Home Assistant is away: a device without it would cut
   # the power to what it runs every 15 minutes (the default).
   reboot_timeout: 0s
   actions:
-    # The Wi-Fi the plug is on, name and password, for the conversion tool to
-    # hand to the next firmware when the plug leaves ESPHome: ESPHome says
+    # The Wi-Fi the device is on, name and password, for the conversion tool to
+    # hand to the next firmware when the device leaves ESPHome: ESPHome says
     # neither otherwise. Anything that can use this API can ask - anything on
     # the network, while the API has no encryption key, as Tasmota's settings
     # backup gives them too. Give the API a key to close it; the tool then
@@ -277,9 +277,9 @@ api:
             data: !lambda |-
               root["ssid"] = wifi::global_wifi_component->get_sta().get_ssid();
               root["password"] = wifi::global_wifi_component->get_sta().get_password();
-    # The plug's factory calibration (the 18 numbers of calib_coefficient0
-    # after its two 1s), which the conversion tool gives from the plug's
-    # Sonoff backup: saved, and used when Sonoff's NVS has none - on a plug
+    # The device's factory calibration (the 18 numbers of calib_coefficient0
+    # after its two 1s), which the conversion tool gives from the device's
+    # Sonoff backup: saved, and used when Sonoff's NVS has none - on a device
     # converted through Tasmota. The tool then reads the Calibration sensor.
     # (No answer: ESPHome 2026.10.0 builds no action with a list that answers.)
     - action: autoflash_calibration
@@ -298,7 +298,7 @@ api:
             }
         - component.update: calibration_sensor
         # Written to flash now, once the globals have saved themselves (each
-        # loop), not up to a minute later: unplugged in that minute, the plug
+        # loop), not up to a minute later: unplugged in that minute, the device
         # would forget it.
         - delay: 1s
         - lambda: global_preferences->sync();
@@ -309,7 +309,7 @@ ota:
 
 web_server:
   version: 3
-  # The page's code from the plug itself, so it works where the plug has no internet.
+  # The page's code from the device itself, so it works where the device has no internet.
   local: true
 
 wifi:
@@ -587,7 +587,7 @@ sensor:
     device_class: power_factor
     state_class: measurement
 
-  # The energy totals, kept through restarts and updates. Named as 1.3.0's,
+  # The energy totals, kept through restarts and updates. Named as the first builds',
   # so Home Assistant keeps their history.
   - platform: template
     name: "Daily energy"
@@ -629,9 +629,9 @@ sensor:
     device_class: energy
     state_class: total_increasing
 
-  # The Wi-Fi signal where the plug is, in dBm. The conversion tool reads it
-  # (/sensor/WiFi Signal) before it changes the plug's firmware, to suggest
-  # moving a plug whose signal is weak; keep its name for that.
+  # The Wi-Fi signal where the device is, in dBm. The conversion tool reads it
+  # (/sensor/WiFi Signal) before it changes the device's firmware, to suggest
+  # moving a device whose signal is weak; keep its name for that.
   - platform: wifi_signal
     name: "WiFi Signal"
     entity_category: diagnostic

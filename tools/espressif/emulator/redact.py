@@ -17,8 +17,13 @@ import sys
 from pathlib import Path
 
 if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    # Under an earlier release's tool (unattended-test.sh --code) the tree around
+    # this folder is that release's: this checkout's modules are kept in it. A
+    # later copy of the checkout empties that copy, leaving its folders.
+    _kept = Path(__file__).resolve().parent / "checkout"
+    sys.path.insert(0, str(_kept if (_kept / "tools/__init__.py").is_file() else Path(__file__).resolve().parents[3]))
 
+from tools.espressif import flashmap  # noqa: E402
 from tools.espressif.inspect_stock_nvs import parse  # noqa: E402
 
 NVS_OFFSET, NVS_SIZE = 0x9000, 0x10000
@@ -33,7 +38,12 @@ MEMORY_DUMP = re.compile(rb"^\s*(?:0x)?[0-9a-fA-F]{8}:\s+0x[0-9a-fA-F]{8}")
 
 def secrets(flash: bytes) -> dict[bytes, str]:
     """Every secret byte string in the dump's NVS, mapped to a label."""
-    names, values = parse(flash[NVS_OFFSET : NVS_OFFSET + NVS_SIZE])
+    try:
+        partition = flashmap.nvs(flash)
+        offset, size = partition.offset, partition.size
+    except ValueError:  # no table (a flash part way through a rewrite): where most keep it
+        offset, size = NVS_OFFSET, NVS_SIZE
+    names, values = parse(flash[offset : offset + size])
     found: dict[bytes, str] = {}
 
     def add(raw: bytes, label: str) -> None:
@@ -64,7 +74,7 @@ def secrets(flash: bytes) -> dict[bytes, str]:
 
 def redactor(flash: bytes):
     table = secrets(flash)
-    # No secrets (a public plug's flash, say) would join to an empty pattern,
+    # No secrets (a public device's flash, say) would join to an empty pattern,
     # which matches everywhere and has no label.
     pattern = table and re.compile(b"|".join(re.escape(s) for s in sorted(table, key=len, reverse=True)))
 

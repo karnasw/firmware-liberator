@@ -144,6 +144,23 @@ class CtrlCTests(unittest.TestCase):
         self.assertEqual(reached, [])
         self.assertFalse(interrupt._state["deferred"])
 
+    def test_a_stop_put_off_is_said_and_nothing_more_is_asked(self):
+        with self.assertRaises(KeyboardInterrupt):
+            with interrupt.deferred():
+                self.press()
+                self.press()
+                left = interrupt.pending(), interrupt.notice()
+        interrupt._say.assert_called_with("\n  Stopping as soon as this is finished.\n")
+        self.assertEqual(left, (False, []))   # no countdown to a stop already coming
+
+    def test_a_stop_put_off_once_does_not_stop_the_next_block(self):
+        with self.assertRaises(KeyboardInterrupt):
+            with interrupt.deferred():
+                self.press()
+                self.press()
+        with interrupt.deferred():
+            pass  # no Ctrl-C this time: it ends as it began
+
     def test_one_press_inside_a_deferred_block_only_asks(self):
         with interrupt.deferred():
             self.press()
@@ -176,7 +193,17 @@ class CtrlCTests(unittest.TestCase):
         interrupt._say.assert_called_with("\n\n ! Are you sure?\n     Press Ctrl-C again within 10 seconds to stop now.\n")
 
     def test_helpers_are_kept_out_of_the_terminals_ctrl_c(self):
-        self.assertTrue(interrupt.child_group())
+        if interrupt.os.name == "nt":
+            self.assertEqual(interrupt.child_group(), {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP})
+        else:
+            self.assertEqual(interrupt.child_group(), {"start_new_session": True})
+
+    def test_a_run_begins_with_no_ctrl_c_and_no_window_closed(self):
+        program = ("from tools.autoflash import interrupt\n"
+                   "print(interrupt.window_closed(), interrupt.pending())\n")
+        ran = subprocess.run([sys.executable, "-c", program], cwd=Path(__file__).resolve().parents[2],
+                             check=True, capture_output=True, text=True, timeout=30)
+        self.assertEqual(ran.stdout.split(), ["False", "False"])
 
 
 class NoticeOnScreenTests(unittest.TestCase):
@@ -236,16 +263,23 @@ class NoticeWrittenTests(unittest.TestCase):
         with mock.patch.object(output, "colour_ok", return_value=True), \
                 mock.patch.object(interrupt.time, "monotonic", return_value=1000.0), \
                 mock.patch.multiple(output._s, draws_notice=True, concise=True, ticker=object(), paused=False,
-                                    held=False, stage="Stage 1 - Confirming prerequisites", transient_rows=0,
-                                    live=0):
+                                    held=False, stage="Stage 1 - Confirming prerequisites", blocks=[(0, False)],
+                                    live=0, live_is_stage=False, rows=0, after_blank=False):
             interrupt._state["first"] = 1000.0
             try:
                 self.assertEqual(output._notice_text(),
                                  f"\n{output.BOLD}{output.YELLOW} ! Are you sure?{output.RESET}\n"
                                  "     Press Ctrl-C again within 10 seconds to stop now.\n")
-                output._s.live = 20   # an unfinished line is ended first
+                self.assertEqual(output._s.rows, 3)   # counted, so its block takes it off
+                # An unfinished line is ended first, as _break() ends it: a
+                # stage line stays above the notice, a wait's is wiped.
+                output._s.live, output._s.live_is_stage = 20, True
                 self.assertTrue(output._notice_text().startswith("\n\n"))
-                output._s.transient_rows = None
+                self.assertEqual((output._s.rows, output._s.live), (7, 0))
+                output._s.live, output._s.live_is_stage = 20, False
+                self.assertTrue(output._notice_text().startswith("\r" + " " * 20 + "\r\n"))
+                self.assertEqual((output._s.rows, output._s.live), (10, 0))
+                output._s.blocks = []
                 output._s.live = 0
                 self.assertIsNone(output._notice_text())   # the ticker draws it
             finally:
@@ -256,30 +290,34 @@ class StageEndTests(unittest.TestCase):
     """At the end of a stage, a Ctrl-C pressed during it is asked about, with a
     countdown that carries on by itself."""
 
-    def ask(self, pending, answer):
+    def ask(self, pending, carry_on):
         interrupt.clear()
         if pending:
             interrupt._state["first"] = 1.0
-        with mock.patch.object(prompts, "countdown_choice", return_value=answer) as asked, \
-             mock.patch.object(prompts, "section"), mock.patch.object(output, "say"):
+        with mock.patch.object(prompts, "countdown_carry_on", return_value=carry_on) as asked, \
+             mock.patch.object(prompts, "section"), mock.patch.object(output, "say"), \
+             mock.patch.object(output, "tell") as told, mock.patch.object(output, "log_only"):
             stop = runner.stop_here_after_ctrl_c("D1")
+        self.told = " ".join(call.args[0] for call in told.call_args_list if call.args)
         return stop, asked.called
 
     def test_nothing_pressed_nothing_asked(self):
-        self.assertEqual(self.ask(False, 1), (False, False))
+        self.assertEqual(self.ask(False, False), (False, False))
 
     def test_carrying_on_is_the_default(self):
-        self.assertEqual(self.ask(True, 0), (False, True))
+        self.assertEqual(self.ask(True, True), (False, True))
         self.assertFalse(interrupt.pending())
 
     def test_stopping_when_said(self):
-        self.assertEqual(self.ask(True, 1), (True, True))
+        self.assertEqual(self.ask(True, False), (True, True))
+        # On the screen, as for a Ctrl-C at any other moment: how to carry on.
+        self.assertIn("Run this again to carry on", self.told)
 
     def test_unattended_the_countdown_takes_its_default(self):
         from tools.autoflash import prompts
         with mock.patch.object(prompts, "UNATTENDED", True), \
              mock.patch.object(prompts, "answered_unattended"):
-            self.assertEqual(prompts.countdown_choice("Stop the run here", ["Carry on", "Stop here"]), 0)
+            self.assertTrue(prompts.countdown_carry_on("Carrying on to the next stage"))
 
     def test_the_emulators_countdown_waits_as_asking(self):
         from tools.autoflash import prompts
@@ -288,7 +326,7 @@ class StageEndTests(unittest.TestCase):
              mock.patch.object(prompts, "answered_unattended"), \
              mock.patch.dict("os.environ", {"AUTOFLASH_EMULATOR_COUNTDOWN": "30"}), \
              mock.patch.object(prompts.time, "sleep", side_effect=lambda s: seen.append((s, interrupt._state["asking"]))):
-            self.assertEqual(prompts.countdown_choice("Stop the run here", ["Carry on", "Stop here"]), 0)
+            self.assertTrue(prompts.countdown_carry_on("Carrying on to the next stage"))
         self.assertEqual(seen, [(30.0, 1)])  # a Ctrl-C during it stops at once
 
 

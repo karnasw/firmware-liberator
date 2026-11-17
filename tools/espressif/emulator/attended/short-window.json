@@ -1,0 +1,25 @@
+{
+ "about": "A window 24 rows tall: asked to be made taller, gone on with a key, then quit",
+ "start": "stub-suite-tasmota",
+ "size": "100x24",
+ "minutes": 10,
+ "answers": [
+  {
+   "when": "Or press any key to go on as it is",
+   "type": "x"
+  },
+  {
+   "when": "Which device is this run for",
+   "type": "q\r"
+  },
+  {
+   "when": "\\[[Yy]/n\\]",
+   "type": "n\r",
+   "optional": true
+  }
+ ],
+ "expect": {
+  "exit": 130,
+  "screen": false
+ }
+}

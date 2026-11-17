@@ -1,0 +1,16 @@
+ Stage 7 - Saving the readout - Complete
+
+ Nothing was read out.
+ Switch the device off and on once more: it then starts its Sonoff firmware again.
+
+     Liberator:  3.0.0                               Devices:    1
+     OS:         Ubuntu 24.04.5 LTS                  Accepted:   0
+     Python:     3.12.3 (venv)                       Not needed: 1
+     Not needed: BASICR4 1.1.0
+
+ You've reached the bit where I hold out my hat!
+ Free software, not free biscuits... Throw your friendly neighbourhood dev a biscuit:
+     GitHub: https://github.com/sponsors/adamsthws
+     Ko-fi:  https://ko-fi.com/adamsthws
+     PayPal: https://www.paypal.me/adamsthws
+     (Ctrl+click to open)

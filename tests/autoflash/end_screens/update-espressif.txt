@@ -1,0 +1,17 @@
+ Stage 18 - Verifying conversion - Complete
+
+ Update complete!
+ The device is running Tasmota.
+
+     Liberator: 3.0.0                                Firmware: Tasmota
+     OS:        Ubuntu 24.04.5 LTS                   From:     Tasmota 14.5.0, outdated
+     Python:    3.12.3 (venv)                        Model:    S60TPG
+     Retries:   None                                 Backup:   Completed
+     Checks:    Pass                                 Signal:   -23 dBm
+
+ You've reached the bit where I hold out my hat!
+ Free software, not free biscuits... Throw your friendly neighbourhood dev a biscuit:
+     GitHub: https://github.com/sponsors/adamsthws
+     Ko-fi:  https://ko-fi.com/adamsthws
+     PayPal: https://www.paypal.me/adamsthws
+     (Ctrl+click to open)

@@ -1,7 +1,7 @@
 #!/usr/bin/python3 -I
 """Passes QEMU's output on, and keeps the file named as its argument holding the
 network the guest is broadcasting (empty: none), from the fork's "guest SoftAP"
-lines, for the nmcli stand-in, `plug` and `wifi join`."""
+lines, for the nmcli stand-in, `device` and `wifi join`."""
 import re
 import sys
 

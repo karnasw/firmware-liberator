@@ -1,5 +1,5 @@
-// What drv_autoflash.c needs to know of the plug it runs on: one table per
-// plug, in the plug's own file (devices/<plug>/drv_autoflash_<plug>.c), which
+// What drv_autoflash.c needs to know of the device it runs on: one table per
+// device, in the device's own file (devices/<device>/drv_autoflash_<device>.c), which
 // a build of OpenBeken carries beside the driver.
 #ifndef __DRV_AUTOFLASH_H__
 #define __DRV_AUTOFLASH_H__
@@ -31,11 +31,15 @@ typedef struct {
 	// Its meter's factory calibration, from the stock store into OpenBeken's
 	// config (first boot only): 1 when applied.
 	int (*apply_calibration)(void);
+	// Whether OpenBeken's meter calibration is what apply_calibration takes
+	// from the stock store now, for AutoflashCalibration: 1 it is, 0 it is
+	// not, -1 the store has none. NULL for a device with no meter.
+	int (*calibration_is_stock)(void);
 } autoflash_device_t;
 
-// The plug this build is for, the one table its plug's file defines. To
+// The device this build is for, the one table its device's file defines. To
 // choose among several at run time - by the stock store's model, against
-// stock_model - each plug's file would name its own and the driver would
+// stock_model - each device's file would name its own and the driver would
 // take one from a list of them; the table itself stays as it is.
 extern const autoflash_device_t autoflash_device;
 

@@ -1,0 +1,366 @@
+---
+// /stats: the public figures (src/stats.mjs), built into the page at build
+// time from the snapshot the API's nightly job writes, so it reads in full
+// with no script; assets/stats.js adds the tooltips. The colours are a
+// validated chart palette (both themes), set as the roles below.
+import Page from "../layouts/Page.astro";
+import DataTable from "../components/stats/DataTable.astro";
+import DownloadsLine from "../components/stats/DownloadsLine.astro";
+import ModelTrends from "../components/stats/ModelTrends.astro";
+import MonthColumns from "../components/stats/MonthColumns.astro";
+import RankedBars from "../components/stats/RankedBars.astro";
+import Segmented from "../components/stats/Segmented.astro";
+import Tile from "../components/stats/Tile.astro";
+import schema from "../../api/report-schema.json" with { type: "json" };
+import { monthsTo } from "../../api/popularity.js";
+import { TREND_MONTHS } from "../../api/snapshot.js";
+import { loadStats, STATS_URL } from "../stats.mjs";
+
+const { figures, why } = await loadStats();
+if (!figures) {
+  // Why is for the build's log, never the page: it may name this computer's paths.
+  console.warn(`/stats is built with no figures: ${why}`);
+}
+const names = schema.deviceNames;
+const classes = schema.failureClasses;
+const FIRMWARE = { tasmota: "Tasmota", esphome: "ESPHome", openbeken: "OpenBeken", sonoff: "Sonoff's own firmware" };
+const FROM = { sonoff: "Sonoff's firmware", tasmota: "Tasmota", esphome: "ESPHome", openbeken: "OpenBeken" };
+const OS = { windows: "Windows", macos: "macOS", linux: "Linux" };
+const percent = (value) => (value === null || value === undefined ? null : value);
+const minutes = (seconds) => `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+const date = (day) => new Date(`${day}T00:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+const deviceHref = (key) => (key ? `/devices/${key}` : undefined);
+// A device's status in its badge's words (devices/status/, tools/repo/device_status.py).
+const badges = import.meta.glob("../../../devices/status/*.json", { eager: true, import: "default" });
+const statusOf = (key) => badges[`../../../devices/status/${key}.json`]?.message ?? "";
+// A device's earlier versions' shares, the three newest: "" for none.
+const earlier = (row) => (row.versions ?? []).slice(1).filter((each) => each.coverage !== null).slice(0, 3)
+  .map((each) => `${each.coverage}% on ${each.tool}`).join(", ");
+const firmwareSaid = (firmware) => Object.entries(firmware ?? {})
+  .filter(([name]) => FIRMWARE[name]).map(([name, version]) => `${FIRMWARE[name]} ${version}`).join(", ");
+// The runs a share of conversions is of: those that converted, failed or
+// crashed - not one declined, with nothing to do, or that met a device the
+// tool does not convert yet (snapshot.js).
+const attempted = (row) => (row.converted ?? 0) + (row.failed ?? 0) + (row.crashed ?? 0);
+
+// The devices the tool converts, by kind, with the models seen of each: one it
+// does not convert yet is in "Most wanted", not here.
+const modelsOf = (row) => (row.models ?? []).map((each) => `${each.model} ${each.devices.toLocaleString("en")}`).join(", ");
+const view = figures && {
+  kinds: figures.kinds.filter((row) => names[row.device]).map((row) => ({
+    label: names[row.device], href: deviceHref(row.device), value: row.devices,
+    note: [row.firstRun === null ? "" : `${row.firstRun}% first run · ${row.eventually}% in the end`, modelsOf(row)]
+      .filter(Boolean).join(" · "),
+    tip: `${names[row.device]}: ${row.devices.toLocaleString("en")} devices, ${row.converted ?? "fewer than 5"} converted`,
+  })),
+  wanted: figures.wanted.map((row) => ({
+    label: row.model, value: row.devices,
+    note: [row.ran && `${row.ran} met by a run`, row.asked && `${row.asked} asked about for a readout`]
+      .filter(Boolean).join(" · "),
+    tip: `${row.model}: ${row.devices.toLocaleString("en")} devices`,
+  })),
+  routes: figures.routes.filter((row) => row.success !== null).map((row) => ({
+    label: `${FROM[row.source] ?? row.source} → ${FIRMWARE[row.firmware] ?? row.firmware}`, value: row.success,
+    note: `${attempted(row).toLocaleString("en")} runs`, tip: `${row.success}% of ${attempted(row).toLocaleString("en")} runs converted`,
+  })),
+  tools: figures.tools.filter((row) => row.success !== null).map((row) => ({
+    label: `Version ${row.tool}`, value: row.success, note: `${attempted(row).toLocaleString("en")} runs`,
+    tip: `Version ${row.tool}: ${row.success}% of ${attempted(row).toLocaleString("en")} runs converted`,
+  })),
+  failures: figures.failures.slice(0, 10).map((row) => ({
+    label: classes[row.error] ? classes[row.error][0].toUpperCase() + classes[row.error].slice(1) : row.error,
+    value: row.runs, note: row.step ? `at stage ${row.step}` : "",
+    tip: `${row.runs.toLocaleString("en")} runs stopped${row.step ? ` at ${row.step}` : ""}: ${classes[row.error] ?? row.error}`,
+  })),
+  // Figures from before people's stops were sent have none.
+  cancellations: (figures.cancellations ?? []).slice(0, 10).map((row) => ({
+    label: row.step ? `Stage ${row.step}` : "Before any stage", value: row.runs,
+    tip: `${row.runs.toLocaleString("en")} runs stopped by the person${row.step ? ` at ${row.step}` : ""}`,
+  })),
+  // Figures from before devices were numbered on their computer have none.
+  perComputer: (figures.perComputer?.rows ?? []).map((row) => ({
+    label: `${row.devices} ${row.devices === 1 ? "device" : "devices"}`, value: row.computers,
+    tip: `${row.computers.toLocaleString("en")} computers converted ${row.devices} ${row.devices === 1 ? "device" : "devices"}`,
+  })),
+  computers: Object.entries(figures.computers.reduce((sum, row) => ({ ...sum, [row.os]: (sum[row.os] ?? 0) + row.runs }), {}))
+    .sort(([, a], [, b]) => b - a).map(([os, runs]) => ({ label: OS[os] ?? os, value: runs })),
+  // Figures from before the emulator runs were counted have none.
+  testing: (figures.testing ?? []).filter((row) => row.coverage !== null).map((row) => ({
+    label: `${names[row.device] ?? row.device}${statusOf(row.device) ? ` · ${statusOf(row.device)}` : ""}`,
+    href: deviceHref(names[row.device] ? row.device : null), value: row.coverage,
+    note: [`${row.passed.toLocaleString("en")} of ${row.scenarios.toLocaleString("en")} scenarios passed on version ${row.tool}`,
+      row.firstTry !== null && `${row.firstTry}% of first tries passed`, `last tested ${date(row.lastDay)}`,
+      firmwareSaid(row.firmware),
+      // Figures from before each version was given have only the newest.
+      earlier(row) && `before: ${earlier(row)}`].filter(Boolean).join(" · "),
+    tip: `${names[row.device] ?? row.device}: ${row.coverage}% of its emulator scenarios passed on version ${row.tool}`,
+  })).sort((a, b) => b.value - a.value),
+  testingVersions: (figures.testing ?? []).flatMap((row) => (row.versions ?? [row])
+    .map((each) => ({ ...each, device: names[row.device] ?? row.device }))),
+  times: figures.times.filter((row) => row.month === figures.times[0]?.month).map((row) => ({
+    ...row, device: names[row.device] ?? row.device ?? "", firmware: FIRMWARE[row.firmware] ?? row.firmware ?? "",
+    median: minutes(row.median), p90: minutes(row.p90),
+  })),
+};
+---
+<Page title="Stats"
+  description="How many Sonoff devices the tool has converted, how reliably, device by device, and which devices people want supported next: figures from every run's anonymous report, updated daily.">
+<div class="stats">
+  <h1>Stats</h1>
+  <p class="lede">
+    What every run's anonymous report adds up to: how many devices the tool has converted, how reliably, and
+    which devices people want supported next. <a href="/docs/what-the-tool-sends">What a report holds</a>.
+  </p>
+
+  {!figures && (
+    <div class="card empty">
+      <p>The figures are not available just now. They are made each night from the day's reports, and this page is
+        updated each morning: try again tomorrow.</p>
+    </div>
+  )}
+
+  {figures && (
+    <>
+      <section class="card headline">
+        <Tile hero label="Devices converted" value={figures.devices.converted} note={`as of ${date(figures.through)}`} />
+        <div class="tiles">
+          <Tile label="Devices seen" value={figures.devices.seen} />
+          <Tile label="Converted on their first run" value={percent(figures.devices.firstRun)} unit="%" />
+          <Tile label="Converted in the end" value={percent(figures.devices.eventually)} unit="%" />
+          <Tile label="Runs that converted" value={percent(figures.runs.success)} unit="%"
+            note={figures.runs.success === null ? "" : `of ${attempted(figures.runs).toLocaleString("en")} conversion runs`} />
+          {/* Figures from before downloads were read have none. */}
+          {figures.downloads?.total != null && <Tile label="Downloads of the tool" value={figures.downloads.total}
+            note={figures.downloads.day === figures.through ? "as GitHub counts them" : `as GitHub counted them on ${date(figures.downloads.day)}`} />}
+        </div>
+      </section>
+
+      {figures.downloads?.days.length > 1 && (
+        <section class="card">
+          <h2>Downloads and devices converted</h2>
+          <p class="sub">The tool downloaded, as GitHub counts it - each new version a computer installs is a download -
+            beside the devices converted, all time to each day. A day the devices were under {figures.smallest} shows
+            none of theirs.</p>
+          <DownloadsLine days={figures.downloads.days} />
+          <DataTable caption="The figures, as a table" rows={figures.downloads.days}
+            columns={[["Day", "day"], ["Downloads", "downloads", true], ["Devices converted", "converted", true]]} />
+        </section>
+      )}
+
+      <section class="card">
+        <h2>Runs each month</h2>
+        <p class="sub">Every conversion run, by how it ended. A run declined, with nothing to do, or that met a device the
+          tool does not convert yet, is left out.</p>
+        {figures.months.length ? <MonthColumns months={figures.months} /> : <p class="none">Not enough runs yet.</p>}
+        <DataTable caption="The figures, as a table" rows={figures.months}
+          columns={[["Month", "month"], ["Runs", "runs", true], ["Converted", "converted", true], ["Failed", "failed", true],
+            ["Crashed", "crashed", true], ["Stopped by the person", "cancelled", true],
+            ["New devices", "newDevices", true]]} />
+      </section>
+
+      <section class="card">
+        <h2>Devices</h2>
+        <p class="sub">Devices seen, by device, with how many converted on their first run and in the end, and the
+          models seen of each.</p>
+        {view.kinds.length ? <RankedBars rows={view.kinds} label="Devices seen, by device" /> : <p class="none">Not enough devices yet.</p>}
+      </section>
+
+      <section class="card">
+        <h2>Devices per computer</h2>
+        <p class="sub">How many devices each computer has converted, by the tool's own records on it: two people on
+          one computer count as one, and a fresh download of the tool counts again.</p>
+        {view.perComputer.length ? <RankedBars rows={view.perComputer} label="Computers, by devices converted" /> : <p class="none">Not enough devices yet.</p>}
+      </section>
+
+      <section class="card">
+        <h2>Most wanted</h2>
+        <p class="sub">Devices the tool does not convert yet, by how many were met - by a run, or asked about for a
+          readout - each counted once, however often. A <a href="/docs/readouts">readout</a> is how support for one is added.</p>
+        {view.wanted.length ? <RankedBars rows={view.wanted} label="Devices wanted, by devices met" /> : <p class="none">None yet.</p>}
+      </section>
+
+      <section class="card">
+        <h2>Model by model</h2>
+        <p class="sub">Each model's devices month by month: asked about for a readout, read out, and converted (a device
+          converted again counts again), on one scale. A month under {figures.smallest} devices shows none.</p>
+        {figures.modelMonths.length
+          ? <ModelTrends rows={figures.modelMonths} months={monthsTo(new Date(`${figures.through}T00:00:00Z`), TREND_MONTHS)} />
+          : <p class="none">Not enough devices yet.</p>}
+        <DataTable caption="The figures, as a table" rows={figures.modelMonths}
+          columns={[["Month", "month"], ["Model", "model"], ["Asked to be read out", "asked", true], ["Read out", "readOut", true],
+            ["Converted", "converted", true]]} />
+      </section>
+
+      <section class="card">
+        <h2>Tested on the emulators</h2>
+        <p class="sub">How far each device's testing on emulated devices has got, before and after anyone converts one:
+          the share of its test scenarios - every step of every conversion, with a fault such as a power cut at each -
+          that have passed on the tool's newest version, and how often a scenario passed at its first try; and the
+          same for each version before it, each on its own, as a change may break what passed. The
+          maintainer's own testing, never a person's run.</p>
+        {view.testing.length ? <RankedBars rows={view.testing} max={100} unit="%" label="Emulator scenarios passed, by device" />
+          : <p class="none">No emulator testing counted yet.</p>}
+        <DataTable caption="Every version, as a table" rows={view.testingVersions}
+          columns={[["Device", "device"], ["Tool version", "tool"], ["Scenarios", "scenarios", true],
+            ["Passed", "passed", true], ["Passed (%)", "coverage", true], ["First tries passed (%)", "firstTry", true],
+            ["Last tested", "lastDay"]]} />
+      </section>
+
+      <div class="pair">
+        <section class="card">
+          <h2>By route</h2>
+          <p class="sub">The share of runs that converted, by the firmware they went from and to.</p>
+          {view.routes.length ? <RankedBars rows={view.routes} max={100} unit="%" label="Runs converted, by route" /> : <p class="none">Not enough runs yet.</p>}
+        </section>
+        <section class="card">
+          <h2>By tool version</h2>
+          <p class="sub">The share of runs that converted, by the tool's version.</p>
+          {view.tools.length ? <RankedBars rows={view.tools} max={100} unit="%" label="Runs converted, by tool version" /> : <p class="none">Not enough runs yet.</p>}
+        </section>
+      </div>
+
+      <section class="card">
+        <h2>Where runs stop</h2>
+        <p class="sub">The commonest reasons a run stopped, in the tool's words, and the stage it stopped at.</p>
+        {view.failures.length ? <RankedBars rows={view.failures} label="Runs stopped, by reason" /> : <p class="none">Not enough runs yet.</p>}
+      </section>
+
+      <section class="card">
+        <h2>Where people stop</h2>
+        <p class="sub">The stages people chose to stop a run at: a question answered with q, Ctrl-C, or the window
+          closed.</p>
+        {view.cancellations.length ? <RankedBars rows={view.cancellations} label="Runs stopped by the person, by stage" /> : <p class="none">Not enough runs yet.</p>}
+      </section>
+
+      <div class="pair">
+        <section class="card">
+          <h2>Computers</h2>
+          <p class="sub">The systems runs were made on.</p>
+          {view.computers.length ? <Segmented parts={view.computers} label="Runs by operating system" /> : <p class="none">Not enough runs yet.</p>}
+          <DataTable caption="The figures, as a table" rows={figures.computers.map((row) => ({ ...row, os: OS[row.os] ?? row.os }))}
+            columns={[["System", "os"], ["Python", "python"], ["Runs", "runs", true]]} />
+        </section>
+        <section class="card">
+          <h2>How long it takes</h2>
+          <p class="sub">A conversion's time, start to finish, in {view.times[0] ? new Date(`${view.times[0].month}-01T00:00:00Z`).toLocaleString("en", { month: "long", year: "numeric", timeZone: "UTC" }) : "the latest month"}.</p>
+          {view.times.length ? (
+            <table class="compact">
+              <thead><tr><th>Device</th><th>To</th><th class="number">Typical</th><th class="number">Slowest in ten</th></tr></thead>
+              <tbody>{view.times.map((row) => <tr><td>{row.device}</td><td>{row.firmware}</td><td class="number">{row.median}</td><td class="number">{row.p90}</td></tr>)}</tbody>
+            </table>
+          ) : <p class="none">Not enough runs yet.</p>}
+        </section>
+      </div>
+
+      <section class="card">
+        <h2>Sonoff firmware met</h2>
+        <p class="sub">The versions of Sonoff's own firmware devices had, and how many of those runs converted: a new version
+          that stops conversions shows here first.</p>
+        {figures.stock.some((row) => names[row.device]) ? (
+          <table class="compact">
+            <thead><tr><th>Device</th><th>Sonoff firmware</th><th class="number">Runs</th><th class="number">Converted</th></tr></thead>
+            <tbody>{figures.stock.filter((row) => names[row.device]).map((row) => <tr><td>{names[row.device]}</td><td>{row.stock_version}</td><td class="number">{row.runs.toLocaleString("en")}</td><td class="number">{row.success === null ? "" : `${row.success}%`}</td></tr>)}</tbody>
+          </table>
+        ) : <p class="none">Not enough runs yet.</p>}
+      </section>
+
+      <p class="foot">
+        Figures to the end of {date(figures.through)} (UTC), made {figures.generated.replace("T", " ").replace("Z", " UTC")}, and
+        updated daily. A figure for fewer than {figures.smallest} runs or devices is not shown, nor a model until
+        several people have named it on several days, and the maintainer's own testing is left out. The data is <a href={STATS_URL}>stats.json</a>, under
+        <a href="https://creativecommons.org/licenses/by/4.0/">{figures.licence}</a>: {figures.attribution}.
+      </p>
+    </>
+  )}
+  <div class="tip" role="tooltip" hidden></div>
+</div>
+<script is:inline src="/assets/stats.js" defer></script>
+</Page>
+
+<style is:global>
+  .stats {
+    --surface: #161b22; --plane: #0d1117; --ink: #e6edf3; --ink-2: #9198a1; --muted: #7d8590;
+    --grid: #262c36; --axis: #3d444d; --ring: rgba(255, 255, 255, 0.10);
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+  }
+  :root[data-theme="light"] .stats {
+    --surface: #f6f8fa; --plane: #ffffff; --ink: #1f2328; --ink-2: #59636e; --muted: #6e7781;
+    --grid: #e1e4e8; --axis: #c8ccd1; --ring: rgba(31, 35, 40, 0.10);
+    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
+  }
+  .stats { color: var(--ink); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .stats h1 { border: 0; margin-bottom: 4px; }
+  .stats .lede { color: var(--ink-2); font-size: 16px; max-width: 46em; }
+  .stats .card { background: var(--surface); border: 1px solid var(--ring); border-radius: 12px;
+    padding: 20px 22px; margin: 16px 0; }
+  .stats .card h2 { border: 0; font-size: 18px; margin: 0 0 4px; padding: 0; }
+  .stats .sub { color: var(--ink-2); font-size: 14px; margin: 0 0 16px; }
+  .stats .none, .stats .empty p { color: var(--muted); margin: 8px 0; }
+  .stats .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .stats .pair .card { margin: 0; }
+  @media (max-width: 767px) { .stats .pair { grid-template-columns: 1fr; gap: 0; } .stats .pair .card { margin: 16px 0; } }
+
+  .stats .headline { display: grid; grid-template-columns: minmax(220px, 1fr) 2fr; gap: 24px; align-items: center; }
+  @media (max-width: 767px) { .stats .headline { grid-template-columns: 1fr; } }
+  .stats .tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 24px; }
+  .stats .tile-label { color: var(--ink-2); font-size: 13px; }
+  .stats .tile-value { font-size: 28px; font-weight: 600; line-height: 1.25; }
+  .stats .tile.hero .tile-value { font-size: 56px; line-height: 1.1; letter-spacing: -0.02em; }
+  .stats .tile-value.quiet { color: var(--muted); font-weight: 500; font-size: 22px; }
+  .stats .tile-note { color: var(--muted); font-size: 13px; }
+
+  .stats .bars { list-style: none; padding: 0; margin: 0; }
+  .stats .bar-row { display: grid; grid-template-columns: minmax(120px, 34%) 1fr; column-gap: 14px; align-items: center;
+    margin: 0 0 10px; }
+  .stats .bar-label { font-size: 14px; overflow-wrap: anywhere; }
+  .stats .bar-track { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .stats .bar { display: block; height: 16px; min-width: 2px; background: var(--series-1); border-radius: 0 4px 4px 0;
+    outline-offset: 2px; }
+  .stats .bar:hover, .stats .bar:focus-visible { filter: brightness(1.15); }
+  .stats .bar-value { font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .stats .bar-note { grid-column: 2; color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+  .stats .chart { margin: 0; }
+  .stats svg { width: 100%; height: auto; display: block; overflow: visible; }
+  .stats .grid { stroke: var(--grid); stroke-width: 1; }
+  .stats .tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .stats .value { fill: var(--ink-2); font-size: 11px; font-variant-numeric: tabular-nums; }
+  /* SVG text scales with the chart: drawn larger where the chart is drawn small,
+     so it reads at about the same size on a phone. */
+  @media (max-width: 600px) { .stats .tick, .stats .value { font-size: 21px; } }
+  .stats .mark.series-1 { fill: var(--series-1); } .stats .mark.series-2 { fill: var(--series-2); }
+  .stats .mark.series-3 { fill: var(--series-3); }
+  .stats .mark:hover, .stats .mark:focus-visible { filter: brightness(1.18); outline: none; }
+  .stats .trends { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px 20px; }
+  .stats .trend { margin: 0; } .stats .trend figcaption { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .stats .trend-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .stats .trend-line.series-1 { stroke: var(--series-1); } .stats .trend-line.series-2 { stroke: var(--series-2); }
+  .stats .trend-line.series-3 { stroke: var(--series-3); }
+  .stats .trend-dot.series-1 { fill: var(--series-1); } .stats .trend-dot.series-2 { fill: var(--series-2); }
+  .stats .trend-dot.series-3 { fill: var(--series-3); }
+  .stats .trend-dot:hover, .stats .trend-dot:focus-visible { r: 5; outline: none; }
+
+  .stats .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; list-style: none; padding: 0; margin: 0 0 10px;
+    font-size: 13px; color: var(--ink-2); }
+  .stats .legend li { display: flex; align-items: center; gap: 6px; margin: 0; }
+  .stats .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .stats .swatch.series-1, .stats .segment.series-1 { background: var(--series-1); }
+  .stats .swatch.series-2, .stats .segment.series-2 { background: var(--series-2); }
+  .stats .swatch.series-3, .stats .segment.series-3 { background: var(--series-3); }
+
+  .stats .segments { display: flex; gap: 2px; height: 28px; margin: 4px 0 12px; }
+  .stats .segment { display: flex; align-items: center; padding: 0 8px; border-radius: 4px; color: #fff;
+    font-size: 13px; font-weight: 600; min-width: 2px; white-space: nowrap; }
+
+  .stats table { font-size: 13px; font-variant-numeric: tabular-nums; }
+  .stats table.compact { display: table; width: 100%; margin: 0; }
+  .stats td.number, .stats th.number { text-align: right; }
+  .stats .table-view { margin-top: 12px; font-size: 13px; color: var(--ink-2); }
+  .stats .table-view summary { cursor: pointer; }
+  .stats .table-view table { margin-top: 10px; }
+  .stats .foot { color: var(--muted); font-size: 13px; margin-top: 20px; }
+
+  .tip { position: fixed; z-index: 10; pointer-events: none; background: var(--ink, #e6edf3); color: var(--plane, #0d1117);
+    font: 600 13px system-ui, sans-serif; padding: 6px 9px; border-radius: 6px; max-width: 280px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25); }
+</style>

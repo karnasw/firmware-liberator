@@ -1,7 +1,7 @@
 """Keep this computer awake while a run works, with what each system has already.
 
 A computer going to sleep part way through a conversion stops the run where
-it stands - the plug carries on, waiting for a computer that is not there.
+it stands - the device carries on, waiting for a computer that is not there.
 So for the length of a run, sleep is held off, with nothing installed:
 
 - Linux (systemd): `systemd-inhibit`, around a watcher that ends with the run;

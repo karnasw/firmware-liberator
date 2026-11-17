@@ -1,0 +1,98 @@
+{
+ "about": "Ctrl-C as Tasmota is left for ESPHome, q at the countdown: stopped after that stage; run again, \"did not finish\" offers it back, and it carries on to the end",
+ "start": "stub-suite-tasmota",
+ "answers": [
+  {
+   "when": "Which device is this run for",
+   "type": "1\r",
+   "optional": true
+  },
+  {
+   "when": "Press any key",
+   "type": "x"
+  },
+  {
+   "when": "Which firmware should the device have",
+   "type": "2\r"
+  },
+  {
+   "when": "Stage +\\d+ - Leaving Tasmota +- Underway",
+   "type": "\u0003",
+   "anywhere": true
+  },
+  {
+   "when": "press Enter now",
+   "type": "q"
+  },
+  {
+   "when": "This computer's password \\(for sudo\\)",
+   "type": "autoflash\r",
+   "times": 6,
+   "optional": true
+  },
+  {
+   "when": "Type .+ to go ahead",
+   "type": "PROCEED\r",
+   "times": 3,
+   "optional": true
+  },
+  {
+   "when": "\\(y/N[^)]*\\)|\\(Y/n[^)]*\\)",
+   "type": "y\r",
+   "times": 3,
+   "optional": true
+  },
+  {
+   "when": "\\[[Yy]/n\\]",
+   "type": "n\r",
+   "optional": true
+  }
+ ],
+ "expect": {
+  "exit": 130
+ },
+ "again": {
+  "answers": [
+   {
+    "when": "A conversion did not finish last time",
+    "type": "1\r"
+   },
+   {
+    "when": "Press any key",
+    "type": "x",
+    "optional": true
+   },
+   {
+    "when": "This computer's password \\(for sudo\\)",
+    "type": "autoflash\r",
+    "times": 6,
+    "optional": true
+   },
+   {
+    "when": "Type .+ to go ahead",
+    "type": "PROCEED\r",
+    "times": 3,
+    "optional": true
+   },
+   {
+    "when": "What next",
+    "type": "q\r"
+   },
+   {
+    "when": "\\(y/N[^)]*\\)|\\(Y/n[^)]*\\)",
+    "type": "y\r",
+    "times": 3,
+    "optional": true
+   },
+   {
+    "when": "\\[[Yy]/n\\]",
+    "type": "n\r",
+    "optional": true
+   }
+  ],
+  "expect": {
+   "exit": 0,
+   "result": "Converted"
+  }
+ }
+}

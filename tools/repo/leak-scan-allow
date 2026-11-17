@@ -9,12 +9,12 @@
 58:cf:79:0a:0b:0c
 94:a9:90:00:00:01
 00:11:22:33:44:55
-# The made-up plug and router tests/repo/test_leak_scan.py finds (its own scanner
+# The made-up device and router tests/repo/test_leak_scan.py finds (its own scanner
 # ignores this list).
 58:cf:79:12:34:56
 58:cf:79:99:88:77
-# The placeholders public plugs give the eWeLink device (sanitise_plug.py),
-# and the name copy_plug.py gives a test copy.
+# The placeholders public devices give the eWeLink device (sanitise_device.py),
+# and the name copy_device.py gives a test copy.
 1000abcdef
 Emulator test copy
 # The emulator's sudo password, which is public: it is in the emulator's image.
@@ -25,3 +25,15 @@ autoflash
 258eafa5-e914-47da-95ca-c5ab0dc85b11
 4d36e972-e325-11ce-bfc1-08002be10318
 00000000-1111-2222-3333-444444444444
+# The made-up apikey tests/espressif/test_scrub.py anonymises, and what it becomes.
+12345678-1234-4abc-8def-123456789abc
+10000000-0000-0000-0000-000000000000
+# The placeholder the API Worker's wrangler.jsonc binds until
+# cloudflare_settings.py apply has made the database, and that database's
+# id once it has: a D1 database's id, which is not secret, not a device's.
+00000000-0000-0000-0000-000000000000
+# Not made up, and not a secret: the API Worker's D1 database's id, which
+# website/api/wrangler.jsonc must name for the Worker to bind it, and which
+# is no use without a token for the account (cloudflare_settings.py apply
+# made it, and writes its id here and there).
+8a286f99-a420-4a72-a2b6-97c623aac2ec

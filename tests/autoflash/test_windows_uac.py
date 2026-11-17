@@ -120,13 +120,13 @@ class FirewallRuleTests(unittest.TestCase):
             return 0
 
         rule = self.open(allowed)
-        self.assertEqual((rule.kind, rule.plug_ip, rule.ports), ("windows", "192.0.2.50", [8088, 8089]))
+        self.assertEqual((rule.kind, rule.device_ip, rule.ports), ("windows", "192.0.2.50", [8088, 8089]))
         self.assertEqual(rule.detail, {"program": PYTHON, "paused": ["{block-1}"], "name": "Autoflash"})
 
     def test_yes_without_a_result_still_gives_the_rule(self):
         self.assertEqual(self.open(lambda script: 0).detail["paused"], [])
 
-    def test_the_elevated_script_admits_only_the_plug_to_this_python(self):
+    def test_the_elevated_script_admits_only_the_device_to_this_python(self):
         scripts = []
         self.open(lambda script: scripts.append(script) or 0)
         self.assertIn("$program = 'C:\\Users\\O''Brien\\Autoflash\\.python\\python.exe'", scripts[0])
@@ -190,12 +190,11 @@ class ToolTests(unittest.TestCase):
 
     def ctx(self, rules=()):
         return types.SimpleNamespace(state=FakeState(
-            plug_ip="192.0.2.50", firewall_rules=[rule.to_json() for rule in rules]))
+            device_ip="192.0.2.50", firewall_rules=[rule.to_json() for rule in rules]))
 
     def test_it_says_windows_will_ask_before_asking(self):
-        def prompt(plug_ip, ports):
-            self.assertIn("Windows will ask whether to allow the change - choose Yes. This window",
-                          self.screen)
+        def prompt(device_ip, ports):
+            self.assertIn("Windows will ask whether to allow the change - choose Yes.", self.screen)
             return self.RULE
 
         with mock.patch.object(hostsys, "open_firewall", side_effect=prompt):
@@ -209,7 +208,7 @@ class ToolTests(unittest.TestCase):
         screen = "\n".join(self.screen)
         self.assertIn("The firewall rule could not be added", screen)
         self.assertIn('netsh advfirewall firewall add rule "name=Autoflash 192.0.2.50"', screen)
-        self.assertIn("Adding it needs administrator rights", screen)
+        self.assertIn("It needs administrator rights", screen)
         self.assertEqual(firewall.recorded_rules(ctx), [])
 
     def test_no_on_the_way_out_says_how_to_remove_it(self):
@@ -217,7 +216,7 @@ class ToolTests(unittest.TestCase):
         with mock.patch.object(hostsys, "close_firewall", return_value=False):
             firewall.close_firewall_rules(ctx)
         screen = "\n".join(self.screen)
-        self.assertIn("Windows will ask for permission again", screen)
+        self.assertIn("Windows will ask again - choose Yes", screen)
         self.assertIn("Remove the temporary firewall rules yourself", screen)
         self.assertIn('netsh advfirewall firewall delete rule "name=Autoflash 192.0.2.50"', screen)
         self.assertEqual(firewall.recorded_rules(ctx), [self.RULE])  # kept, to try again next time

@@ -60,14 +60,20 @@ class ShapeTests(unittest.TestCase):
         for text, what in (("-----BEGIN " + key, "a private key"),
                            ("-----BEGIN OPENSSH " + key, "a private key"),
                            ("ghp_" + "a" * 36, "a GitHub token"),
-                           ("AKIA" + "ABCDEFGHIJKLMNOP", "an AWS access key")):
+                           ("AKIA" + "ABCDEFGHIJKLMNOP", "an AWS access key"),
+                           ("token = cfat" + "_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0", "a Cloudflare API token"),
+                           ("cfut" + "_" + "Z9y8X7w6V5u4T3s2R1q0-p_o9n8m7", "a Cloudflare API token")):
             self.assertIn(what, self.found(text), text)
+
+    def test_cloudflare_tokens_prefix_alone_is_not_a_token(self):
+        for text in ("tokens begin cfat" + "_ or cfut" + "_", "cfat" + "_short", "xcfat" + "_" + "a" * 30):
+            self.assertEqual(self.found(text), [], text)
 
 
 class OwnValueTests(unittest.TestCase):
     def test_a_value_is_found_whole_not_inside_a_longer_one(self):
-        s = scanner(own={"998877": "a plug's MAC", "Fake-Home-Wifi": "a Wi-Fi name"})
-        s.text("a:1", "the plug tasmota-998877")                       # whole: found
+        s = scanner(own={"998877": "a device's MAC", "Fake-Home-Wifi": "a Wi-Fi name"})
+        s.text("a:1", "the device tasmota-998877")                       # whole: found
         s.text("b:1", "hash 1f9988779e")                               # inside hex: not
         s.text("c:1", "FAKE-HOME-WIFI")                                # any case
         self.assertEqual(sorted(f.where for f in s.findings), ["a:1", "c:1"])
@@ -75,48 +81,84 @@ class OwnValueTests(unittest.TestCase):
     def test_values_are_learnt_from_this_computer(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            plug = root / "captures/plugs/58-cf-79-99-88-77"
-            (plug / "runs/1").mkdir(parents=True)
-            (plug / "plug.json").write_text(json.dumps({"mac": "58:cf:79:99:88:77", "ewelink_id": "1000fake99"}))
-            (plug / "runs/1/autoflash-state.json").write_text(json.dumps(
-                {"inputs": {"plug_ip": "10.9.8.7", "listen_ip": "192.168.60.10"}}))
+            device = root / "captures/devices/58-cf-79-99-88-77"
+            (device / "runs/1").mkdir(parents=True)
+            (device / "device.json").write_text(json.dumps({"mac": "58:cf:79:99:88:77", "ewelink_id": "1000fake99"}))
+            (device / "runs/1/autoflash-state.json").write_text(json.dumps(
+                {"inputs": {"device_ip": "10.9.8.7", "listen_ip": "192.168.60.10"}}))
             (root / "captures/settings.json").write_text(json.dumps({"ewelink_email": "someone@example.org"}))
             (root / ".env").write_text("EWELINK_PASSWORD=Fake-Passw0rd\n")
+            (root / ".env.infra").write_text("# the project's\nCLOUDFLARE_SETTINGS_APPLY_TOKEN=fake-apply-token\n"
+                                             "ACCESS_ADMIN_EMAIL=owner@example.org\n", encoding="utf-8")
             (root / "leak-scan.local").write_text("# mine\nmy-router-name\n")
             with mock.patch.object(ls, "CAPTURES", root / "captures"), \
+                 mock.patch.object(ls, "INFRA_FILE", root / ".env.infra"), \
                  mock.patch.object(ls, "LOCAL_FILE", root / "leak-scan.local"), \
                  mock.patch.object(ls, "ALLOW_FILE", root / "none"), \
                  mock.patch("tools.autoflash.credentials.ENV_FILE", root / ".env"):
                 values = ls.own_values()
-        self.assertEqual(values["58:cf:79:99:88:77"], "a plug's MAC")
-        self.assertEqual(values["998877"], "a plug's MAC")
+        self.assertEqual(values["58:cf:79:99:88:77"], "a device's MAC")
+        self.assertEqual(values["998877"], "a device's MAC")
         self.assertIn("1000fake99", values)
         self.assertIn("someone@example.org", values)
         self.assertIn("Fake-Passw0rd", values)
+        self.assertEqual(values["fake-apply-token"], "a value in .env.infra (CLOUDFLARE_SETTINGS_APPLY_TOKEN)")
+        self.assertIn("owner@example.org", values)
         self.assertIn("my-router-name", values)
         self.assertIn("10.9.8.7", values)
         self.assertNotIn("192.168.60.10", values)   # the emulator's own network
 
-    def test_a_test_copys_made_up_mac_is_not_taken_for_a_plugs(self):
-        # copy_plug.py names a test copy by a MAC made up for it, as the docs say,
-        # the one every test uses; the real plug it was copied from is still found.
+    def test_values_are_learnt_from_what_a_release_before_2_4_0_kept_too(self):
+        """captures/plugs/ and plug.json, where the tool has not run since to rename them."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            device = root / "captures/plugs/58-cf-79-99-88-77"
+            (device / "runs/1").mkdir(parents=True)
+            (device / "plug.json").write_text(json.dumps({"mac": "58:cf:79:99:88:77", "ewelink_id": "1000fake99"}))
+            (device / "runs/1/autoflash-state.json").write_text(json.dumps({"inputs": {"plug_ip": "10.9.8.7"}}))
+            with mock.patch.object(ls, "CAPTURES", root / "captures"), \
+                 mock.patch.object(ls, "LOCAL_FILE", root / "none"), mock.patch.object(ls, "ALLOW_FILE", root / "none"), \
+                 mock.patch("tools.autoflash.credentials.ENV_FILE", root / ".env"):
+                values = ls.own_values()
+        self.assertEqual(values["58:cf:79:99:88:77"], "a device's MAC")
+        self.assertIn("1000fake99", values)
+        self.assertIn("10.9.8.7", values)
+
+    def test_an_ewelink_name_left_as_the_model_is_not_taken_for_a_devices(self):
+        # eWeLink names a device after its model until it is renamed: the docs
+        # name every model, so such a name stopped every commit that touched them.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for mac, name in (("58-cf-79-99-88-77", "S60TPF"), ("12-34-56-ab-cd-ef", "Kitchen lamp")):
+                (root / "captures/devices" / mac).mkdir(parents=True)
+                (root / "captures/devices" / mac / "device.json").write_text(json.dumps({"ewelink_name": name}))
+            with mock.patch.object(ls, "CAPTURES", root / "captures"), \
+                 mock.patch.object(ls, "LOCAL_FILE", root / "none"), mock.patch.object(ls, "ALLOW_FILE", root / "none"), \
+                 mock.patch("tools.autoflash.credentials.ENV_FILE", root / ".env"):
+                values = ls.own_values()
+        self.assertNotIn("S60TPF", values)
+        self.assertEqual(values["Kitchen lamp"], "a device's eWeLink name")
+
+    def test_a_test_copys_made_up_mac_is_not_taken_for_a_devices(self):
+        # copy_device.py names a test copy by a MAC made up for it, as the docs say,
+        # the one every test uses; the real device it was copied from is still found.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             for name, record in (("12-34-56-ab-cd-ef", {"mac": "12:34:56:ab:cd:ef", "test_copy_of": "58:cf:79:99:88:77"}),
                                  ("58-cf-79-12-34-56", {"mac": "58:cf:79:12:34:56", "test_copy_of": "58:cf:79:99:88:77"})):
-                (root / "captures/plugs" / name).mkdir(parents=True)
-                (root / "captures/plugs" / name / "plug.json").write_text(json.dumps(record))
+                (root / "captures/devices" / name).mkdir(parents=True)
+                (root / "captures/devices" / name / "device.json").write_text(json.dumps(record))
             with mock.patch.object(ls, "CAPTURES", root / "captures"), \
                  mock.patch.object(ls, "LOCAL_FILE", root / "none"), \
                  mock.patch.object(ls, "ALLOW_FILE", root / "none"), \
                  mock.patch("tools.autoflash.credentials.ENV_FILE", root / ".env"):
                 values = ls.own_values()
         self.assertNotIn("12:34:56:ab:cd:ef", values)
-        self.assertEqual(values["58:cf:79:99:88:77"], "a plug's MAC")   # the plug it was copied from
-        self.assertEqual(values["58:cf:79:12:34:56"], "a plug's MAC")   # a copy's MAC a device could have
+        self.assertEqual(values["58:cf:79:99:88:77"], "a device's MAC")   # the device it was copied from
+        self.assertEqual(values["58:cf:79:12:34:56"], "a device's MAC")   # a copy's MAC a device could have
 
     def test_a_mac_in_a_file_as_six_bytes_either_way_round(self):
-        s = scanner(own={"58cf79998877": "a plug's MAC"})
+        s = scanner(own={"58cf79998877": "a device's MAC"})
         s.raw("a.bin", b"x" + bytes.fromhex("58cf79998877") + b"y")
         s.raw("b.bin", b"x" + bytes.fromhex("778899" "79cf58") + b"y")
         s.raw("c.bin", b"nothing here")

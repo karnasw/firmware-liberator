@@ -1,0 +1,7 @@
+ FAILED: no network to look for the device on
+
+ If it should not have stopped, please open an issue here:
+     https://firmwareliberator.com/issues
+
+ This run's log:
+     captures/devices/123456abcdef/runs/1/run.log

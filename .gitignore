@@ -34,19 +34,35 @@ __pycache__/
 *.img
 *.ota
 *.rbl
-!artifacts/autoflash-bridge-sonoff-s60-4.4.4.ota
+!artifacts/autoflash-bridge-esp32c3-4.4.6.ota
 !artifacts/tasmota-settings-template-15.6.0.0.bin
 !artifacts/autoflash-recovery-safeboot-imprintable.bin
 !artifacts/tasmota32c3-bluetooth.bin
 !artifacts/esphome-sonoff-s60-bootloader-1.2.0.bin
-!artifacts/esphome-sonoff-s60-imprintable-1.6.0.bin
-!artifacts/autoflash-mover-1.1.0.bin
+!artifacts/esphome-sonoff-s60-imprintable-2026.10.0-2.bin
+!artifacts/autoflash-mover-esp32c3-1.2.0.bin
 !artifacts/sonoff-s60-partition-table.bin
-!artifacts/openbeken-sonoff-s61-1.1.0.rbl
-!artifacts/esphome-sonoff-s61-1.2.0.rbl
+!artifacts/openbeken-sonoff-s61-1.18.320-2.rbl
+!artifacts/esphome-sonoff-s61-2026.10.0-3.rbl
+!artifacts/esphome-sonoff-pow-elite-imprintable-2026.10.0-2.bin
+!artifacts/autoflash-mover-esp32-1.1.0.bin
+!artifacts/esphome-esp32-bootloader-1.1.0.bin
+!artifacts/autoflash-bridge-esp32-4.4.6.bin
+!artifacts/autoflash-recovery-safeboot-esp32-imprintable.bin
+!artifacts/tasmota-settings-template-esp32-15.6.0.0.bin
+!artifacts/sonoff-nspanel-partition-table.bin
+!artifacts/sonoff-th-elite-partition-table.bin
+!artifacts/esphome-sonoff-powct-imprintable-2026.10.0-3.bin
+!artifacts/esphome-sonoff-th-elite-imprintable-2026.10.0-2.bin
+!artifacts/esphome-sonoff-dualr3-imprintable-2026.10.0-2.bin
+!artifacts/openbeken-sonoff-basic-1gs-1.18.320-1.rbl
+!artifacts/esphome-sonoff-basic-1gs-2026.10.0-2.rbl
+!artifacts/openbeken-readout-1.18.320-1.rbl
 
 # Answers for unattended runs: the eWeLink password, perhaps sudo's (see .env.example).
 .env
+# The maintainer's tokens and private settings (see tools/repo/.env.infra.example).
+.env.infra
 .env_cf
 
 # Local authorization markers must never replace the shipped safety lock.

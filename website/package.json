@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "build": "astro build",
-    "test": "node --test"
+    "test": "node --test",
+    "check": "node --test checks/built.mjs"
   },
   "devDependencies": {
     "@astrojs/sitemap": "3.7.4",

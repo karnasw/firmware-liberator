@@ -1,7 +1,7 @@
 #!/bin/bash
 # Stand-in for NetworkManager's nmcli, just enough for the conversion tool's
 # Wi-Fi scan (`nmcli -t -f SSID device wifi list`). The emulated "air" holds
-# the fork's fixed access points and the plug's own networks: the one it is
+# the fork's fixed access points and the device's own networks: the one it is
 # broadcasting now (softap-status), and - as a real computer's
 # list does - every one it went out under in the last minute, since gone or
 # renamed (the "esp32_wifi: guest SoftAP <name> up" lines in its serial log). Put

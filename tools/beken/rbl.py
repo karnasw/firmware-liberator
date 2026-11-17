@@ -1,5 +1,5 @@
 """rt_ota RBL images, as the Beken SDK's packer makes them and the S61's stock
-bootloader applies them (docs/beken-s61-emulation.md, "Update (RBL) format").
+bootloader applies them (docs/beken-research.md, "Update (RBL) format").
 
 An RBL is a 96-byte header and a body: the firmware gzipped (level 9, no
 name, no time), padded (PKCS#7) and encrypted with AES-256-CBC under
@@ -7,7 +7,7 @@ RT-Thread's public default key.  The header carries the body's CRC-32, the
 FNV-1a hash and size of the firmware before packing, the packed size, and
 its own CRC-32.  Nothing in it is secret, so a tool can make one: the
 conversion makes the stock app's this way, from the public S61 dump, when a
-plug is to go back to Sonoff's firmware (stock_app.py).
+device is to go back to Sonoff's firmware (stock_app.py).
 
     pack(firmware, name="app", version="1.0.2")  -> the RBL
     header(rbl)                                   -> its fields
@@ -28,6 +28,8 @@ HEADER = 96
 # algo: the crypt nibbles (0x100: AES) and the compression (0x2: gzip), as the
 # packer's "-s aes -c gzip" writes them and the S61's own images carry them.
 ALGO_AES_GZIP = 0x102
+# Sonoff's own official images: the same AES, with an LZMA-alone stream in it.
+ALGO_AES_LZMA = 0x402
 # RT-Thread's public default key and IV: the packer's, and every S61 image's.
 KEY = b"0123456789ABCDEF0123456789ABCDEF"
 IV = b"0123456789ABCDEF"
@@ -103,16 +105,24 @@ def pack(firmware: bytes, *, name: str = "app", version: str, timestamp: int = 0
 
 
 def unpack(rbl: bytes) -> bytes:
-    """The firmware an RBL of ALGO_AES_GZIP carries, checked against its header."""
+    """The firmware an RBL of ALGO_AES_GZIP or ALGO_AES_LZMA carries, checked
+    against its header."""
     fields = header(rbl)
     body = rbl[HEADER:HEADER + fields.size_package]
     if len(body) != fields.size_package:
         raise RblError("the RBL is shorter than its header says")
     if zlib.crc32(body) & 0xFFFFFFFF != fields.body_crc32:
         raise RblError("the RBL body's CRC-32 is wrong")
-    if fields.algo != ALGO_AES_GZIP:
-        raise RblError(f"an RBL of algorithm 0x{fields.algo:x} is not one this unpacks (AES, gzip)")
-    firmware = gzip.decompress(aes.cbc_decrypt(KEY, IV, body))
+    if fields.algo == ALGO_AES_GZIP:
+        firmware = gzip.decompress(aes.cbc_decrypt(KEY, IV, body))
+    elif fields.algo == ALGO_AES_LZMA:
+        import lzma   # here: an optional part of a Python build, and only this needs it
+        try:
+            firmware = lzma.decompress(aes.cbc_decrypt(KEY, IV, body), format=lzma.FORMAT_ALONE)
+        except lzma.LZMAError as exc:
+            raise RblError(f"the RBL's LZMA stream is damaged: {exc}") from None
+    else:
+        raise RblError(f"an RBL of algorithm 0x{fields.algo:x} is not one this unpacks (AES with gzip or LZMA)")
     if len(firmware) != fields.size_raw or fnv1a32(firmware) != fields.raw_hash:
         raise RblError("the firmware in the RBL does not match its header's size and hash")
     return firmware

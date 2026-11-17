@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Decompile S61 functions with angr (pseudo-C).
 
 Builds a small CFG around each target (Thumb) and runs angr's decompiler. angr is

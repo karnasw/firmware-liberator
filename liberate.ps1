@@ -11,7 +11,7 @@ run - and no GitHub API, with its hourly limit, is asked.
 The latest release is unpacked into %USERPROFILE%\Firmware-Liberator and started there,
 as start.cmd starts it. Run again, the folder is updated in place: the files
 the release it holds put there are replaced or removed, nothing else -
-captures\, with the plugs' Sonoff backups and an unfinished conversion, and
+captures\, with the devices' Sonoff backups and an unfinished conversion, and
 the portable Python in .python\ stay as they are. A git clone there is left to
 git. It is all one function, so pasted into an open PowerShell it leaves that
 window's settings as they were, and returns rather than closing it.
@@ -101,9 +101,17 @@ function Start-Autoflash {
         }
     }
 
-    # What start.cmd does, run on this same PowerShell.
+    # What start.cmd does, run on this same PowerShell: the script as text, so
+    # no policy against script files stops it (start.cmd says how). The
+    # variable is this window's again afterwards.
     $powershell = (Get-Process -Id $PID).Path
-    & $powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path (Join-Path $folder "tools") "windows-start.ps1") @args
+    $before = $env:AUTOFLASH_START
+    $env:AUTOFLASH_START = Join-Path (Join-Path $folder "tools") "windows-start.ps1"
+    try {
+        & $powershell -NoProfile -ExecutionPolicy Bypass -Command '& ([scriptblock]::Create([IO.File]::ReadAllText($env:AUTOFLASH_START))) #' @args
+    } finally {
+        $env:AUTOFLASH_START = $before
+    }
 }
 
 Start-Autoflash @args

@@ -15,6 +15,11 @@ class X25519Tests(unittest.TestCase):
         point = bytes.fromhex("e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c")
         self.assertEqual(noise.x25519(scalar, point).hex(),
                          "c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552")
+        # 5.2's second: the point's top bit is set, and is ignored.
+        scalar = bytes.fromhex("4b66e9d4d1b4673c5ad22691957d6af5c11b6421e0ea01d42ca4169e7918ba0d")
+        point = bytes.fromhex("e5210f12786811d3f4b7959d0538ae2c31dbe7106fc03c3efc4cd549c715a493")
+        self.assertEqual(noise.x25519(scalar, point).hex(),
+                         "95cbde9476e8907d7aade45cb4b873f88b595a68799fa152e6f8f7647aac7957")
         # 6.1: Alice and Bob agree.
         alice = bytes.fromhex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a")
         bob = bytes.fromhex("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb")
@@ -84,32 +89,52 @@ class HandshakeTests(unittest.TestCase):
         self.assertEqual(sending.encrypt(b"\x00\x00\x10\x00"), self.SECOND)
 
     def test_as_the_responder_too(self):
-        plug = noise.Handshake(self.PSK, self.PROLOGUE, initiator=False, ephemeral=self.RESPONDER)
-        plug.read_message(self.MESSAGE1)
-        self.assertEqual(plug.write_message(), self.MESSAGE2)
-        sending, receiving = plug.split()
+        device = noise.Handshake(self.PSK, self.PROLOGUE, initiator=False, ephemeral=self.RESPONDER)
+        device.read_message(self.MESSAGE1)
+        self.assertEqual(device.write_message(), self.MESSAGE2)
+        sending, receiving = device.split()
         self.assertEqual(receiving.decrypt(self.FIRST), b"\x00")
         self.assertEqual(sending.encrypt(b"\x41"), self.REPLY)
 
     def test_two_ends_with_the_same_key_agree_and_another_key_is_refused(self):
         client = noise.Handshake(self.PSK, b"prologue")
-        plug = noise.Handshake(self.PSK, b"prologue", initiator=False)
-        plug.read_message(client.write_message())
-        client.read_message(plug.write_message())
-        (to_plug, from_plug), (plug_sends, plug_receives) = client.split(), plug.split()
+        device = noise.Handshake(self.PSK, b"prologue", initiator=False)
+        device.read_message(client.write_message())
+        client.read_message(device.write_message())
+        (to_device, from_device), (device_sends, device_receives) = client.split(), device.split()
         for size in (0, 1, 1024, 3000):
-            self.assertEqual(plug_receives.decrypt(to_plug.encrypt(b"x" * size)), b"x" * size)
-            self.assertEqual(from_plug.decrypt(plug_sends.encrypt(b"y" * size)), b"y" * size)
+            self.assertEqual(device_receives.decrypt(to_device.encrypt(b"x" * size)), b"x" * size)
+            self.assertEqual(from_device.decrypt(device_sends.encrypt(b"y" * size)), b"y" * size)
         for psk, prologue in ((bytes(32), b"prologue"), (self.PSK, b"changed")):
             other = noise.Handshake(psk, prologue, initiator=False)
             with self.assertRaises(noise.NoiseError):
                 other.read_message(noise.Handshake(self.PSK, b"prologue").write_message())
 
+    def test_each_end_writes_and_reads_only_in_its_turn(self):
+        client = noise.Handshake(self.PSK, b"prologue")
+        device = noise.Handshake(self.PSK, b"prologue", initiator=False)
+        with self.assertRaises(RuntimeError):
+            device.write_message()  # the initiator speaks first
+        with self.assertRaises(RuntimeError):
+            client.read_message(bytes(48))
+        first = client.write_message()
+        with self.assertRaises(RuntimeError):
+            client.write_message()
+        device.read_message(first)
+        second = device.write_message()
+        with self.assertRaises(RuntimeError):
+            device.read_message(second)
+        client.read_message(second)
+        for end in (client, device):
+            with self.assertRaises(RuntimeError):
+                end.write_message()
+
     def test_a_key_as_the_yaml_config_has_it(self):
         text = base64.b64encode(self.PSK).decode()
         for given in (text, f'"{text}"', f"  {text}\n"):
             self.assertEqual(noise.decode_key(given), self.PSK)
-        for wrong, why in (("not base64!", "not base64"), (base64.b64encode(bytes(16)).decode(), "16 bytes")):
+        for wrong, why in (("not base64!", "not base64"), (base64.b64encode(bytes(16)).decode(), "16 bytes"),
+                           (text[:8] + "$" + text[8:], "not base64")):  # never decoded around a stray character
             with self.assertRaisesRegex(ValueError, why):
                 noise.decode_key(wrong)
 
@@ -136,12 +161,12 @@ class FrameTests(unittest.TestCase):
         with self.assertRaisesRegex(noise.NoiseError, noise.WRONG_KEY_REASON):
             noise.handshake_reply(client, b"\x01" + noise.WRONG_KEY_REASON.encode())
         # A reply that does not check out says the same: another key.
-        plug = noise.Handshake(bytes(range(32)), b"", initiator=False)
-        plug.read_message(noise.Handshake(bytes(range(32)), b"").write_message())
+        device = noise.Handshake(bytes(range(32)), b"", initiator=False)
+        device.read_message(noise.Handshake(bytes(range(32)), b"").write_message())
         client = noise.Handshake(bytes(32), b"")
         client.write_message()
         with self.assertRaisesRegex(noise.NoiseError, noise.WRONG_KEY_REASON):
-            noise.handshake_reply(client, bytes([noise.HANDSHAKE_OK]) + plug.write_message())
+            noise.handshake_reply(client, bytes([noise.HANDSHAKE_OK]) + device.write_message())
 
 
 if __name__ == "__main__":

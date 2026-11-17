@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Build an OpenBeken mainConfig_t blob with Wi-Fi credentials.
 
 Layout (src/new_pins.h, version 5 / MAIN_CFG_VERSION):

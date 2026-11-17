@@ -1,5 +1,5 @@
 """How short of memory this computer was during a fault scenario. An emulated
-plug that is swapped out has its connections time out with nothing wrong, so
+device that is swapped out has its connections time out with nothing wrong, so
 both fault suites note this beside a result, and say so of a failure."""
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 # Under this much available, or with tasks held up on memory this much of the
-# time, a plug is starved. The percentage is a judgement, not a measured limit.
+# time, a device is starved. The percentage is a judgement, not a measured limit.
 LOW_MEMORY_KB = 350_000
 STALLED_PERCENT = 15
 

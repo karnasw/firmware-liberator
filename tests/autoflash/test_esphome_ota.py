@@ -4,7 +4,9 @@ import hashlib
 import secrets
 import socket
 import threading
+import time
 import unittest
+from unittest import mock
 
 from tools.autoflash import esphome_ota as ota
 from tools.autoflash import noise
@@ -13,7 +15,7 @@ KEY = bytes(range(32))
 
 
 class Sealed:
-    """The plug's end of an encrypted session, as ota_esphome_noise.cpp reads
+    """The device's end of an encrypted session, as ota_esphome_noise.cpp reads
     and writes it: each answer byte in a frame of its own, each value the
     client sends (type, size, checksum) in exactly one, and data in frames of
     at most 1024 bytes."""
@@ -52,8 +54,10 @@ class FakeESPHome:
     password asked for), and, `encrypted_only`, nothing else taken."""
 
     def __init__(self, *, flags=ota.SERVER_COMPRESSION, password=None, md5=False, encrypted_only=False,
-                 refuse_at=None, key=None):
+                 refuse_at=None, key=None, version=2, end=ota.UPDATE_END_OK, prepare_delay=0.0):
         self.flags, self.refuse_at = flags, refuse_at
+        self.version, self.end, self.prepare_delay = version, end, prepare_delay
+        self.acknowledged = threading.Event()  # the client's last byte, after the update ended
         self.password, self.md5, self.encrypted_only = password, md5, encrypted_only
         self.key = key
         self.encrypted: list[bool] = []  # whether each update came encrypted
@@ -63,7 +67,8 @@ class FakeESPHome:
         self.port = self.server.getsockname()[1]
         self.received: list[tuple[int, bytes]] = []
         self.features: list[int] = []  # what the client offered, each session
-        threading.Thread(target=self.serve, daemon=True).start()
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
 
     def recv(self, conn, count):
         data = b""
@@ -88,7 +93,7 @@ class FakeESPHome:
 
     def session(self, conn):
         assert self.recv(conn, 5) == ota.MAGIC
-        conn.sendall(bytes([ota.OK, 2]))
+        conn.sendall(bytes([ota.OK, self.version]))
         features = self.recv(conn, 1)[0]
         self.features.append(features)
         wanted = ota.CLIENT_NOISE | ota.CLIENT_EXTENDED
@@ -100,7 +105,7 @@ class FakeESPHome:
         conn.sendall(bytes([ota.FEATURE_FLAGS, flags]))
         if sealing:
             # The prologue: every byte of the session so far, both ways.
-            prologue = ota.NOISE_PROLOGUE + ota.MAGIC + bytes([ota.OK, 2, features, ota.FEATURE_FLAGS, flags])
+            prologue = ota.NOISE_PROLOGUE + ota.MAGIC + bytes([ota.OK, self.version, features, ota.FEATURE_FLAGS, flags])
             responder = noise.Handshake(self.key, prologue, initiator=False)
             message = noise.read_frame(lambda size: self.recv(conn, size))
             assert message[0] == noise.HANDSHAKE_OK
@@ -136,6 +141,7 @@ class FakeESPHome:
     def update(self, conn, *, value, data):
         kind = value(1)[0]
         size = int.from_bytes(value(4), "big")
+        time.sleep(self.prepare_delay)  # erasing the flash
         conn.sendall(bytes([ota.UPDATE_PREPARE_OK]))
         md5 = value(32).decode()
         conn.sendall(bytes([ota.BIN_MD5_OK]))
@@ -145,16 +151,59 @@ class FakeESPHome:
             if self.refuse_at is not None and len(received) >= self.refuse_at:
                 conn.sendall(bytes([0x83]))
                 return
-            conn.sendall(bytes([ota.CHUNK_OK]))
+            if self.version >= 2:
+                conn.sendall(bytes([ota.CHUNK_OK]))
         assert hashlib.md5(received).hexdigest() == md5
         if self.flags & ota.SERVER_COMPRESSION:
             received = gzip.decompress(received)
         self.received.append((kind, received))
-        conn.sendall(bytes([ota.RECEIVE_OK, ota.UPDATE_END_OK]))
-        value(1)
+        conn.sendall(bytes([ota.RECEIVE_OK, self.end]))
+        if value(1) == bytes([ota.OK]):
+            self.acknowledged.set()
 
     def close(self):
+        # Shut down first: closing alone leaves serve() blocked in accept(),
+        # still listening, and later tests in the process found their own
+        # servers' connections reset (Errno 104).
+        try:
+            self.server.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         self.server.close()
+        self.thread.join(5)
+
+
+class WireTests(unittest.TestCase):
+    def test_its_bytes_are_espota2s(self):
+        # Both ends here take them from the module: only this holds them to ESPHome's.
+        self.assertEqual((ota.PORT, ota.MAGIC), (3232, b"\x6c\x26\xf7\x5c\x45"))
+        self.assertEqual((ota.APP, ota.PARTITION_TABLE, ota.BOOTLOADER), (0, 1, 2))
+        self.assertEqual((ota.OK, ota.REQUEST_AUTH, ota.REQUEST_SHA256_AUTH), (0x00, 0x01, 0x02))
+        self.assertEqual((ota.AUTH_OK, ota.UPDATE_PREPARE_OK, ota.BIN_MD5_OK, ota.RECEIVE_OK, ota.UPDATE_END_OK,
+                          ota.SUPPORTS_COMPRESSION, ota.CHUNK_OK, ota.FEATURE_FLAGS),
+                         (0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48))
+        self.assertEqual((ota.AUTH_INVALID, ota.ENCRYPTION_REQUIRED), (0x82, 0x94))
+        self.assertEqual((ota.CLIENT_COMPRESSION, ota.CLIENT_SHA256_AUTH, ota.CLIENT_EXTENDED, ota.CLIENT_NOISE),
+                         (0x01, 0x02, 0x04, 0x08))
+        self.assertEqual((ota.SERVER_COMPRESSION, ota.SERVER_PARTITION_ACCESS, ota.SERVER_NOISE), (0x01, 0x02, 0x04))
+        self.assertEqual((ota.NOISE_PROLOGUE, ota.NOISE_MAX_PLAINTEXT, ota.BLOCK), (b"NoiseOTAInit", 1024, 8192))
+
+    def test_a_read_takes_no_more_than_it_asked_for(self):
+        # What follows on the connection is the next answer's: a read in pieces
+        # asks each time only for what is still missing.
+        class Trickle:
+            def __init__(self):
+                self.waiting, self.first = b"abcdef", True
+
+            def recv(self, count):
+                count = 1 if self.first else count
+                self.first = False
+                piece, self.waiting = self.waiting[:count], self.waiting[count:]
+                return piece
+
+        sock = Trickle()
+        self.assertEqual(ota._recv(sock, 3, "a test"), b"abc")
+        self.assertEqual(sock.waiting, b"def")
 
 
 class ProtocolTests(unittest.TestCase):
@@ -162,6 +211,15 @@ class ProtocolTests(unittest.TestCase):
         fake = FakeESPHome(**kwargs)
         self.addCleanup(fake.close)
         return fake
+
+    def test_a_fake_closed_leaves_nothing_listening(self):
+        # Left listening, it took other tests' connections in the same process
+        # (test_emulator_stats: Errno 104), so tests run side by side failed.
+        fake = FakeESPHome()
+        fake.close()
+        self.assertFalse(fake.thread.is_alive())
+        with self.assertRaises(ConnectionRefusedError):
+            socket.create_connection(("127.0.0.1", fake.port), timeout=2).close()
 
     def test_an_app_arrives_whole_compressed_or_not(self):
         image = bytes(range(256)) * 300
@@ -260,11 +318,48 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(ota.wants("127.0.0.1", key=bytes(32), port=fake.port), ota.KEY)
         self.assertEqual(fake.received, [])
 
+    def test_a_device_still_holding_a_lost_update_is_told_apart(self):
+        # Its update service on another session: the connection is taken (the
+        # stack's backlog) and the handshake goes unanswered.
+        held = socket.socket()
+        self.addCleanup(held.close)
+        held.bind(("127.0.0.1", 0))
+        held.listen(1)
+        with self.assertRaises(ota.Busy):
+            ota.upload("127.0.0.1", b"image", port=held.getsockname()[1], timeout=0.5)
+
     def test_a_refusal_part_way_is_said_in_words(self):
         for key in (None, KEY):
             fake = self.fake(flags=0, refuse_at=ota.BLOCK, key=key)
             with self.assertRaisesRegex(ota.OTAError, "writing the flash failed"):
                 ota.upload("127.0.0.1", b"\xe9" * (3 * ota.BLOCK), port=fake.port, key=key)
+
+    def test_an_update_ends_only_once_the_device_says_it_did(self):
+        fake = self.fake(end=0x84)
+        with self.assertRaisesRegex(ota.OTAError, "finishing the update failed"):
+            ota.upload("127.0.0.1", b"\xe9" * 100, port=fake.port)
+
+    def test_the_device_is_told_its_update_ending_was_heard(self):
+        fake = self.fake()
+        ota.upload("127.0.0.1", b"\xe9" * 100, port=fake.port)
+        self.assertTrue(fake.acknowledged.wait(5))
+
+    def test_a_device_on_the_first_protocol_acknowledges_no_block(self):
+        fake = self.fake(version=1)
+        image = b"\xe9" * (2 * ota.BLOCK + 5)
+        ota.upload("127.0.0.1", image, port=fake.port)
+        self.assertEqual(fake.received, [(ota.APP, image)])
+
+    def test_preparing_the_flash_may_take_longer_than_connecting(self):
+        # Erasing the slot takes seconds; the connect timeout is not the data's.
+        patcher = mock.patch.object(ota, "DATA_TIMEOUT", 10.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for key in (None, KEY):
+            with self.subTest(encrypted=bool(key)):
+                fake = self.fake(key=key, prepare_delay=1.0)
+                ota.upload("127.0.0.1", b"\xe9" * 100, port=fake.port, key=key, timeout=0.5)
+                self.assertEqual(fake.encrypted, [bool(key)])
 
     def test_a_partition_table_needs_a_firmware_that_allows_it(self):
         fake = self.fake(flags=0)

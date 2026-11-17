@@ -60,6 +60,24 @@ class AwakeTests(unittest.TestCase):
              mock.patch.object(awake.os, "name", "posix"), mock.patch.object(awake.sys, "platform", "linux"):
             self.assertIn("not kept awake", awake.keep_awake())
 
+    def test_asked_again_it_keeps_the_one_hold_it_has(self):
+        with mock.patch.object(awake.shutil, "which", return_value="/usr/bin/systemd-inhibit"), \
+             mock.patch.object(awake.os, "name", "posix"), mock.patch.object(awake.sys, "platform", "linux"), \
+             mock.patch.object(awake.subprocess, "Popen") as popen:
+            first = awake.keep_awake()
+            self.assertEqual(awake.keep_awake(), first)
+        popen.assert_called_once()
+
+    def test_on_windows_the_hold_is_let_go_at_the_end_of_the_run(self):
+        import ctypes
+        windll = mock.Mock()
+        windll.kernel32.SetThreadExecutionState.return_value = 1
+        with mock.patch.object(ctypes, "windll", windll, create=True), mock.patch.object(awake.os, "name", "nt"):
+            self.assertEqual(awake.keep_awake(), "kept awake with SetThreadExecutionState")
+            awake.let_sleep()
+        self.assertEqual(windll.kernel32.SetThreadExecutionState.call_args_list,
+                         [mock.call(0x80000001), mock.call(0x80000000)])
+
     @unittest.skipUnless(HOLDS, "systemd does not let this user hold off sleep here")
     def test_systemd_holds_off_sleep_and_lets_go(self):
         self.assertEqual(awake.keep_awake(), "kept awake with systemd-inhibit")

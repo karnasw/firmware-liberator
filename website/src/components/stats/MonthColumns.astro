@@ -1,0 +1,60 @@
+---
+// Runs a month as stacked columns - converted, failed, crashed - on one
+// baseline, a 2px gap of the surface between the parts, each column's total
+// over it, and a legend. A month under the smallest figure shows no column.
+const { months } = Astro.props;
+const shown = months.slice(-12);
+const parts = [["converted", "Converted", "series-1"], ["failed", "Failed", "series-2"], ["crashed", "Crashed", "series-3"]];
+// The legend names only the parts some month has: a key for nothing is noise.
+const present = parts.filter(([key]) => shown.some((month) => month[key]));
+const total = (month) => parts.reduce((sum, [key]) => sum + (month[key] ?? 0), 0);
+const top = Math.max(1, ...shown.map(total));
+const step = 10 ** Math.floor(Math.log10(top));
+const ceiling = Math.ceil(top / step) * step;
+const ticks = [0, ceiling / 2, ceiling];
+const [W, H, left, bottom, topPad] = [640, 240, 44, 28, 18];
+const plot = H - bottom - topPad;
+const band = (W - left) / Math.max(1, shown.length);
+const bar = Math.min(24, band * 0.5);
+const y = (value) => topPad + plot - (plot * value) / ceiling;
+const label = (month) => new Date(`${month.month}-01T00:00:00Z`).toLocaleString("en", { month: "short", timeZone: "UTC" });
+const columns = shown.map((month, index) => {
+  let base = 0;
+  const x = left + band * index + (band - bar) / 2;
+  const blocks = parts.filter(([key]) => month[key]).map(([key, name, colour], at, all) => {
+    const value = month[key];
+    const from = y(base);
+    base += value;
+    const to = y(base);
+    // The 2px surface gap: each block stops short of the one under it.
+    return { key, name, colour, value, x, top: to, height: Math.max(0, from - to - (at ? 2 : 0)),
+      last: at === all.length - 1, tip: `${label(month)} ${month.month.slice(0, 4)}: ${value.toLocaleString("en")} ${name.toLowerCase()}` };
+  });
+  return { month, x, blocks, total: total(month), name: label(month) };
+});
+---
+<figure class="chart">
+  <ul class="legend">
+    {present.map(([, name, colour]) => <li><span class={`swatch ${colour}`}></span>{name}</li>)}
+  </ul>
+  <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Runs each month, by how they ended">
+    {ticks.map((tick) => (
+      <g>
+        <line class="grid" x1={left} x2={W} y1={y(tick)} y2={y(tick)} />
+        <text class="tick" x={left - 8} y={y(tick) + 4} text-anchor="end">{tick.toLocaleString("en")}</text>
+      </g>
+    ))}
+    {columns.map((column) => (
+      <g>
+        {column.blocks.map((block) => (
+          <path class={`mark ${block.colour}`} tabindex="0" data-tip={block.tip} aria-label={block.tip}
+            d={block.last
+              ? `M${block.x},${block.top + block.height} v${-(block.height - 4)} q0,-4 4,-4 h${bar - 8} q4,0 4,4 v${block.height - 4} z`
+              : `M${block.x},${block.top} h${bar} v${block.height} h${-bar} z`} />
+        ))}
+        {column.total > 0 && <text class="value" x={column.x + bar / 2} y={y(column.total) - 6} text-anchor="middle">{column.total.toLocaleString("en")}</text>}
+        <text class="tick" x={column.x + bar / 2} y={H - 8} text-anchor="middle">{column.name}</text>
+      </g>
+    ))}
+  </svg>
+</figure>

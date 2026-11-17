@@ -3,6 +3,7 @@
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -72,3 +73,44 @@ class WorktreeVenvTests(unittest.TestCase):
         python = self.main / ".venv" / "Scripts" / "python.exe"
         self.fake_python(python)
         self.assertEqual(self.hook("pre-push", self.worktree), [str(python)])
+
+
+class CompileTests(unittest.TestCase):
+    def compiled(self, source):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder, "module.py")
+            path.write_text(source, encoding="utf-8")
+            linter = next(each for each in lint.LINTERS if each.name == "compile")
+            return subprocess.run(linter.command([str(path)]), capture_output=True, text=True)
+
+    def test_what_parses_yet_will_not_compile_is_found(self):
+        # Not the 21 context managers in one `with` that led to this check:
+        # Python 3.13 compiles those, so on it the test would pass nothing.
+        done = self.compiled("def f():\n    x = 1\n    global x\n")
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("assigned to before global declaration", done.stdout)
+
+    def test_compile_alone_runs_only_the_compile_check_on_every_tracked_file(self):
+        with mock.patch.object(lint, "tracked", return_value=["a.py"]), \
+             mock.patch.object(lint, "run", return_value=0) as run:
+            self.assertEqual(lint.main(["compile"]), 0)
+        run.assert_called_once_with(["a.py"], strict=True, only="compile")
+
+    def test_only_one_linter_runs_when_one_is_named(self):
+        ran = []
+        with mock.patch.object(lint.subprocess, "run",
+                               side_effect=lambda command, **_: ran.append(command) or
+                               subprocess.CompletedProcess(command, 0, "")), \
+             mock.patch.object(lint.shutil, "which", return_value="/bin/true"):
+            self.assertEqual(lint.run(["tools/repo/lint.py", "tools/espressif/emulator/emu.sh"], strict=True,
+                                      only="compile"), 0)
+        linted = [command[:2] for command in ran if command[0] != "git"]   # git finds the venv
+        self.assertEqual(linted, [[sys.executable, "-c"]])   # shellcheck left out
+
+    def test_what_compiles_passes_and_nothing_is_written(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder, "module.py")
+            path.write_text("x = 1\n", encoding="utf-8")
+            linter = next(each for each in lint.LINTERS if each.name == "compile")
+            self.assertEqual(subprocess.run(linter.command([str(path)])).returncode, 0)
+            self.assertEqual(sorted(p.name for p in Path(folder).iterdir()), ["module.py"])

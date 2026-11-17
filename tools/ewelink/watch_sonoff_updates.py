@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Watch a stock plug for firmware-update activity, read-only, for hours at a time.
+"""Watch a stock device for firmware-update activity, read-only, for hours at a time.
 
 Two independent views, either of which can be turned off:
 
-- network: tcpdump on the OPNsense router over SSH, filtered to the plug.  It
+- network: tcpdump on the OPNsense router over SSH, filtered to the device.  It
   logs every DNS lookup, every new connection, DHCP (a reboot or rejoin) and
   every plain-HTTP request.  Sonoff's firmware download is plain HTTP on port
   8088, so a genuine update cannot happen without appearing here.
 - cloud: the owner's eWeLink account.  It holds the app WebSocket open and logs
-  every message about the plug, and every --poll-minutes records the plug's
+  every message about the device, and every --poll-minutes records the device's
   firmware version, whether it is online, and what update Sonoff is offering.
 
-Nothing is ever sent to the plug.  Everything is written under
+Nothing is ever sent to the device.  Everything is written under
 captures/update-watch/<start time>/, which git ignores.
 """
 
@@ -52,7 +52,7 @@ except ModuleNotFoundError:  # Support direct execution as tools/ewelink/watch_s
 # taken: SYNs show new connections, ports 80 and 8088 are plain HTTP and read
 # whole, and the encrypted cloud connection is logged by timing and size.
 CAPTURE_FILTER = "udp port 53 or udp port 123 or udp port 67 or udp port 68 or tcp"
-# Cloud data arriving this long after the plug last sent on that connection was
+# Cloud data arriving this long after the device last sent on that connection was
 # not a reply: the cloud spoke first.  Segments closer together than
 # CONTINUATION are one message.
 REPLY_WINDOW = 2.0
@@ -133,20 +133,20 @@ class Recorder:
 class PacketParser:
     """Turns tcpdump -e -nn -tttt -A text into events.  Pure, so it is testable."""
 
-    def __init__(self, plug_ip: str | None, plug_mac: str | None):
-        self.plug_ip = plug_ip
-        self.plug_mac = plug_mac.lower() if plug_mac else None
+    def __init__(self, device_ip: str | None, device_mac: str | None):
+        self.device_ip = device_ip
+        self.device_mac = device_mac.lower() if device_mac else None
         self.pending_dns: dict[tuple[int | None, str], str] = {}
-        self.names: dict[str, str] = {}      # address -> name the plug looked up
+        self.names: dict[str, str] = {}      # address -> name the device looked up
         self.http_port: int | None = None     # payload lines belong to port 80/8088
-        # Per connection: when the plug last sent data, when the cloud last did.
+        # Per connection: when the device last sent data, when the cloud last did.
         self.last_out: dict[tuple[str, int | None, int | None], float] = {}
         self.last_in: dict[tuple[str, int | None, int | None], float] = {}
 
-    def from_plug(self, smac: str, src: str) -> bool:
-        if self.plug_mac:
-            return smac == self.plug_mac
-        return src == self.plug_ip
+    def from_device(self, smac: str, src: str) -> bool:
+        if self.device_mac:
+            return smac == self.device_mac
+        return src == self.device_ip
 
     def feed(self, line: str) -> list[dict[str, Any]]:
         match = HEADER.match(line)
@@ -159,7 +159,7 @@ class PacketParser:
             return []
         src, sport = split_endpoint(match["src"])
         dst, dport = split_endpoint(match["dst"])
-        outbound = self.from_plug(match["smac"], src)
+        outbound = self.from_device(match["smac"], src)
         rest = match["rest"]
         self.http_port = next((p for p in (dport, sport) if p in (80, FIRMWARE_PORT)), None)
 
@@ -204,7 +204,7 @@ class PacketParser:
         if previous_in is not None and at - previous_in < CONTINUATION:
             return [event]  # the rest of a message already counted
         if at - self.last_out.get(key, float("-inf")) <= REPLY_WINDOW:
-            return [event]  # an answer to the plug
+            return [event]  # an answer to the device
         return [event, dict(event, kind="cloud_push")]
 
 
@@ -214,8 +214,8 @@ def describe(event: dict[str, Any]) -> tuple[str | None, bool]:
     if kind == "connect":
         where = f"{event['name'] or event['address']}:{event['port']}"
         if event["port"] == FIRMWARE_PORT:
-            return f"plug opened a connection to the firmware port: {where}", True
-        return f"plug connected to {where}", False
+            return f"device opened a connection to the firmware port: {where}", True
+        return f"device connected to {where}", False
     if kind == "http_request":
         path = event["path"].split("?")[0]  # the query holds the device id and signature
         short = path if len(path) <= 70 else path[:67] + "..."
@@ -223,24 +223,24 @@ def describe(event: dict[str, Any]) -> tuple[str | None, bool]:
             return f"FIRMWARE DOWNLOAD: {event['method']} {short}", True
         return f"plain HTTP: {event['method']} {short}", True
     if kind == "dns_query":
-        return f"plug looked up {event['name']}", False
+        return f"device looked up {event['name']}", False
     if kind == "dhcp":
-        return "plug used DHCP (booted or rejoined Wi-Fi)", False
+        return "device used DHCP (booted or rejoined Wi-Fi)", False
     if kind == "cloud_push":
         where = f"{event['name'] or event['address']}:{event['port']}"
-        return f"cloud sent the plug {event['bytes']} bytes unprompted ({where})", False
+        return f"cloud sent the device {event['bytes']} bytes unprompted ({where})", False
     return None, False
 
 
 def remote_capture(args: argparse.Namespace, seconds: int) -> str:
     """The command run on the router.
 
-    -p keeps the interface out of promiscuous mode: the plug's traffic is sent
+    -p keeps the interface out of promiscuous mode: the device's traffic is sent
     to the router anyway, so nothing about the interface changes.  timeout ends
     the capture by itself if this computer vanishes without closing the session.
     Nothing is written on the router; the output streams back here.
     """
-    selector = f"ether host {args.plug_mac}" if args.plug_mac else f"host {args.plug_ip}"
+    selector = f"ether host {args.device_mac}" if args.device_mac else f"host {args.device_ip}"
     return (
         f"timeout {seconds} tcpdump -p -l -e -nn -tttt -A -s 0 -i {shlex.quote(args.interface)} "
         + shlex.quote(f"{selector} and ({CAPTURE_FILTER})")
@@ -261,7 +261,7 @@ def end_process(process: subprocess.Popen) -> None:
 
 def watch_network(args: argparse.Namespace, recorder: Recorder, stop: threading.Event,
                   deadline: float, children: list[subprocess.Popen]) -> None:
-    parser = PacketParser(args.plug_ip, args.plug_mac)
+    parser = PacketParser(args.device_ip, args.device_mac)
     while not stop.is_set():
         # Each capture may outlive the watch by two minutes at most.
         seconds = max(60, int(deadline - time.monotonic()) + 120)
@@ -302,7 +302,7 @@ def offers(response: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def find_plug(devices: list[dict[str, Any]], device_id: str | None) -> dict[str, Any]:
+def find_device(devices: list[dict[str, Any]], device_id: str | None) -> dict[str, Any]:
     if device_id:
         matches = [d for d in devices if d.get("deviceid") == device_id]
     else:
@@ -340,7 +340,7 @@ class CloudWatch:
 
     def poll(self) -> None:
         assert self.session is not None
-        device = find_plug(get_devices(self.region, self.session["at"]), self.device_id)
+        device = find_device(get_devices(self.region, self.session["at"]), self.device_id)
         self.device_id = device["deviceid"]
         state = {"online": bool(device.get("online")), "version": device.get("params", {}).get("fwVersion")}
         offer = offers(query_ota(self.region, self.session["at"], ota_identity(device)))
@@ -349,7 +349,7 @@ class CloudWatch:
             changed = self.last_state is not None and state["version"] != self.last_state["version"]
             self.recorder.event(
                 "cloud_state",
-                f"cloud: plug {'online' if state['online'] else 'OFFLINE'}, firmware {state['version']}",
+                f"cloud: device {'online' if state['online'] else 'OFFLINE'}, firmware {state['version']}",
                 notable=changed, **state,
             )
             self.last_state = state
@@ -373,7 +373,7 @@ class CloudWatch:
         if handshake.get("error", 0) != 0:
             raise EwelinkError("cloud WebSocket authentication failed")
         interval = float(handshake.get("config", {}).get("hbInterval", 90))
-        self.recorder.event("cloud_ws", "cloud: listening for messages about the plug")
+        self.recorder.event("cloud_ws", "cloud: listening for messages about the device")
         return ws, max(15.0, interval * 0.8)
 
     def handle(self, message: dict[str, Any]) -> None:
@@ -437,8 +437,8 @@ def summarise(recorder: Recorder, started: float) -> str:
     offered: list[str] = []
     actions: collections.Counter[str] = collections.Counter()
     downloads = 0
-    sent: dict[str, list[float]] = collections.defaultdict(list)       # plug -> cloud, per endpoint
-    received: dict[str, list[float]] = collections.defaultdict(list)   # cloud -> plug
+    sent: dict[str, list[float]] = collections.defaultdict(list)       # device -> cloud, per endpoint
+    received: dict[str, list[float]] = collections.defaultdict(list)   # cloud -> device
     pushes: list[dict[str, Any]] = []
     with open(recorder.directory / "events.jsonl", encoding="utf-8") as stream:
         for line in stream:
@@ -464,7 +464,7 @@ def summarise(recorder: Recorder, started: float) -> str:
     hours = (time.monotonic() - started) / 3600
     lines = [f"Watched for {hours:.1f} hours. Logs: {recorder.directory}", ""]
     lines.append(f"Firmware downloads seen: {downloads}"
-                 + ("" if downloads else " - the plug never fetched firmware"))
+                 + ("" if downloads else " - the device never fetched firmware"))
     lines.append(f"Firmware versions reported: {', '.join(map(str, versions)) or 'none (no cloud view)'}")
     lines.append(f"Update offers, in order: {' -> '.join(offered) or 'none recorded'}")
     lines.append(f"Boots/rejoins (DHCP packets): {recorder.counts['dhcp']}")
@@ -474,7 +474,7 @@ def summarise(recorder: Recorder, started: float) -> str:
     lines.append("Connections opened:")
     lines += [f"  {count:5}  {where}" for where, count in connects.most_common()] or ["  none"]
     lines += cloud_connection(sent, received, pushes)
-    lines.append("Cloud messages about the plug:")
+    lines.append("Cloud messages about the device:")
     lines += [f"  {count:5}  {action}" for action, count in actions.most_common()] or ["  none"]
     lines.append("Things worth a look:")
     lines += [f"  {note}" for note in recorder.notable] or ["  none"]
@@ -487,12 +487,12 @@ def minutes(seconds: float) -> str:
 
 def cloud_connection(sent: dict[str, list[float]], received: dict[str, list[float]],
                      pushes: list[dict[str, Any]]) -> list[str]:
-    """How often the plug checks in, and how often the cloud speaks first."""
+    """How often the device checks in, and how often the cloud speaks first."""
     lines = ["Encrypted connections (timing and size only):"]
     if not sent and not pushes:
         return lines + ["  none seen"]
     for where, times in sorted(sent.items(), key=lambda item: -len(item[1])):
-        # A check-in is the plug speaking first: sending after five quiet
+        # A check-in is the device speaking first: sending after five quiet
         # seconds, and not answering something the cloud just sent.
         heard = received.get(where, [])
         starts = [t for i, t in enumerate(times)
@@ -501,10 +501,10 @@ def cloud_connection(sent: dict[str, list[float]], received: dict[str, list[floa
         gaps = sorted(b - a for a, b in zip(starts, starts[1:]))
         if gaps:
             typical = gaps[len(gaps) // 2]
-            lines.append(f"  {where}: plug checked in {len(starts)} times, typically every "
+            lines.append(f"  {where}: device checked in {len(starts)} times, typically every "
                          f"{minutes(typical)} (range {minutes(gaps[0])} - {minutes(gaps[-1])})")
         else:
-            lines.append(f"  {where}: plug sent data {len(starts)} time(s)")
+            lines.append(f"  {where}: device sent data {len(starts)} time(s)")
     lines.append(f"  Cloud spoke first: {len(pushes)} time(s)")
     sizes = collections.Counter(p["bytes"] for p in pushes)
     lines += [f"    {count:5} x {size} bytes" for size, count in sorted(sizes.items())]
@@ -517,28 +517,29 @@ def cloud_connection(sent: dict[str, list[float]], received: dict[str, list[floa
 def main(argv: list[str] | None = None, *, secret: Callable[[str], str] = ask_secret) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--hours", type=float, default=24.0)
-    parser.add_argument("--plug-ip", help="the plug's LAN address")
-    parser.add_argument("--plug-mac", help="filter on the plug's MAC instead; survives an address change")
+    parser.add_argument("--device-ip", help="the device's LAN address")
+    parser.add_argument("--device-mac", help="filter on the device's MAC instead; survives an address change")
     parser.add_argument("--opnsense", help="SSH target for the router, e.g. root@192.168.99.1")
     parser.add_argument("--interface", help="the router's LAN interface, e.g. igc1")
     parser.add_argument("--no-cloud", action="store_true", help="network view only")
-    parser.add_argument("--email", help="eWeLink account; prompted when omitted")
+    parser.add_argument("--email", help="eWeLink account: its email, or its phone number with "
+                        "the country code; prompted when omitted")
     parser.add_argument("--country-code", default="+44")
     parser.add_argument("--region", choices=sorted(API), default="eu")
-    parser.add_argument("--device-id", help="needed only if the account has more than one plug to watch")
+    parser.add_argument("--device-id", help="needed only if the account has more than one device to watch")
     parser.add_argument("--poll-minutes", type=float, default=15.0)
     args = parser.parse_args(argv)
 
     if args.opnsense and not args.interface:
         parser.error("--opnsense needs --interface")
-    if args.opnsense and not (args.plug_ip or args.plug_mac):
-        parser.error("--opnsense needs --plug-ip or --plug-mac")
+    if args.opnsense and not (args.device_ip or args.device_mac):
+        parser.error("--opnsense needs --device-ip or --device-mac")
     if not args.opnsense and args.no_cloud:
         parser.error("nothing to watch: give --opnsense, or drop --no-cloud")
 
     password = ""
     if not args.no_cloud:
-        args.email = args.email or input("eWeLink email: ").strip()
+        args.email = args.email or input("eWeLink email or phone number: ").strip()
         password = os.environ.get("EWELINK_PASSWORD") or secret("eWeLink password (kept in memory only): ")
 
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -561,7 +562,7 @@ def main(argv: list[str] | None = None, *, secret: Callable[[str], str] = ask_se
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), interrupted)
 
-    print(f"Watching for {args.hours:g} hours; Ctrl-C stops early. Nothing is sent to the plug.")
+    print(f"Watching for {args.hours:g} hours; Ctrl-C stops early. Nothing is sent to the device.")
     try:
         for worker in workers:
             worker.start()

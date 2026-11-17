@@ -1,17 +1,12 @@
-"""ESPHome instead of the final Tasmota: the image, and the plug once it runs it.
-
-The run installs a pre-built ESPHome (artifacts/esphome-sonoff-s60-imprintable-*.bin,
-from devices/sonoff-s60/esphome.yaml) rather than asking anyone to build one: building it
-takes gigabytes of tools and minutes of compiling. Like the recovery Safeboot,
-it holds placeholders instead of a Wi-Fi name and password, and the plug's own
-Wi-Fi is written into them in memory (imprint.py) - so the image on disk never
-holds it, and the plug joins the home network by itself when it starts.
+"""A device running ESPHome, whatever its chip family: its web page, its
+entities' REST paths and its native API (signal, Wi-Fi, device info, the
+actions this project's builds add).  The images an Espressif device is given
+are routes/espressif/images.py's, a Beken device's routes/beken/images.py's.
 """
 
 from __future__ import annotations
 
 import gzip
-import hashlib
 import http.client
 import json
 import math
@@ -24,135 +19,14 @@ import urllib.parse
 import urllib.request
 import zlib
 from collections.abc import Callable
-from pathlib import Path
 
-from . import imprint, kinds, noise
+from . import noise
 
-ROOT = Path(__file__).resolve().parents[2]
-# What each is, as firmware.json pins it: tools/repo/update_firmware.py writes it,
-# docs/updating-firmware.md says when.
-FIRMWARE = json.loads((ROOT / "artifacts" / "firmware.json").read_text(encoding="utf-8"))
-PINS = FIRMWARE["esphome"]
-# The published image, the ESPHome made for the Sonoff S60 (kinds.SONOFF_S60),
-# pinned: a changed file is refused, never used unseen.
-IMAGE = ROOT / PINS["image"]["file"]
-IMAGE_SHA256 = PINS["image"]["sha256"]
-IMAGE_SIZE = PINS["image"]["size"]
-# ESPHome's bootloader, from the same build, put in place of Sonoff's: Sonoff's
-# (ESP-IDF 4.4) starts ESPHome but cannot roll back an update that fails to
-# start ("Bootloader too old for OTA rollback").  It is all that sits before
-# the partition table at 0x8000, and the one part the plug cannot start without.
-# It is replaced only when that is the point: a power cut in the second it
-# takes to write leaves a plug that has to be opened.
-BOOTLOADER = ROOT / PINS["bootloader"]["file"]
-BOOTLOADER_SHA256 = PINS["bootloader"]["sha256"]
-BOOTLOADER_SIZE = PINS["bootloader"]["size"]
-BOOTLOADER_ROOM = 0x8000
-# Sonoff's app slots, which the run leaves as they are: ESPHome goes into ota_0.
-SLOT_ADDRESS = 0x20000
-SLOT_SIZE = 0x1F0000
-# What makes a file an app rather than, say, a factory image (which starts with
-# the bootloader): the app description ESP-IDF puts first in every app.
-APP_DESC_MAGIC = 0xABCD5432
-ESP32_C3_CHIP_ID = 5
-
-
-class ImageError(ValueError):
-    pass
-
-
-def check_app(image: bytes, label: str) -> None:
-    """Refuse anything but an ESP32-C3 app that fits Sonoff's slot."""
-    if len(image) > SLOT_SIZE:
-        raise ImageError(f"{label} is {len(image):,} bytes; the device's app slot holds {SLOT_SIZE:,}")
-    if len(image) < 64 or image[0] != 0xE9:
-        raise ImageError(f"{label} is not an ESP32 firmware image")
-    if struct.unpack_from("<H", image, 12)[0] != ESP32_C3_CHIP_ID:
-        raise ImageError(f"{label} is not built for the device's ESP32-C3")
-    if struct.unpack_from("<I", image, 32)[0] != APP_DESC_MAGIC:
-        raise ImageError(
-            f"{label} is not an app image: use firmware.ota.bin, not firmware.factory.bin"
-        )
-    try:
-        report = imprint.parse_esp_image(image)
-    except ValueError as exc:
-        raise ImageError(f"{label} is not a valid firmware image: {exc}") from exc
-    if not report["checksum_valid"] or report["sha256_valid"] is False:
-        raise ImageError(f"{label} fails its own integrity check")
-
-
-def published_image() -> bytes:
-    """The pinned image, its placeholders untouched."""
-    image = IMAGE.read_bytes()
-    if len(image) != IMAGE_SIZE or hashlib.sha256(image).hexdigest() != IMAGE_SHA256:
-        raise ImageError(f"{IMAGE.name} differs from the pinned file")
-    check_app(image, IMAGE.name)
-    if not imprint.has_placeholders(image):
-        raise ImageError(f"{IMAGE.name} has no untouched Wi-Fi placeholders")
-    return image
-
-
-def published_bootloader() -> bytes:
-    """The pinned bootloader, checked to be one for this plug."""
-    bootloader = BOOTLOADER.read_bytes()
-    if (len(bootloader) != BOOTLOADER_SIZE
-            or hashlib.sha256(bootloader).hexdigest() != BOOTLOADER_SHA256):
-        raise ImageError(f"{BOOTLOADER.name} differs from the pinned file")
-    if len(bootloader) > BOOTLOADER_ROOM or bootloader[0] != 0xE9:
-        raise ImageError(f"{BOOTLOADER.name} is not an ESP32 bootloader that fits before 0x8000")
-    if struct.unpack_from("<H", bootloader, 12)[0] != ESP32_C3_CHIP_ID:
-        raise ImageError(f"{BOOTLOADER.name} is not built for the device's ESP32-C3")
-    report = imprint.parse_esp_image(bootloader)
-    if not report["checksum_valid"] or report["sha256_valid"] is not True:
-        raise ImageError(f"{BOOTLOADER.name} fails its own integrity check")
-    return bootloader
-
-
-# The mover (devices/sonoff-s60/mover.yaml): a small ESPHome, run only while a
-# plug leaves Tasmota, that takes the next firmware as an ESPHome update.
-MOVER = ROOT / PINS["mover"]["file"]
-MOVER_SHA256 = PINS["mover"]["sha256"]
-MOVER_SIZE = PINS["mover"]["size"]
-# Sonoff's partition table, as a stock S60 has it: written back when a plug
-# leaves Tasmota's layout.
-SONOFF_TABLE = ROOT / "artifacts" / "sonoff-s60-partition-table.bin"
-
-
-def mover_for(ssid: str, password: str) -> bytes:
-    """The pinned mover with this Wi-Fi written in."""
-    image = MOVER.read_bytes()
-    if len(image) != MOVER_SIZE or hashlib.sha256(image).hexdigest() != MOVER_SHA256:
-        raise ImageError(f"{MOVER.name} differs from the pinned file")
-    check_app(image, MOVER.name)
-    return imprint.imprint(image, ssid, password)
-
-
-def sonoff_table() -> bytes:
-    from .plans import SONOFF_TABLE_SHA256
-    table = SONOFF_TABLE.read_bytes()
-    if hashlib.sha256(table).hexdigest() != SONOFF_TABLE_SHA256:
-        raise ImageError(f"{SONOFF_TABLE.name} is not Sonoff's partition table")
-    return table
-
-
-def image_for(ssid: str, password: str, own: Path | None = None) -> bytes:
-    """The image to install: the published one with this Wi-Fi written in, or
-    one built by hand (--esphome PATH), imprinted too if it has placeholders."""
-    if own is None:
-        return imprint.imprint(published_image(), ssid, password)
-    image = own.read_bytes()
-    check_app(image, own.name)
-    if imprint.has_placeholders(image):
-        return imprint.imprint(image, ssid, password)
-    return image  # built with its own Wi-Fi
-
-
-# ------------------------------------------------------------ the plug, running it
 # Its web page (web_server version 3) and REST paths, named after each entity's
 # name in devices/sonoff-s60/esphome.yaml: /switch/Relay, /sensor/Voltage, /sensor/Power.
 
-# Web logins (web_server's auth:), each for the plug it was given for
-# (use_login), answering only that plug's own request for one: Basic, or
+# Web logins (web_server's auth:), each for the device it was given for
+# (use_login), answering only that device's own request for one: Basic, or
 # Digest from ESPHome 2027.1 (and before it, with type: digest).
 _LOGINS = urllib.request.HTTPPasswordMgrWithDefaultRealm()
 
@@ -184,7 +58,7 @@ class _Digest(_Quietly, urllib.request.HTTPDigestAuthHandler):
 
 
 def _opener() -> urllib.request.OpenerDirector:
-    # Straight to the plug: a proxy set for the internet has no route to it.
+    # Straight to the device: a proxy set for the internet has no route to it.
     # A new one each time: urllib's Digest handler stops answering for good
     # once one login has failed.
     return urllib.request.build_opener(urllib.request.ProxyHandler({}), _Digest(_LOGINS), _Basic(_LOGINS))
@@ -235,9 +109,9 @@ def page(host: str, timeout: float = 4.0) -> str | None:
 
 
 def title(host: str, timeout: float = 4.0) -> tuple[str | None, str | None]:
-    """The plug's ESPHome name and comment, as its web page shows them: the
+    """The device's ESPHome name and comment, as its web page shows them: the
     friendly name with the MAC suffix name_add_mac_suffix adds (esphome
-    abcdef), and what plug it is (Sonoff-S61) - in the first event its page
+    abcdef), and what device it is (Sonoff-S61) - in the first event its page
     is sent (/events, "ping"); None for either that does not come."""
     def text(value: object) -> str | None:
         return value if isinstance(value, str) and value else None
@@ -277,12 +151,12 @@ def switch_relay(host: str, on: bool) -> bool:
     return relay(host) is on
 
 
-# The Wi-Fi signal sensor, by its name in devices/sonoff-s60/esphome.yaml (from 1.1.0).
+# The Wi-Fi signal sensor, by its name in devices/sonoff-s60/esphome.yaml.
 SIGNAL_SENSOR = "WiFi Signal"
 
 
 def signal(host: str, key: bytes | None = None) -> int | None:
-    """The plug's Wi-Fi signal in dBm: from its Wi-Fi signal sensor, else from
+    """The device's Wi-Fi signal in dBm: from its Wi-Fi signal sensor, else from
     its native API (encrypted with `key`, where it is); None when neither
     gives it."""
     reading = sensor_signal(host)
@@ -290,8 +164,8 @@ def signal(host: str, key: bytes | None = None) -> int | None:
 
 
 def sensor_signal(host: str) -> int | None:
-    """The plug's Wi-Fi signal in dBm, from its Wi-Fi signal sensor: None from
-    an ESPHome built without one (ours before 1.1.0), or before its first
+    """The device's Wi-Fi signal in dBm, from its Wi-Fi signal sensor: None from
+    an ESPHome built without one (ours at first), or before its first
     reading."""
     value = _state(host, "/sensor/" + urllib.parse.quote(SIGNAL_SENSOR))
     if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
@@ -366,7 +240,7 @@ def _fields(payload: bytes) -> dict[int, int | bytes]:
 
 
 class ApiLocked(Exception):
-    """ESPHome's API on the plug is encrypted, and no key was given - or
+    """ESPHome's API on the device is encrypted, and no key was given - or
     (`wrong`) the key given is not its own."""
 
     def __init__(self, wrong: bool = False) -> None:
@@ -377,7 +251,7 @@ class ApiLocked(Exception):
 
 class _Api:
     """A connection to ESPHome's native API, hello said: encrypted with `key`
-    (32 bytes) where the plug's API is encrypted - one that is not is spoken
+    (32 bytes) where the device's API is encrypted - one that is not is spoken
     to plainly, key or none.  ApiLocked when its API is encrypted and no key
     was given (once the first message comes), or not its own."""
 
@@ -424,7 +298,7 @@ class _Api:
 
     def send(self, *messages: tuple[int, bytes]) -> None:
         """Each (kind, payload) as a message of its own, in one write.  A write
-        the plug has already hung up on is left to the read that follows: what
+        the device has already hung up on is left to the read that follows: what
         it said before hanging up ("Bad indicator byte" to a plain hello, from
         an encrypted API) is still there to read."""
         if self.ciphers is None:
@@ -460,7 +334,7 @@ class _Api:
         return int.from_bytes(message[:2], "big"), message[4:]
 
     def messages(self):
-        """Each message the plug sends, (kind, payload), until the time is up,
+        """Each message the device sends, (kind, payload), until the time is up,
         pings answered."""
         while time.monotonic() < self.deadline:
             kind, payload = self._message()
@@ -508,7 +382,7 @@ def api_access(host: str, key: bytes | None = None, port: int = API_PORT,
 
 
 def api_signal(host: str, port: int = API_PORT, timeout: float = 8.0, key: bytes | None = None) -> int | None:
-    """The plug's Wi-Fi signal in dBm from ESPHome's native API: asked for its
+    """The device's Wi-Fi signal in dBm from ESPHome's native API: asked for its
     logs with its configuration, ESPHome prints it ("Signal strength: -50 dB").
     None from an ESPHome whose API is encrypted and `key` is not its key, or
     that does not say."""
@@ -546,14 +420,6 @@ def api_wifi(host: str, port: int = API_PORT, timeout: float = 8.0,
 _DEVICE_INFO, _DEVICE_INFO_ANSWER = 9, 10
 
 
-def published_builds(kind: kinds.Kind) -> set[str]:
-    """When each image this project published for `kind` was built, as its API
-    says.  Any other build is someone's own, whatever version it gives: the same
-    config built by a dashboard says the same version, and need not have a key."""
-    pin = PINS["image"] if kind.family == "espressif" else FIRMWARE["beken"][kind.key]["esphome"]
-    return {pin["built"], *pin.get("earlier_builds", ())}
-
-
 def api_device_info(host: str, port: int = API_PORT, timeout: float = 8.0,
                     key: bytes | None = None) -> dict[str, object] | None:
     """What ESPHome says it is: its name, its ESPHome's version, when it was
@@ -582,15 +448,15 @@ def api_device_info(host: str, port: int = API_PORT, timeout: float = 8.0,
 
 
 # Our ESPHome's action that gives the Wi-Fi it is on (devices/sonoff-s60/esphome.yaml):
-# its name from 1.2.0, and 1.1.0's; and the API messages that list and call it.
+# its name, and the one it first had; and the API messages that list and call it.
 WIFI_ACTIONS = ("autoflash_wifi", "s60_wifi")
 _LIST, _LISTED, _ACTION, _CALL, _ANSWER = 11, 19, 41, 42, 131
 
 
 def api_wifi_details(host: str, port: int = API_PORT, timeout: float = 8.0,
                      key: bytes | None = None) -> tuple[str, str] | None:
-    """The Wi-Fi the plug is on, name and password, from ESPHome itself - its
-    Wi-Fi action, which ours has from 1.1.0. None from an ESPHome without
+    """The Wi-Fi the device is on, name and password, from ESPHome itself - its
+    Wi-Fi action, which ours has. None from an ESPHome without
     it; ApiLocked from one whose API is encrypted and `key` is not its key."""
     details = _action_answer(host, WIFI_ACTIONS, b"", port, timeout, key)
     ssid = details.get("ssid") if details else None
@@ -599,13 +465,13 @@ def api_wifi_details(host: str, port: int = API_PORT, timeout: float = 8.0,
     return None
 
 
-# Our ESPHome's action that takes the plug's factory calibration, from 1.4.0.
+# Our ESPHome's action that takes the device's factory calibration.
 CALIBRATION_ACTION = "autoflash_calibration"
 
 
 def api_give_calibration(host: str, coefficients: list[float], port: int = API_PORT,
                          timeout: float = 8.0, key: bytes | None = None) -> bool:
-    """The plug's factory calibration (its 18 numbers) given to ESPHome; its
+    """The device's factory calibration (its 18 numbers) given to ESPHome; its
     Calibration sensor then says what it made of it (calibration_state).
     False from an ESPHome without the action; ApiLocked as api_wifi_details."""
     # One argument, a list of floats: each its own field 8, as ESPHome sends them.
@@ -615,7 +481,7 @@ def api_give_calibration(host: str, coefficients: list[float], port: int = API_P
 
 
 def calibration_state(host: str) -> str | None:
-    """What our ESPHome's Calibration sensor says (from 1.4.0): where its
+    """What our ESPHome's Calibration sensor says: where its
     calibration came from, and the board's factor."""
     value = _state(host, "/text_sensor/Calibration")
     return value if isinstance(value, str) else None
@@ -662,10 +528,26 @@ def _action_answer(host: str, names: tuple[str, ...], arguments: bytes, port: in
 
 def meter(host: str) -> dict[str, float]:
     """The meter's voltage and power, as check_hardware's readings: each only
-    if the plug has a reading (none, until its meter has reported)."""
+    if the device has a reading (none, until its meter has reported). A device
+    with two channels names its power Power 1 and Power 2 (the Dual R3): the
+    first is its relay's, the one switched."""
     readings = {}
-    for key in ("Voltage", "Power"):
-        value = _state(host, f"/sensor/{key}")
-        if isinstance(value, (int, float)):
-            readings[key] = float(value)
+    for key, names in (("Voltage", ("Voltage",)), ("Power", ("Power", "Power 1"))):
+        for name in names:
+            value = _state(host, "/sensor/" + urllib.parse.quote(name))
+            if isinstance(value, (int, float)):
+                readings[key] = float(value)
+                break
     return readings
+
+
+def readings(host: str, quantities: tuple[str, ...]) -> dict[str, float]:
+    """Each of `quantities` ("temperature") a sensor of the device's measures, by
+    its name in the device's esphome.yaml ("Temperature"): only those with a
+    reading, so none from a sensor not plugged in, which reads NaN."""
+    found = {}
+    for quantity in quantities:
+        value = _state(host, "/sensor/" + urllib.parse.quote(quantity.capitalize()))
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+            found[quantity] = float(value)
+    return found

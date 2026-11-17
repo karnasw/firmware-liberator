@@ -1,5 +1,6 @@
+#!/usr/bin/env python3
 """Migrate a stock S61's Wi-Fi credentials into an OpenBeken config so the
-converted plug joins the user's network on first boot (no typing).
+converted device joins the user's network on first boot (no typing).
 
 Chain: read `wifi-ssid` / `wifi-pass` from the stock EF40 store -> build an
 OpenBeken mainConfig_t (ident CFG, version 5, signed-char Tiny_CRC8, creds at
@@ -21,7 +22,7 @@ from obk_config import build_config, CFG_SIZE
 
 def read_stock_creds(stock_path):
     """The stored wifi-ssid and wifi-pass as bytes, without their terminators -
-    not decoded, so the config carries exactly the bytes the plug joined with."""
+    not decoded, so the config carries exactly the bytes the device joined with."""
     data = open(stock_path, "rb").read()
     kv = ef40.parse_store(data)
     ssid = kv.get("wifi-ssid")
@@ -34,7 +35,7 @@ def read_stock_creds(stock_path):
 def migrate(stock_path, obk_path, out_path, cfg_offset, template_path=None):
     ssid, pw = read_stock_creds(stock_path)
     if ssid is None:
-        print("No wifi-ssid/wifi-pass in the stock EF40 store (unprovisioned plug).",
+        print("No wifi-ssid/wifi-pass in the stock EF40 store (unprovisioned device).",
               file=sys.stderr)
         return None
     template = open(template_path, "rb").read() if template_path else None

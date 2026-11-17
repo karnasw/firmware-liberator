@@ -15,6 +15,7 @@ import base64
 import concurrent.futures
 import getpass
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
@@ -43,6 +44,17 @@ IS_MAC = SYSTEM == "Darwin"
 IS_LINUX = SYSTEM == "Linux"
 
 MAC_RE = re.compile(r"([0-9a-fA-F]{1,2}[:-]){5}[0-9a-fA-F]{1,2}")
+
+# What each chip family's emulator gives the computer the tool runs on there:
+# the Espressif one, where your browser reaches the device's page (emu.sh); the
+# Beken one, the device's power switch (beken-emu.sh computer).
+EMULATOR_MARKS = ("AUTOFLASH_EMULATOR_URL", "AUTOFLASH_EMULATOR_POWER")
+
+
+def emulated() -> bool:
+    """Whether this run is in an emulator, either chip family's: its device is
+    no one's, so nothing it says may reach the project's website as if it were."""
+    return any(os.environ.get(name) for name in EMULATOR_MARKS)
 
 Runner = Callable[..., subprocess.CompletedProcess]
 
@@ -124,6 +136,17 @@ def python_script(script: str | Path, *args: str, unbuffered: bool = False) -> l
     return [sys.executable, *(["-u"] if unbuffered else []), "-c", _RUN_SCRIPT, str(script), *map(str, args)]
 
 
+def parent_gone() -> Callable[[], bool]:
+    """For a script python_script() runs: a check of whether the program that
+    started it has since gone. The tool killed outright leaves a server it
+    started serving on with no one to answer to, holding its port - seen in the
+    fault suite, its next run moving to another. Gone, its parent's id changes
+    as the script is handed to another (Linux, macOS); on Windows a process
+    keeps its parent's id, so there it is never true."""
+    parent = os.getppid()
+    return lambda: os.getppid() != parent
+
+
 # -- trusted certificates ---------------------------------------------------------
 # Windows ships with a few root certificates and fetches the rest from Windows
 # Update the first time one of its own components meets a site that needs it.
@@ -199,9 +222,55 @@ def urlopen(request: urllib.request.Request, timeout: float):
     return with_trusted_roots(lambda context: urllib.request.urlopen(request, timeout=timeout, context=context))
 
 
+# The waits between a download's tries (seconds): about two and a quarter
+# minutes in all. GitHub's release downloads answered 504 for minutes at a time
+# on 2026-11-08, with good answers between, and a run stopped at the first.
+DOWNLOAD_WAITS = (5, 10, 20, 40, 60)
+
+
+def passing(exc: Exception) -> bool:
+    """Whether a failed download may work if tried again: a server turned it
+    away for now (5xx, or too many asked of it), or it was cut off on the way.
+    Not one refused for good (4xx), nor from a site whose certificate is not
+    trusted, which would only fail the same way."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code >= 500 or exc.code == 429
+    return not isinstance(getattr(exc, "reason", None), ssl.SSLCertVerificationError)
+
+
+def download(request: urllib.request.Request | str, timeout: float = 60.0,
+             say: Callable[[str], Any] | None = None) -> bytes:
+    """The file at `request`'s address, tried again through a passing
+    trouble (DOWNLOAD_WAITS, each said through `say`). What would only fail
+    again is raised at once; a download cut off part way, as an OSError, as
+    the callers expect of any failed one."""
+    if isinstance(request, str):
+        request = urllib.request.Request(request, headers={"User-Agent": "autoflash"})
+    waits = iter(DOWNLOAD_WAITS)
+    while True:
+        try:
+            with urlopen(request, timeout) as response:
+                return response.read()
+        except (OSError, http.client.HTTPException) as exc:
+            wait = next(waits, None) if passing(exc) else None
+            if wait is None:
+                if isinstance(exc, OSError):
+                    raise
+                raise OSError(f"the download was cut off: {exc!r}") from exc
+            if say:
+                say(f"The download of {request.full_url} failed ({exc}); trying again in {wait}s.")
+            time.sleep(wait)
+
+
 def normalise_mac(text: str) -> str:
-    """aa:bb:cc:dd:ee:ff, whatever separators and padding the system used."""
-    parts = re.split(r"[:-]", text.strip())
+    """aa:bb:cc:dd:ee:ff, whatever separators and padding the system used -
+    or none, as some of Sonoff's firmware (the DualR3's) gives eWeLink its own:
+    12 hex digits."""
+    text = text.strip()
+    if re.fullmatch(r"[0-9A-Fa-f]{12}", text):
+        parts = [text[at:at + 2] for at in range(0, 12, 2)]
+    else:
+        parts = re.split(r"[:-]", text)
     return ":".join(part.zfill(2).lower() for part in parts)
 
 
@@ -281,7 +350,7 @@ def local_addresses() -> set[str]:
 
 def lan_networks() -> dict[str, int]:
     """This computer's IPv4 addresses on its Ethernet and Wi-Fi networks, each
-    with its network's prefix length: where a plug can be, and be found by its
+    with its network's prefix length: where a device can be, and be found by its
     hardware address.  A TAP adapter is Ethernet - the emulator's link is one,
     on Windows and in its container - so it counts.  A VPN's tunnel does not:
     WireGuard, Tailscale, OpenVPN's tun mode and PPP carry IP alone, so nothing
@@ -306,7 +375,7 @@ def lan_networks() -> dict[str, int]:
 
 
 # The bridges Docker and libvirt make for their containers and VMs, by the names
-# they give them: no plug is ever on one, and Docker's are /16s - 1022 addresses
+# they give them: no device is ever on one, and Docker's are /16s - 1022 addresses
 # a sweep each. A bridge of the person's own (br0, holding the LAN) is kept.
 CONTAINER_BRIDGE = re.compile(r"docker\d+|br-[0-9a-f]{12}|virbr\d+")
 
@@ -341,7 +410,7 @@ def lan_networks_mac(ifconfig: str) -> dict[str, int]:
     return found
 
 
-# Interface types (ipifcons.h) that are never a plug's network, whatever else
+# Interface types (ipifcons.h) that are never a device's network, whatever else
 # they report: the loopback, PPP and a tunnel.
 IF_TYPE_PPP, IF_TYPE_SOFTWARE_LOOPBACK, IF_TYPE_TUNNEL = 23, 24, 131
 IF_OPER_STATUS_UP = 1
@@ -354,13 +423,15 @@ def lan_networks_windows(adapters: list[tuple[str, int, int, int, int]]) -> dict
     interface type cannot tell: a TAP-Windows adapter, the emulator's link,
     says "virtual" (53) as Wintun's does, behind WireGuard and Tailscale; but
     TAP has a MAC and Wintun, carrying IP alone, none."""
-    return {address: prefix for address, prefix, kind, status, mac_length in adapters
+    return {address: prefix for address, prefix, kind, status, mac_length, *_ in adapters
             if mac_length == 6 and status == IF_OPER_STATUS_UP and prefix < 32
             and kind not in (IF_TYPE_PPP, IF_TYPE_SOFTWARE_LOOPBACK, IF_TYPE_TUNNEL)}
 
 
-def _windows_adapters() -> list[tuple[str, int, int, int, int]]:
-    """Each IPv4 address of each adapter, from GetAdaptersAddresses: one call in
+def _windows_adapters() -> list[tuple[str, int, int, int, int, int]]:
+    """Each IPv4 address of each adapter, as (address, prefix length, interface
+    type, operational status, length of the hardware address, interface
+    index), from GetAdaptersAddresses: one call in
     this process, where PowerShell's Get-NetAdapter starts .NET and asks WMI
     (8 s on the emulator's Windows). Raises OSError if Windows refuses."""
     import ctypes
@@ -407,7 +478,7 @@ def _windows_adapters() -> list[tuple[str, int, int, int, int]]:
             sockaddr = ctypes.string_at(unicast.contents.Address.lpSockaddr, 8)   # sockaddr_in
             rows.append((socket.inet_ntoa(sockaddr[4:8]), unicast.contents.OnLinkPrefixLength,
                          adapter.contents.IfType, adapter.contents.OperStatus,
-                         adapter.contents.PhysicalAddressLength))
+                         adapter.contents.PhysicalAddressLength, adapter.contents.IfIndex))
             unicast = unicast.contents.Next
         adapter = adapter.contents.Next
     return rows
@@ -433,6 +504,118 @@ def interface_towards(target: str) -> str | None:
         if completed and completed.returncode == 0 and completed.stdout.strip():
             return completed.stdout.strip().splitlines()[0]
     return None
+
+
+# -- what the run's report says of this computer's networks --------------------
+
+# Interface types (ipifcons.h) of an Ethernet and a Wi-Fi adapter.
+IF_TYPE_ETHERNET, IF_TYPE_WIFI = 6, 71
+
+
+def connection_towards(target: str) -> str | None:
+    """What carries this computer to `target`'s network: "wifi", "ethernet",
+    "other" (a VM's or container's bridge, a tunnel), or None if it cannot be
+    told. Asks the system only; sends nothing."""
+    try:
+        if IS_WINDOWS:
+            return _windows_connection(target)
+        name = interface_towards(target)
+        if name is None:
+            return None
+        if IS_LINUX:
+            return connection_linux(Path("/sys/class/net") / name)
+        if IS_MAC:
+            completed = _run(["networksetup", "-listallhardwareports"])
+            if completed and completed.returncode == 0:
+                return connection_mac(completed.stdout, name)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def connection_linux(interface: Path) -> str:
+    """From the interface's folder in /sys/class/net: a Wi-Fi one has its
+    wireless side; any other with hardware under it is Ethernet."""
+    if (interface / "wireless").exists() or (interface / "phy80211").exists():
+        return "wifi"
+    return "ethernet" if (interface / "device").exists() else "other"
+
+
+def connection_mac(ports: str, name: str) -> str:
+    """From `networksetup -listallhardwareports`: the hardware port `name` is."""
+    for port, device in re.findall(r"Hardware Port:\s*(.+)\nDevice:\s*(\S+)", ports):
+        if device == name:
+            return ("wifi" if re.search(r"Wi-?Fi|AirPort", port)
+                    else "ethernet" if re.search(r"Ethernet|\bLAN\b", port) else "other")
+    return "other"
+
+
+def connection_windows(kind: int | None) -> str | None:
+    if kind is None:
+        return None
+    return "wifi" if kind == IF_TYPE_WIFI else "ethernet" if kind == IF_TYPE_ETHERNET else "other"
+
+
+def _windows_connection(target: str) -> str | None:
+    import ctypes
+    import ctypes.wintypes as wt
+    index = wt.DWORD()
+    # The address as Windows holds it: network order, in a DWORD.
+    if ctypes.WinDLL("iphlpapi").GetBestInterface(wt.DWORD(int.from_bytes(socket.inet_aton(target), "little")),
+                                                  ctypes.byref(index)):
+        return None
+    return connection_windows({row[5]: row[2] for row in _windows_adapters()}.get(index.value))
+
+
+def vpn_active() -> bool | None:
+    """Whether a VPN's tunnel carries IPv4 here (as lan_networks tells them
+    from networks a device can be on), or None if it cannot be told."""
+    if IS_LINUX:
+        addresses = _run(["ip", "-o", "-4", "address"])
+        links = _run(["ip", "-o", "link"])
+        if addresses and links and addresses.returncode == 0 and links.returncode == 0:
+            return vpn_linux(addresses.stdout, links.stdout)
+    elif IS_MAC:
+        completed = _run(["ifconfig"])
+        if completed and completed.returncode == 0:
+            return vpn_mac(completed.stdout)
+    elif IS_WINDOWS:
+        try:
+            return vpn_windows(_windows_adapters())
+        except OSError:
+            pass
+    return None
+
+
+def vpn_linux(addresses: str, links: str) -> bool:
+    """An IPv4 address on a link/none (WireGuard, a tun) or link/ppp interface."""
+    kinds = {name.split("@")[0]: kind for name, kind in re.findall(r"^\d+:\s+(\S+?):\s.*?\blink/(\S+)", links, re.M)}
+    return any(kinds.get(name) in ("none", "ppp") for name in re.findall(r"^\d+:\s+(\S+)\s+inet\s", addresses, re.M))
+
+
+def vpn_mac(ifconfig: str) -> bool:
+    """An IPv4 address on a point-to-point interface (a utun, ppp or ipsec
+    tunnel): macOS's own utuns carry IPv6 alone."""
+    for block in re.split(r"\n(?=\S)", ifconfig):
+        flags = re.match(r"\S+:\s+flags=\S*<([^>]*)>", block)
+        if flags and "POINTOPOINT" in flags.group(1).split(",") and re.search(r"^\s+inet\s", block, re.M):
+            return True
+    return False
+
+
+def vpn_windows(adapters: list[tuple[str, int, int, int, int, int]]) -> bool:
+    """An adapter that is up with an IPv4 address and no hardware address
+    (Wintun: WireGuard, Tailscale), or a PPP or tunnel one, not a self-given
+    169.254 address."""
+    return any(status == IF_OPER_STATUS_UP and not address.startswith("169.254.")
+               and kind != IF_TYPE_SOFTWARE_LOOPBACK and (mac_length == 0 or kind in (IF_TYPE_PPP, IF_TYPE_TUNNEL))
+               for address, _, kind, status, mac_length, *_ in adapters)
+
+
+# Whether this run asked for administrator rights, and showed the note on other
+# security software: for its report (report_upload.begin sets them back).
+asked_for_admin = False
+security_note_shown = False
 
 
 # -- finding a device by its hardware address ------------------------------------
@@ -468,12 +651,12 @@ def mac_of(address: str) -> str | None:
 
 # Linux asks for an address's MAC (ARP) at 0, 1 and 2 s, then gives up, whether
 # or not the ping that set it asking has ended: a sweep read sooner misses a
-# device that did not hear the first ask - a plug's Wi-Fi asleep, or a broadcast
+# device that did not hear the first ask - a device's Wi-Fi asleep, or a broadcast
 # lost on the air.
 ARP_TRIES_END = 2.5
 # The widest a sweep goes: a /22, 1022 addresses, about 5 s. A wider network -
 # a /16 is 65,534 addresses - is swept across the /22 around the address; a
-# plug further off is found only once this computer knows it, or by its address.
+# device further off is found only once this computer knows it, or by its address.
 SWEEP_WIDEST = 22
 SWEEP_READ_EVERY = 1.0   # seconds between reads of the neighbour cache during a sweep
 
@@ -548,8 +731,9 @@ def _ping_quietly(address: str, timeout: int) -> None:
         pass
 
 
-def find_by_mac(mac: str, subnet_of: str) -> str | None:
-    """The address `mac` currently has on `subnet_of`'s network, if it is there."""
+def find_by_mac(mac: str, subnet_of: str | Iterable[str]) -> str | None:
+    """The address `mac` currently has on `subnet_of`'s network, or networks
+    (as sweep takes them), if it is there."""
     wanted = normalise_mac(mac)
     for ip, seen in neighbour_table().items():
         if seen == wanted and ping_ok(ip):
@@ -621,7 +805,11 @@ def wifi_menu_hint() -> str:
 
 
 def copy_to_clipboard(text: str) -> bool:
-    """Put `text` on the clipboard.  False when no clipboard tool is available."""
+    """Put `text` on the clipboard.  False when no clipboard tool is available,
+    or AUTOFLASH_NO_CLIPBOARD is set: the tests' (tests/no_network.py), or
+    anyone's who would rather the tool left their clipboard alone."""
+    if os.environ.get("AUTOFLASH_NO_CLIPBOARD"):
+        return False
     if IS_WINDOWS:
         candidates = [["clip"]]
     elif IS_MAC:
@@ -631,9 +819,11 @@ def copy_to_clipboard(text: str) -> bool:
     for command in candidates:
         if not shutil.which(command[0]):
             continue
+        # Nothing of its output is kept: xclip and xsel stay behind to hold the
+        # selection, and one kept would wait on their open end until the timeout.
         try:
-            completed = subprocess.run(command, input=text, text=True, timeout=5,
-                                       capture_output=True, check=False)
+            completed = subprocess.run(command, input=text, text=True, timeout=5, check=False,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except (OSError, subprocess.SubprocessError):
             continue
         if completed.returncode == 0:
@@ -685,7 +875,9 @@ def check_sha256sums(listing: Path) -> list[str]:
 
 def elevated(command: Sequence[str]) -> int:
     """Run `command` with administrator rights, using the system's own prompt."""
+    global asked_for_admin
     if IS_WINDOWS:
+        asked_for_admin = True
         program, *arguments = command
         # One command line, quoted the Windows way: given a list, Start-Process
         # joins it with spaces and no quotes, so "name=Autoflash 1.2.3.4"
@@ -765,8 +957,10 @@ def elevated_output(command: Sequence[str]) -> tuple[int, str]:
     and the output module is told, so its question is counted on screen.
     Windows has no capture here.
     """
+    global asked_for_admin
     if IS_WINDOWS:
         return elevated(command), ""
+    asked_for_admin = True
     output.log_only("administrator rights requested: " + " ".join(command))
     asks = sudo_will_ask()
     if password_asker is not None:
@@ -802,7 +996,7 @@ def elevated_output(command: Sequence[str]) -> tuple[int, str]:
 # -- firewall -------------------------------------------------------------------
 
 # What each firewall says when the rule was already there.  Such a rule belongs
-# to someone else - perhaps kept on purpose for the next plug - so it stays.
+# to someone else - perhaps kept on purpose for the next device - so it stays.
 ALREADY_PRESENT = ("skipping adding existing rule", "already_enabled")
 
 # The tool's rule is called this; until 2.0.0 it was LEGACY_RULE_NAME, which
@@ -816,7 +1010,7 @@ class FirewallRule:
     """Enough to remove exactly what was added, and nothing else."""
 
     kind: str
-    plug_ip: str
+    device_ip: str
     ports: list[int]
     detail: dict[str, Any] = field(default_factory=dict)
 
@@ -849,24 +1043,24 @@ $domain = [bool](Get-CimInstance Win32_ComputerSystem).PartOfDomain
 PROFILE_OF = {"Public": "Public", "Private": "Private", "DomainAuthenticated": "Domain"}
 
 
-def windows_firewall(plug_ip: str | None = None) -> dict[str, Any]:
-    """Windows' firewall, for the network the plug is on when `plug_ip` is given.
+def windows_firewall(device_ip: str | None = None) -> dict[str, Any]:
+    """Windows' firewall, for the network the device is on when `device_ip` is given.
 
     {"enabled", "local_rules", "others", "domain"}; when it cannot be read,
     "enabled" is None - treated as on, as adding a rule then does no harm.
     """
-    cached = _firewall_cache.get(plug_ip)
+    cached = _firewall_cache.get(device_ip)
     if cached and time.monotonic() - cached[0] < 60:
         return cached[1]  # the query takes seconds, and a step asks more than once
-    state = _read_windows_firewall(plug_ip)
-    _firewall_cache[plug_ip] = (time.monotonic(), state)
+    state = _read_windows_firewall(device_ip)
+    _firewall_cache[device_ip] = (time.monotonic(), state)
     return state
 
 
 _firewall_cache: dict[str | None, tuple[float, dict[str, Any]]] = {}
 
 
-def _read_windows_firewall(plug_ip: str | None) -> dict[str, Any]:
+def _read_windows_firewall(device_ip: str | None) -> dict[str, Any]:
     unknown = {"enabled": None, "local_rules": True, "others": [], "domain": False}
     completed = powershell(WINDOWS_FIREWALL_STATE)
     try:
@@ -876,7 +1070,7 @@ def _read_windows_firewall(plug_ip: str | None) -> dict[str, Any]:
     if not isinstance(state, dict):
         return unknown
     profiles = [p for p in state.get("profiles") or [] if isinstance(p, dict)]
-    interface = interface_towards(plug_ip) if plug_ip else None
+    interface = interface_towards(device_ip) if device_ip else None
     category = next((n.get("category") for n in state.get("networks") or []
                      if isinstance(n, dict) and n.get("interface") == interface), None)
     applying = [p for p in profiles if p.get("name") == PROFILE_OF.get(category)] or profiles
@@ -891,7 +1085,7 @@ def _read_windows_firewall(plug_ip: str | None) -> dict[str, Any]:
 
 
 def python_program() -> str:
-    """The Python that listens for the plug, as Windows' firewall sees it.
+    """The Python that listens for the device, as Windows' firewall sees it.
 
     The image of the running process - not sys.executable, which can be a
     stand-in: a venv's python.exe only starts the base interpreter, and the
@@ -928,16 +1122,23 @@ def python_program() -> str:
     return os.path.realpath(getattr(sys, "_base_executable", None) or sys.executable)
 
 
-def firewall_advice(plug_ip: str | None, ports: Sequence[int], *, after_failure: bool = False) -> list[str]:
-    """What else on this computer could keep the plug out, said plainly.
+def firewall_advice(device_ip: str | None, ports: Sequence[int], *, after_failure: bool = False) -> list[str]:
+    """What else on this computer could keep the device out, said plainly.
 
     Before trying: other security software, and an organisation's policy that
     ignores rules added on this computer. After a failure, also that the
-    computer is managed by an organisation at all.
+    computer is managed by an organisation at all. On macOS: the firewall
+    blocking everything, and after a failure the Local Network permission.
     """
+    if IS_MAC:
+        lines = [
+            "This Mac blocks all incoming connections: turn off \"Block all incoming",
+            "connections\" in System Settings > Network > Firewall > Options for now.",
+        ] if mac_blocks_all() else []
+        return lines + (mac_local_network_note() if after_failure else [])
     if not IS_WINDOWS:
         return []
-    state = windows_firewall(plug_ip)
+    state = windows_firewall(device_ip)
     lines: list[str] = []
     if state["others"]:
         lines += [
@@ -960,21 +1161,54 @@ def firewall_advice(plug_ip: str | None, ports: Sequence[int], *, after_failure:
     return lines
 
 
-def local_rules_ignored(plug_ip: str | None) -> bool:
+def local_rules_ignored(device_ip: str | None) -> bool:
     """Whether an organisation's policy makes Windows ignore rules added here -
     a certain failure, unlike the rest of firewall_advice."""
-    return IS_WINDOWS and not windows_firewall(plug_ip)["local_rules"]
+    return IS_WINDOWS and not windows_firewall(device_ip)["local_rules"]
+
+
+def mac_blocks_all() -> bool:
+    """Whether the macOS firewall blocks all incoming connections: that
+    overrides the program it lets in, and only System Settings turns it off."""
+    tool = "/usr/libexec/ApplicationFirewall/socketfilterfw"
+    completed = _run([tool, "--getblockall"]) if IS_MAC and Path(tool).exists() else None
+    said = completed.stdout.lower() if completed else ""
+    # Worded differently across macOS versions: "...block all state set to
+    # enabled", "Block all ENABLED!", "...set to block all non-essential
+    # incoming connections". The disabled forms say "disabled".
+    return "enabled" in said or "non-essential" in said
+
+
+def mac_local_network_note() -> list[str]:
+    """macOS 15 and newer let an app reach devices on the local network only
+    with the user's permission. Apple's Terminal, and what runs in it, is
+    exempt; another terminal app (iTerm, VS Code's) is not."""
+    if not IS_MAC:
+        return []
+    major = platform.mac_ver()[0].split(".")[0]
+    terminal = os.environ.get("TERM_PROGRAM", "")
+    if not major.isdigit() or int(major) < 15 or terminal == "Apple_Terminal":
+        return []
+    app = f" ({terminal})" if terminal else ""
+    return [f"macOS lets the app this runs in{app} reach devices on your network only",
+            "with your permission. Allow it in System Settings > Privacy & Security >",
+            "Local Network, or run this in Terminal instead."]
 
 
 def security_software_note() -> list[str]:
-    """For when the plug does not answer at all: other security software can
-    drop its answers before Windows' own firewall sees them."""
+    """For when the device does not answer at all: other security software can
+    drop its answers before Windows' own firewall sees them, and on macOS the
+    terminal app may not be allowed onto the local network."""
+    global security_note_shown
+    if IS_MAC:
+        note = mac_local_network_note()
+        security_note_shown = security_note_shown or bool(note)
+        return note
     others = windows_firewall()["others"] if IS_WINDOWS else []
     if not others:
         return []
-    return [f"Security software besides Windows' own firewall is installed: {', '.join(others)}.",
-            "If the device is on and set up as above, it may be dropping the device's",
-            "answers - pausing it while you convert the device is the quickest test."]
+    security_note_shown = True
+    return [f"{', '.join(others)} may be dropping the device's answers: try pausing it."]
 
 
 def active_firewall() -> str | None:
@@ -1000,31 +1234,31 @@ def _ports(ports: Sequence[int]) -> str:
     return ",".join(str(port) for port in ports)
 
 
-def firewall_commands(kind: str, plug_ip: str, ports: Sequence[int],
+def firewall_commands(kind: str, device_ip: str, ports: Sequence[int],
                       program: str | None = None, *, name: str = RULE_NAME) -> tuple[list[str], list[str]]:
     """(add, remove) commands for one rule.  Pure, so it can be shown and tested.
 
     On Windows the rule names `program` too: a rule for the program is what
     stops Windows Security asking whether Python may use networks - where a
-    "Cancel" would block the plug whatever the rule says.  `name`: what the
+    "Cancel" would block the device whatever the rule says.  `name`: what the
     rule is called, for one added under an earlier name.
     """
     if kind == "ufw":
-        spec = ["from", plug_ip, "to", "any", "port", _ports(ports), "proto", "tcp"]
+        spec = ["from", device_ip, "to", "any", "port", _ports(ports), "proto", "tcp"]
         return (["ufw", "allow", *spec, "comment", name], ["ufw", "delete", "allow", *spec])
     if kind == "firewalld":
         low, high = min(ports), max(ports)
-        rule = (f"rule family=ipv4 source address={plug_ip} port port={low}-{high} "
+        rule = (f"rule family=ipv4 source address={device_ip} port port={low}-{high} "
                 "protocol=tcp accept")
         # Runtime only: gone at the next reboot even if cleanup never runs.
         return (["firewall-cmd", f"--add-rich-rule={rule}"],
                 ["firewall-cmd", f"--remove-rich-rule={rule}"])
     if kind == "windows":
-        named = f"{name} {plug_ip}"
+        named = f"{name} {device_ip}"
         return (
             ["netsh", "advfirewall", "firewall", "add", "rule", f"name={named}", "dir=in",
              "action=allow", *([f"program={program}"] if program else []),
-             "protocol=TCP", f"localport={_ports(ports)}", f"remoteip={plug_ip}"],
+             "protocol=TCP", f"localport={_ports(ports)}", f"remoteip={device_ip}"],
             ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={named}"],
         )
     if kind == "macos":
@@ -1053,7 +1287,7 @@ def rule_name(rule: FirewallRule) -> str:
 def undo_commands(rule: FirewallRule) -> list[str]:
     """What to type to undo `rule` by hand, when the tool could not."""
     program = rule.detail.get("program")
-    lines = [display(firewall_commands(rule.kind, rule.plug_ip, rule.ports, program,
+    lines = [display(firewall_commands(rule.kind, rule.device_ip, rule.ports, program,
                                        name=rule_name(rule))[1])]
     # Block rules paused for the run: on again, in an administrator PowerShell.
     lines += [f"Enable-NetFirewallRule -Name {_ps_string(name)}" for name in rule.detail.get("paused", [])]
@@ -1105,10 +1339,10 @@ def _elevated_powershell(script: str) -> int:
                      "-EncodedCommand", _encoded(script)])
 
 
-def _windows_open(plug_ip: str, ports: Sequence[int]) -> FirewallRule:
+def _windows_open(device_ip: str, ports: Sequence[int]) -> FirewallRule:
     import tempfile
     program = python_program()
-    add, _ = firewall_commands("windows", plug_ip, ports, program)
+    add, _ = firewall_commands("windows", device_ip, ports, program)
     # In the checkout, not %TEMP%: the Microsoft Store's Python keeps what it
     # writes under %LOCALAPPDATA% in a private copy the elevated script cannot see.
     scratch = Path(__file__).resolve().parents[2] / "captures"
@@ -1124,12 +1358,12 @@ def _windows_open(plug_ip: str, ports: Sequence[int]) -> FirewallRule:
             paused = json.loads(result.read_text(encoding="utf-8-sig")).get("paused") or []
         except (OSError, ValueError):
             paused = []
-    return FirewallRule("windows", plug_ip, list(ports),
+    return FirewallRule("windows", device_ip, list(ports),
                         {"program": program, "paused": list(paused), "name": RULE_NAME})
 
 
 def _windows_close(rule: FirewallRule) -> bool:
-    _, remove = firewall_commands("windows", rule.plug_ip, rule.ports, rule.detail.get("program"),
+    _, remove = firewall_commands("windows", rule.device_ip, rule.ports, rule.detail.get("program"),
                                   name=rule_name(rule))
     paused = ", ".join(_ps_string(name) for name in rule.detail.get("paused", []))
     script = WINDOWS_CLOSE.replace("@REMOVE@", _ps_arguments(remove[1:])).replace("@PAUSED@", paused)
@@ -1141,38 +1375,38 @@ def mac_app_already_allowed(program: str) -> bool:
     return bool(completed and program in completed.stdout)
 
 
-def open_firewall(plug_ip: str, ports: Sequence[int]) -> FirewallRule | None:
-    """Allow the plug in.  None when no firewall needs a rule; raises on failure."""
+def open_firewall(device_ip: str, ports: Sequence[int]) -> FirewallRule | None:
+    """Allow the device in.  None when no firewall needs a rule; raises on failure."""
     kind = active_firewall()
     if kind is None:
         return None
     if kind == "windows":
-        return _windows_open(plug_ip, ports)
+        return _windows_open(device_ip, ports)
     # The macOS firewall names the program; kept, so the same one is removed.
     detail = {"program": python_program()} if kind == "macos" else {}
     if kind == "macos" and mac_app_already_allowed(detail["program"]):
-        return FirewallRule(kind, plug_ip, list(ports), {**detail, "preexisting": True})
-    add, _ = firewall_commands(kind, plug_ip, ports, detail.get("program"))
+        return FirewallRule(kind, device_ip, list(ports), {**detail, "preexisting": True})
+    add, _ = firewall_commands(kind, device_ip, ports, detail.get("program"))
     code, output = elevated_output(add)
     if code != 0:
         raise OSError(f"could not add the firewall rule: {display(add)}")
     if any(phrase in output.lower() for phrase in ALREADY_PRESENT):
-        if kind == "ufw" and ufw_rule_is_ours(plug_ip, ports):
+        if kind == "ufw" and ufw_rule_is_ours(device_ip, ports):
             # Left by an earlier run that stopped as it was being added: ours
             # to remove, not one this computer had before.
-            return FirewallRule(kind, plug_ip, list(ports), {**detail, "left_by_earlier_run": True})
-        return FirewallRule(kind, plug_ip, list(ports), {**detail, "preexisting": True})
-    return FirewallRule(kind, plug_ip, list(ports), detail)
+            return FirewallRule(kind, device_ip, list(ports), {**detail, "left_by_earlier_run": True})
+        return FirewallRule(kind, device_ip, list(ports), {**detail, "preexisting": True})
+    return FirewallRule(kind, device_ip, list(ports), detail)
 
 
-def ufw_rule_is_ours(plug_ip: str, ports: Sequence[int]) -> bool:
-    """Whether ufw's rule for the plug carries this tool's comment, now or
+def ufw_rule_is_ours(device_ip: str, ports: Sequence[int]) -> bool:
+    """Whether ufw's rule for the device carries this tool's comment, now or
     as it was before 2.0.0."""
     code, listing = elevated_output(["ufw", "status"])
     if code != 0:
         return False
     wanted = _ports(ports)
-    return any(plug_ip in line and wanted in line
+    return any(device_ip in line and wanted in line
                and any(f"# {name}" in line for name in (RULE_NAME, LEGACY_RULE_NAME))
                for line in listing.splitlines())
 
@@ -1183,7 +1417,7 @@ def close_firewall(rule: FirewallRule) -> bool:
         return True  # it was allowed before this run; leave it as it was
     if rule.kind == "windows":
         return _windows_close(rule)
-    _, remove = firewall_commands(rule.kind, rule.plug_ip, rule.ports, rule.detail.get("program"))
+    _, remove = firewall_commands(rule.kind, rule.device_ip, rule.ports, rule.detail.get("program"))
     return elevated(remove) == 0
 
 

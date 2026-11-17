@@ -28,12 +28,12 @@ class PublishedArtifactTests(unittest.TestCase):
     def test_the_run_installs_the_pinned_bridge(self):
         from tools.autoflash.routes.espressif.installer import BRIDGE_OTA
         from tools.autoflash.runs import ROOT
-        self.assertEqual(BRIDGE_OTA.name, "autoflash-bridge-sonoff-s60-4.4.4.ota")
         line = f"{sha256_bytes((ROOT / BRIDGE_OTA).read_bytes())}  {BRIDGE_OTA.name}"
         self.assertIn(line, (ROOT / "artifacts" / "SHA256SUMS").read_text().splitlines())
 
     def test_the_bridge_carries_one_version_everywhere(self):
         import re
+        from tools.espressif import chips
         from tools.espressif.analyze_vendor_ota import analyze
         from tools.espressif.build_vendor_ota import app_version
         from tools.autoflash.routes.espressif.installer import BRIDGE_OTA
@@ -43,6 +43,9 @@ class PublishedArtifactTests(unittest.TestCase):
         version = re.search(r'#define BRIDGE_VERSION "([^"]+)"', source).group(1)
         self.assertEqual(re.search(r'set\(PROJECT_VER "([^"]+)"\)', project).group(1), version)
         self.assertIn(f"-{version}.ota", BRIDGE_OTA.name)
+        for chip in chips.ALL:
+            self.assertEqual(chip.pin("bridge")["version"], version, chip.label)
+            self.assertIn(version, chip.pin("bridge")["file"], chip.label)
         wrapped = (ROOT / BRIDGE_OTA).read_bytes()
         report = analyze(wrapped)
         self.assertEqual(report["wrapper"]["header_version"], version)
@@ -58,6 +61,51 @@ class PublishedArtifactTests(unittest.TestCase):
         self.assertIn(b"/efuse\0", wrapped)
         self.assertIn(b"/update\0", wrapped)
 
+    def test_each_chips_bridge_says_what_a_backup_cannot(self):
+        from tools.espressif import chips
+        from tools.autoflash.runs import ROOT
+        for chip in chips.ALL:
+            image = (ROOT / chip.pin("bridge")["file"]).read_bytes()
+            self.assertIn(b"/info\0", image, chip.label)
+            self.assertIn(b"chip revision: ", image, chip.label)
+            self.assertIn(b"gpio levels:", image, chip.label)
+
+    def test_info_only_reads(self):
+        # No pin is set, nothing is written, and nothing of the network or the
+        # device's identity is in reach of what it says.
+        import re
+        from tools.autoflash.runs import ROOT
+        source = (ROOT / "archive/bridge/main/main.c").read_text(encoding="utf-8")
+        start = source.index("static void info_add(")
+        code = re.sub(r"/\*.*?\*/", "", source[start:source.index("/* Plain-text state for the host")], flags=re.DOTALL)
+        self.assertNotRegex(code, r"gpio_(set|reset|config|pull|output|input_enable)|gpio_ll_|REG_WRITE|REG_SET|"
+                                  r"PIN_INPUT_|esp_flash_(write|erase)|esp_partition_(write|erase)|nvs_|esp_ota_(set|begin)")
+        self.assertNotRegex(code, re.compile(r"wifi|ssid|password|mac\b|unique", re.IGNORECASE))
+
+    def test_each_chips_bridge_says_its_fallback_as_it_is_now(self):
+        # An upload pins the bridge before erasing the peer: one cut off leaves no
+        # fallback from then on, which a flag set at start-up did not see, so the
+        # page and every route read otadata as they answer.
+        import re
+        from tools.espressif import chips
+        from tools.autoflash.runs import ROOT
+        source = (ROOT / "archive/bridge/main/main.c").read_text(encoding="utf-8")
+        self.assertNotIn("s_no_fallback", source)
+        for handler in ("root_handler", "info_handler", "status_handler", "restart_handler"):
+            body = re.search(rf"static esp_err_t {handler}\(httpd_req_t \*req\)\n\{{.*?\n\}}\n", source, re.DOTALL)
+            self.assertIn("fallback_slot()", body[0], handler)
+        for chip in chips.ALL:
+            image = (ROOT / chip.pin("bridge")["file"]).read_bytes()
+            self.assertTrue(b"The stock slot no longer holds firmware that can start" in image, chip.label)
+
+    def test_every_handler_fits_the_servers_table(self):
+        # Beyond max_uri_handlers registering fails, and the bridge stops at start-up.
+        import re
+        from tools.autoflash.runs import ROOT
+        source = (ROOT / "archive/bridge/main/main.c").read_text(encoding="utf-8")
+        handlers = source.count("httpd_register_uri_handler(server, ")
+        self.assertLessEqual(handlers, int(re.search(r"config\.max_uri_handlers = (\d+);", source)[1]))
+
     def test_the_published_startup_firmware_saves_the_wifi(self):
         from tools.espressif.safeboot.safeboot_migration import PUBLISHED_RECOVERY_FILE, PUBLISHED_RECOVERY_SHA256
         image = PUBLISHED_RECOVERY_FILE.read_bytes()
@@ -72,51 +120,52 @@ class PublishedArtifactTests(unittest.TestCase):
         self.assertNotIn(b"s60-recovery", image)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class PublishedESPHomeTests(unittest.TestCase):
     def test_the_esphome_image_is_pinned(self):
-        from tools.autoflash import esphome
+        from tools.autoflash.routes.espressif import images
         from tools.autoflash.runs import ROOT
-        image = esphome.published_image()  # refuses a changed file
-        line = f"{sha256_bytes(image)}  {esphome.IMAGE.name}"
+        image = images.published_image()  # refuses a changed file
+        line = f"{sha256_bytes(image)}  {images.IMAGE.name}"
         self.assertIn(line, (ROOT / "artifacts" / "SHA256SUMS").read_text().splitlines())
 
     def test_its_bootloader_is_pinned_and_comes_from_the_same_build(self):
-        from tools.autoflash import esphome
+        from tools.autoflash.routes.espressif import images
         from tools.autoflash.runs import ROOT
-        bootloader = esphome.published_bootloader()  # refuses a changed or broken file
-        line = f"{sha256_bytes(bootloader)}  {esphome.BOOTLOADER.name}"
+        bootloader = images.published_bootloader()  # refuses a changed or broken file
+        line = f"{sha256_bytes(bootloader)}  {images.BOOTLOADER.name}"
         self.assertIn(line, (ROOT / "artifacts" / "SHA256SUMS").read_text().splitlines())
         # Named for the image whose build made it: this one's, or an earlier
         # one's, kept when a later build's differed (docs/updating-firmware.md).
-        built = esphome.PINS["bootloader"]["version"]
-        self.assertTrue(esphome.BOOTLOADER.name.endswith(f"-{built}.bin"), "named for its build")
-        as_numbers = lambda version: tuple(int(part) for part in version.split("."))  # noqa: E731
-        self.assertLessEqual(as_numbers(built), as_numbers(esphome.PINS["image"]["version"]))
+        built = images.PINS["esp32c3"]["bootloader"]["version"]
+        self.assertTrue(images.BOOTLOADER.name.endswith(f"-{built}.bin"), "named for its build")
+        as_numbers = lambda version: tuple(int(part) for part in re.split(r"[.-]", version))  # noqa: E731
+        self.assertLessEqual(as_numbers(built), as_numbers(images.PINS["sonoff-s60"]["esphome"]["version"]))
 
     def test_the_esphome_image_can_have_the_wifi_written_in(self):
-        from tools.autoflash import esphome, imprint
-        image = esphome.published_image()
-        validate_native_image(image, esphome.SLOT_SIZE, "published ESPHome")
+        from tools.autoflash import imprint
+        from tools.autoflash.routes.espressif import images
+        image = images.published_image()
+        validate_native_image(image, images.SLOT_SIZE, "published ESPHome")
         self.assertEqual(imprint.find_build_paths(image), [])
-        written = esphome.image_for("Home", "a password")
+        written = images.image_for("Home", "a password")
         imprint.require_imprinted(written)
         self.assertEqual(len(written), len(image))
 
     def test_adopted_each_kinds_config_is_taken_as_a_package_of_a_release(self):
         # A package, so taking a fix is one line; of a release, never a branch,
-        # so nothing pushed here later reaches an adopted plug by itself.
-        from tools.autoflash import __version__, kinds
+        # so nothing pushed here later reaches an adopted device by itself. A
+        # rebuilt config names the release it comes out in, which may be the
+        # one to come (docs/updating-firmware.md), never one after it.
+        from tools.autoflash import kinds
         from tools.autoflash.runs import ROOT
+        from tools.repo.update_firmware import release_to_come
+        coming = tuple(map(int, release_to_come((ROOT / "CHANGELOG.md").read_text(encoding="utf-8")).split(".")))
         for kind in kinds.ALL:
             config = (ROOT / "devices" / kind.key / "esphome.yaml").read_text(encoding="utf-8")
             found = re.search(r"(?m)^dashboard_import:\n  package_import_url: github://\S+@v(\d+)\.(\d+)\.(\d+)\n"
                               r"  import_full_config: false$", config)
             self.assertIsNotNone(found, kind.key)
-            self.assertLessEqual(tuple(map(int, found.groups())), tuple(map(int, __version__.split("."))), kind.key)
+            self.assertLessEqual(tuple(map(int, found.groups())), coming, kind.key)
 
     def test_each_kinds_esphome_page_says_how_adoption_works(self):
         from tools.autoflash import kinds
@@ -204,18 +253,18 @@ def include_entries(config):
 
 class ESPHomeImageCheckTests(unittest.TestCase):
     def test_a_factory_image_or_another_chip_is_refused(self):
-        from tools.autoflash import esphome
-        image = bytearray(esphome.published_image())
+        from tools.autoflash.routes.espressif import images
+        image = bytearray(images.published_image())
         factory = bytearray(image)
         factory[32:36] = b"\x50\x00\x00\x00"  # a bootloader's description, not an app's
-        with self.assertRaisesRegex(esphome.ImageError, "factory"):
-            esphome.check_app(bytes(factory), "firmware.factory.bin")
+        with self.assertRaisesRegex(images.ImageError, "factory"):
+            images.check_app(bytes(factory), "firmware.factory.bin")
         other = bytearray(image)
         other[12] = 0  # ESP32
-        with self.assertRaisesRegex(esphome.ImageError, "ESP32-C3"):
-            esphome.check_app(bytes(other), "firmware.ota.bin")
-        with self.assertRaisesRegex(esphome.ImageError, "app slot"):
-            esphome.check_app(bytes(image) + b"\0" * esphome.SLOT_SIZE, "big.bin")
+        with self.assertRaisesRegex(images.ImageError, "ESP32-C3"):
+            images.check_app(bytes(other), "firmware.ota.bin")
+        with self.assertRaisesRegex(images.ImageError, "app slot"):
+            images.check_app(bytes(image) + b"\0" * images.SLOT_SIZE, "big.bin")
 
 
 class PublishedFilesAreInGitTests(unittest.TestCase):
@@ -232,3 +281,7 @@ class PublishedFilesAreInGitTests(unittest.TestCase):
         tracked = set(subprocess.run(["git", "ls-files", "--", *pinned], cwd=ROOT, check=True,
                                      capture_output=True, text=True).stdout.split())
         self.assertEqual([path for path in pinned if path not in tracked], [])
+
+
+if __name__ == "__main__":
+    unittest.main()

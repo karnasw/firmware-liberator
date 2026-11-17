@@ -1,9 +1,10 @@
-# Build environment for the lcgamboa QEMU fork (ESP32-C3 with Wi-Fi), so its
-# build tooling stays out of the host. Ubuntu 24.04 matches Linux Mint 22, so
-# the binary it builds also runs on the host.
+# Build environment for the lcgamboa QEMU fork (the ESP32-C3 and the classic
+# ESP32, with Wi-Fi), so its
+# build tooling stays out of the host. The binary it builds runs on Ubuntu 24.04
+# and the distributions built on it.
 #
 #   docker build -t autoflash-qemu-build -f tools/espressif/emulator/qemu-build.Dockerfile tools/espressif/emulator
-#   docker run --rm -u "$(id -u):$(id -g)" -v ~/Git/emu/lcgamboa-qemu:/src autoflash-qemu-build
+#   docker run --rm -u "$(id -u):$(id -g)" -v /path/to/lcgamboa-qemu:/src autoflash-qemu-build
 FROM ubuntu:24.04
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -12,8 +13,9 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
-# Only the RISC-V system emulator; the shared-library step of the fork's own
-# build script is for PICSimLab and not needed here.
-CMD ["sh", "-c", "mkdir -p build && cd build && ../configure --target-list=riscv32-softmmu \
+# The two system emulators the image has (emu.Dockerfile): RISC-V for the
+# ESP32-C3, Xtensa for the classic ESP32. The shared-library step of the fork's
+# own build script is for PICSimLab and not needed here.
+CMD ["sh", "-c", "mkdir -p build && cd build && ../configure --target-list=riscv32-softmmu,xtensa-softmmu \
      --enable-slirp --enable-gcrypt --disable-werror --disable-docs --disable-gtk --disable-sdl \
-     --disable-opengl --disable-vnc && ninja qemu-system-riscv32"]
+     --disable-opengl --disable-vnc && ninja qemu-system-riscv32 qemu-system-xtensa"]

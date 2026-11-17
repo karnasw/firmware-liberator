@@ -1,0 +1,22 @@
+ Stage 8 - Installing interim firmware - Underway
+
+     Waiting for the device to answer...
+ Stage 8 - Installing interim firmware - Stopped
+
+ FAILED: the device did not answer within 30s
+
+ Fix the cause, then run the same command again: sh start.sh
+
+     Liberator: 3.0.0                                Firmware: Tasmota
+     OS:        Ubuntu 24.04.5 LTS                   From:     Sonoff 1.2.0
+     Python:    3.12.3 (venv)                        Model:    S60TPG
+     Retries:   None                                 Backup:   Completed
+     Checks:    Not run                              Signal:   -23 dBm
+
+ If it should not have stopped, please open an issue here:
+     https://firmwareliberator.com/issues
+     Report ID: 0123456789abcdef
+     This report is on your clipboard.
+
+ This run's log:
+     captures/devices/123456abcdef/runs/1/run.log

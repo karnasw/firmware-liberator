@@ -32,7 +32,7 @@ class DocsVoiceTests(unittest.TestCase):
     def test_it_catches_the_wording_and_leaves_alike_words(self):
         for line in ("What we ask of you", "changes nothing of ours", "fetches nothing from here", "Our config"):
             self.assertTrue(FIRST_PERSON.search(line), line)
-        for line in ("US law: 17 U.S.C.", "yours to change", "your plug", "colours", "hours"):
+        for line in ("US law: 17 U.S.C.", "yours to change", "your device", "colours", "hours"):
             self.assertFalse(FIRST_PERSON.search(line), line)
 
     def test_only_the_changelogs_top_section_counts(self):

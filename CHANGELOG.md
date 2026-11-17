@@ -14,6 +14,457 @@ on that commit, and carries the firmware files the tool installs with
 which `gh release verify vX.Y.Z` and `gh release verify-asset vX.Y.Z FILE`
 check.
 
+## 3.0.0
+
+A major release because an option has gone: the tool's options say "device",
+as its screens do, since it converts much more than smart plugs now.
+
+- `--plug-ip` is `--device-ip`, and the hidden `--plug` is gone (`--run` names
+  a run). A command or script that gives either needs the new name.
+
+- A device can go back to Sonoff's firmware with no backup on your computer. On the
+  way to Tasmota or ESPHome the tool keeps the device's Sonoff identity - its eWeLink
+  id and key, model and kind, never its Wi-Fi - in the last 4 KB of its memory, an
+  area of its own in the Tasmota layout, whose filesystem is 4 KB shorter for it.
+  Leaving Tasmota, the identity goes into the settings of the next firmware. Going
+  back without a backup, the tool fetches Sonoff's official firmware from eWeLink
+  (or the public copy FlashDumps keeps) and writes it with the kept identity, or one
+  rebuilt from your eWeLink account, and the Wi-Fi the device is on now; the run and
+  its report say which. The backup comes first where it is there. Devices converted
+  before keep Tasmota's own table, and go back from the account. Tasmota's
+  Partition Wizard's "Resize FS to max" takes that area back: leave it alone.
+- The tool converts devices with a classic ESP32 and other partition layouts, not
+  only an ESP32-C3 on the S60's: the Sonoff POW Elite, POWCT, TH Elite and
+  DUALR3, to Tasmota and to ESPHome, with their firmware pinned. A device whose partition
+  table the tool does not know stops after its backup, before anything of
+  Sonoff's is written over. The NSPanel, MINIR4, BASICR4 and M5 1C, 2C and 3C
+  are not converted yet, so the tool turns them down as it
+  does a device it does not know: `devices/` says what holds each
+  one up, and `docs/adding-a-device.md` how to add a device.
+- LAN Control no longer needs turning on in the eWeLink app, for a conversion or a
+  readout. Every device is found on your network by the hardware address your
+  eWeLink account gives it, and asked what it runs through eWeLink, as a Beken one
+  already was, so Sonoff's firmware need answer nothing on the network. The Wi-Fi
+  signal read before anything is written is the one the device last reported to
+  eWeLink. With eWeLink out of reach, a run from Sonoff's firmware stops with
+  nothing written, rather than listing whatever answered on the network.
+- A device the tool does not convert yet can be read out to help add it:
+  offered when the eWeLink account holds no supported device, or run for any
+  device with `readout`, or for every device in the account at once (`readout
+  --all`), each sent on its own as it is made, so the website can turn down one
+  it has enough readouts of - those the tool converts too, as one may run new
+  firmware. Before reading one, the tool asks the website whether it would add
+  anything, naming the device as a report does (a hash of its MAC, never the
+  MAC), so the website counts how many devices people would read out, not how
+  many times they asked: the website keeps three readouts of each model and firmware
+  version, each from a different person, and 20 a day from one place, so one
+  like them, or a second of a model from the same place, is neither read nor
+  worked for,
+  and a file of the firmware eWeLink offers that it holds already is not sent.
+  Its first stage only reads: what the device and
+  eWeLink say it is, and the firmware eWeLink offers it; nothing is sent to the
+  device, and a device the tool has not seen gets that alone - as does one the
+  account still lists but that runs Tasmota, ESPHome or OpenBeken now,
+  converted by the tool or by hand: the tool says what it runs. A readout's second stage
+  reads the whole memory, and is only for a device the tool lists as Supported,
+  Testers wanted or Readout wanted, under that kind's own firmware name. On an
+  ESP32-C3 or classic ESP32 that is through the bridge, kept in the spare slot only
+  until the device is switched off and on. On a BK7238 (which has one app area) it
+  installs a pin-free OpenBeken for a few minutes, reads the flash, and puts the
+  device's own Sonoff firmware back from the file eWeLink offers it - the whole
+  round trip proven against the emulated S61. A readout of a whole memory logs
+  what Sonoff's firmware says of the hardware it drives: meter and sensor chips, a
+  temperature watch, an ADC, external RAM, Matter, its SDK. With the owner's agreement, a copy, with every Wi-Fi password
+  taken out and its eWeLink identity made up, goes to a private store behind
+  api.firmwareliberator.com; the firmware eWeLink offers the device goes with
+  it, as a second version to test. See `docs/readouts.md`.
+- As it exits, the tool asks once whether you would like an email as more
+  devices are supported, offering your eWeLink account's address; the
+  website's notify page asks the same. The tool's sign-up names the models of
+  the devices in your eWeLink account and the readouts you sent, so you also
+  hear of your own devices. Nothing is kept until you confirm from an email
+  (sent again once, the next day), and every email has a link to remove your
+  address. The tool keeps the address so as not to ask again; `email` changes
+  it, or has your computer forget it.
+- A run logs what a backup says about the device - its chip, secure boot and
+  flash encryption, flash size, partition table and each app's version - and
+  shows it where the table is not one the tool knows: none of it is secret, and
+  one report is then enough to start adding that device.
+- A run says a full disk plainly. Where a device that has downloaded from this
+  computer then asks for nothing, it no longer blames this computer's firewall,
+  and says to switch the device off and on. A Ctrl-C just before the first stage
+  is no longer forgotten, so a second press within 10 seconds stops the run.
+- The S61's backup is tried three times before the run goes on without one.
+- On Windows the tool starts where PowerShell is set to run no scripts - even
+  by a policy for the whole computer, which stopped it with "running scripts is
+  disabled on this system": `start.cmd` and the README's line run its start
+  script as text, not as a script file.
+- A device that loses the upgrade command - a power cut part way through its
+  download, say - is sent it again as soon as it is back on eWeLink, up to three
+  times, rather than the run stopping about three minutes later for you to start again.
+- On an S61 whose bootloader refused ESPHome three times, the run restarts it
+  and sends ESPHome again, as it was meant to: the restart was not seen, as the
+  device had only just restarted, refusing it, and the run stopped asking you to
+  switch it off and on.
+- On an S61, a firmware delivery a power cut stopped part way is said plainly -
+  the device keeps its Sonoff firmware: switch it off and on, and run again - not
+  as something unexpected.
+- An eWeLink account made with a phone number can be used: give the number with
+  its country code (+44 7700 900123) where the tool asks for the account's email,
+  or as `--email` or `EWELINK_EMAIL`. One given in advance that is neither
+  stops the run at once.
+- A run signs in to eWeLink once, where it signed in again each time it asked
+  eWeLink something (twice every 10 s while waiting for a device to come back),
+  and in the region the account was last found in. The helper tools it starts use
+  that sign-in too, so converting an ESP32 device signs in once, not four times.
+- A device offline in eWeLink when a run sends to it is waited for five and a half
+  minutes, not three: after a send cut off part way it stays away about five,
+  and the run gave up just before it came back.
+- A run stopped with Ctrl-C while it sent a device its firmware through eWeLink
+  says to wait about 3 minutes before running again: the device stays away from
+  eWeLink a few minutes after that, and a run started at once did not find it.
+- The Sonoff Basic Gen5 (BASIC-1GS). The tool checks the partition table in
+  eWeLink's official update file before writing anything, on every Beken device,
+  and logs what the run learns. Beken devices on any other table are refused.
+- On a Beken device, Sonoff's firmware - what a run checks before writing, keeps
+  beside the backup and puts back - and the firmware name its updater checks
+  come first from the file eWeLink offers the device, as on an Espressif one,
+  and from a public copy only where eWeLink offers none the tool can use. Going
+  back takes the copy kept beside the device's backup before either, as an
+  Espressif device's own backup comes first. Either family's public copy is
+  Sonoff's update file as FlashDumps publishes it, pinned by hash, for every
+  device; an Espressif device took the newest listed, unpinned, and an S61 one
+  made from a device's dump. Going
+  back to Sonoff's firmware signs in to your eWeLink account for this if the run
+  has not yet.
+- A readout is safe on the Sonoff BASICR4 and MINIR4, whose firmware is a
+  newer Sonoff SDK. The BASICR4 keeps its partition table at 0xC000, where the
+  bridge did not look: bridge 4.4.6 takes it from there without writing
+  anything, and then only reads, where an earlier one would have stopped and
+  stayed on the device until it was opened. Both keep their eWeLink identity and Wi-Fi in
+  records of their own, which a readout now takes out too: before, one would
+  have sent in the device's identity and perhaps its Wi-Fi password. In the
+  emulator both now start as a paired device does and are read out. The
+  BASICR4 is not converted yet: Tasmota and ESPHome look for the table at 0x8000.
+- Each device has one status, kept in `devices/status.json` and shown by a badge
+  in the README and on the device's page: Supported, Testers wanted, Readout
+  wanted or Not supported yet; every device's folder is in `devices/`, whatever
+  its status. On a device wanting testers, the go-ahead before a run's first write says
+  so and asks you to report your result, and the report asks for the run's log.
+- The firmware this project builds says in its version which upstream release
+  it is built on: OpenBeken 1.18.320-1 and ESPHome 2026.10.0-2. A device on a
+  build they replace, such as the S60's ESPHome 1.6.0, is offered it as an
+  update.
+- This project's ESPHome and the mover call themselves `liberator.sonoff-s60`,
+  `liberator.mover` and so on, as ESPHome and Home Assistant show them, rather
+  than after a GitHub account. A device on an earlier image, named
+  `adamsthws.sonoff-s60`, is still this project's ESPHome to the tool, and is
+  offered the update. The README's badge shows OpenBeken's release, read from
+  `artifacts/firmware.json`.
+- A device whose Sonoff firmware ran from the second half of its memory can go back to
+  it. The run used to stop before writing it, as Tasmota ran from there.
+- A TH Elite or Dual R3 on Tasmota can go to ESPHome or back to Sonoff's firmware,
+  through a temporary layout table.
+- Every device ends with ESPHome's bootloader, however it got Tasmota: a device on
+  Tasmota with another one goes through the full Tasmota that installs it, even to
+  ESPHome. On a classic ESP32 the run used to stop for lack of memory, writing
+  nothing.
+- The installer can restart the device into its Sonoff firmware (`POST /restart`),
+  just as switching it off and on would, so a run can put a device it left on the
+  installer back without asking you to. It refuses while an upload is under way,
+  and where an upload cut off part way has left no Sonoff firmware to start.
+- The installer is now 4.4.6, with a read-only `GET /info`, and each run logs its
+  answer at the backup step: the chip's exact revision, where a classic ESP32's
+  log only said "at least", the flash chip's id and real size, the slots, whether
+  PSRAM is in the chip's package, and the input pins' levels. An older installer
+  only leaves these lines out.
+- The installer's page no longer says Sonoff's firmware is chosen for the device's next
+  start once an upload of Tasmota into its slot has been cut off part way, and its
+  status says there is none from that moment: the device then starts the installer
+  again when switched off and on, so you can carry on. Both said so only after a
+  restart.
+- A TH Elite on Tasmota no longer reports that its relay did not switch at the end
+  of a run: the check did not read the answer Tasmota gives where a template has
+  more than one relay.
+- A device back on Sonoff's firmware no longer reports its relay check as failed
+  while it is reaching eWeLink: the check waits, up to three minutes, for eWeLink to
+  show the device online and for it to answer there, then switches the relay. An
+  Espressif device's run checked straight away, seconds after its firmware first
+  answered on the network and before it had reached eWeLink. And a device that drops
+  off eWeLink as it switches has its relay put back as it was once it returns,
+  rather than left switched over. A device asking eWeLink for its settings while the
+  check waits no longer ends the run with "something unexpected went wrong".
+- A device back on Sonoff's firmware has its meter read at the end of the run, as
+  the eWeLink app reads it, after each switch of its relay: the report gives its
+  readings with the relay on and off, and whether they show the relay switching,
+  as on Tasmota and ESPHome. A device that gives eWeLink no readings, a Dual R3,
+  has its relay checked alone as before.
+- The end-of-run check always shows its Relay and Power meter answers. A device
+  that stopped answering it on Tasmota or ESPHome, or a Dual R3 driving a
+  motor, showed neither, or only one.
+- Going back to Sonoff's firmware ends the same way on either chip family: the
+  tool waits for the device on your Wi-Fi and online in eWeLink. One on your
+  Wi-Fi that never reaches eWeLink is said to be kept off the internet, most
+  likely by a firewall or a guest-network or parental-control rule. An
+  Espressif device was looked for on the Wi-Fi alone, a Beken one in eWeLink
+  alone.
+- An Espressif device that has not come back on ESPHome or Sonoff's firmware
+  has you switch it off and on, then is looked for again, as a Beken device
+  is; the run stopped. The report says whether it had to be, on either family.
+- A Beken device whose ESPHome cannot join your Wi-Fi is given it through
+  ESPHome's own network, as an Espressif device is.
+- A device whose new firmware cannot join your Wi-Fi - ESPHome, or the mover
+  on the way to it - is set up through its own network as soon as that network
+  is up, a minute or two in, where the run waited three minutes first.
+- The end-of-run check of the relay tries a switch, or a reading of the
+  meter, again when its answer is lost: a device whose Wi-Fi blinked as it
+  was checked - ESPHome taking its own network down once back on yours - was
+  reported as a relay that did not switch, its meter showing it had.
+- A Beken run carried on after one cut off while OpenBeken fetched its next
+  firmware restarts OpenBeken before asking it to fetch: the fetch the last
+  run began could still be waiting inside it, and OpenBeken turned the new one
+  down while saying it had started it, so the run waited half a minute first.
+- A command to OpenBeken that it answers "No command entered" - its web
+  server reads only what has arrived as a request starts, so the words can
+  miss it - is sent again; the run stopped there.
+- A Beken device that had to be restarted before it fetched ESPHome is no
+  longer taken for one that refused the image: the run sent ESPHome again into
+  a device restarting to install it, and could end stopped there.
+- A Beken device that loses power or Wi-Fi while OpenBeken fetches its next
+  firmware - ESPHome, or Sonoff's back - stops the run with what to do (switch
+  it off and on, then run the same command again), as a cut-off send from
+  Sonoff's firmware does: it said "something unexpected went wrong" with an
+  error behind it. A readout cut off the same way - sending its firmware,
+  reading the device's memory or putting Sonoff's firmware back - says what
+  to do too, where it was recorded as having crashed.
+- A device that raised its own network while your router restarted, then
+  rejoined your Wi-Fi by itself once the router was back, is carried on with:
+  the run had you join the device's network regardless, and stopped after 15
+  minutes unattended. Waiting for you to join it, the run now looks for the
+  device on your Wi-Fi too, on either family.
+- A device whose Wi-Fi drops for a moment as it downloads its new firmware no
+  longer leaves a Python traceback ("Exception occurred during processing of
+  request", ConnectionResetError) across the run's screen: the dropped request
+  goes in the run's log, and the device asks again for what it lacks.
+- The report sent says whether your computer joined a network the device
+  raised itself on either family, and now also when ESPHome or the mover was
+  set up through its own network; it said so only for an Espressif device's
+  installer or Tasmota. Each stage in it also says whether that was needed
+  there and why - the device never given your Wi-Fi details, given them but
+  not joining, or its settings lost - and how many times the device was
+  switched off and on during it, so a stage that keeps needing either shows.
+- A device that turns the first firmware down while an update cut off part way
+  still holds it (eWeLink's error 410), or that has left eWeLink since, has you
+  switch it off and on, then is sent it again once eWeLink shows it online, on
+  either chip family; the run stopped. A readout of a Beken device does the
+  same.
+- `--dry-run` writes nothing on either chip family: it goes through the steps
+  that only read and stops before the first that writes, and `step <id>
+  --dry-run` does only a step that reads. On an Espressif device it went on to
+  send the installer, replacing Sonoff's firmware.
+- The end-of-run check also asks the device which release of Tasmota, ESPHome or
+  OpenBeken it runs, and reads a TH Elite's temperature probe, if one is plugged
+  in: the report's Checks fails if the release is not the one this version
+  installs, as this project built it, or a reading is one the sensor cannot give.
+  The report sent says the same: a device that did not answer the check is
+  "failed" there too, as on the screen.
+- A device on Tasmota, ESPHome or OpenBeken that loses power or its Wi-Fi as a run
+  ends is waited for, up to four minutes, before its relay and meter are checked,
+  rather than reported as not answering the check.
+- An ESPHome update is said done only once the device has been seen running it for a
+  whole minute on end, the minute it takes to keep it. One that stopped answering
+  part way, switched off say, was said done all the same; it is now waited for,
+  and its minute starts again once it answers.
+- An ESPHome update cut off part way - this computer crashing, say - and sent
+  again at once is waited for, about two minutes, while the device still waits
+  for the rest of the first, then sent again: every try in that time timed out,
+  and the run stopped.
+- A stage that passes leaves just its line on the screen. What it showed while
+  under way stayed above it: a try that failed on the network and was tried
+  again, drawn as a stage stopped and then run a second time; instructions to
+  join a network, long since done with; the installer sent again. A step done
+  again because a later one found it had not taken is drawn afresh too, and the
+  run says why only if it still does not take. While a stage is done again its
+  line says "Retrying" rather than "Underway". Instructions to join a network go
+  as soon as it is joined, and a stage's line is no longer drawn again under each
+  of its notes, so a stage with much to say stays short enough to clear. A window
+  under 40 rows is told, in a line, that maximising it fits the report at the end
+  on the screen; one of 30 rows or fewer is waited for to grow.
+  The run's log keeps everything.
+- A conversion an earlier version began, carried on by this one, ends on the
+  release of Tasmota, ESPHome or OpenBeken this version installs. Where the earlier
+  version had already installed its own release - official Tasmota, from the point
+  the conversion must finish on it - the run finishes, then goes on to update it in
+  the same run, its settings kept. It was left on the earlier release. A run
+  stopped part way through such an update finishes it when run again.
+- Every question says how to quit the same way: "(q to quit)", in grey, after it.
+  Menus no longer number a Quit option, and q quits at every one. After a Ctrl-C,
+  the run carries on by itself, or at once with Enter; q stops it there.
+- The report at the end is half as tall: two columns on the screen - the device on
+  the right, the result, the run and the computer on the left - with shorter labels (Model,
+  Backup, Checks, OS, Liberator for the tool's version...) and answers (Python's
+  "(venv)", the checks "Pass" or "Fail"), and no heading of its own, nor a
+  Result: the line above it says how the run ended ("Conversion complete!",
+  "FAILED: ..."), as a readout's now does for each way one ends, and a
+  readout's report lists each device under how it ended. From gives Sonoff's firmware with its version, "Sonoff 1.2.0", in
+  place of a line of its own. Whether a power meter's calibration carried over
+  is no longer said on the screen, where it worried more than it helped, nor
+  where going back to Sonoff's firmware took the device's eWeLink identity from,
+  nor whether the Wi-Fi was typed in, a setup network joined, or a Beken device
+  switched off and on. The run's time, each stage's and how long it kept the device busy are no
+  longer shown: the report the tool sends holds them, and the meter's. A stopped run's result says
+  "Stopped", where and why being said as it stopped, and in the report copied for
+  an issue. A run stopped before any stage
+  began no longer asks for a report.
+- A device the tool converted is asked which firmware it is to have where one on
+  Sonoff's firmware is: at "Choosing the firmware", once the list of what has
+  to be in place has been read - not before the first stage, ahead of it. An
+  update says so on its option alone ("ESPHome, update to 2026.10.0-2"), with no
+  line above the options on the release the device runs.
+- Sonoff's firmware is offered to a converted device with no backup on your computer
+  too, as almost every one can go back without it: its identity is the one it
+  keeps, or comes from your eWeLink account. It used to be offered only to a device
+  on Tasmota keeping its identity, and the rest needed `--firmware sonoff`. If
+  Sonoff's firmware cannot be put together after all - no identity anywhere, or
+  its download failing - the device goes back to the firmware it came from, ESPHome
+  or Tasmota, instead of being left part way, and the report says "Put back on".
+- A yes/no question is taken off the screen once answered, even after a wrong
+  answer first. It stayed, under "Please answer y or n.", when nothing was
+  shown above it.
+- A conversion or a readout that finished asks what next: convert another
+  device, or read one out. With several devices, you go from one to the next
+  without starting the tool again or signing in to eWeLink again.
+- A run stopped before it wrote anything to its device - at a question, say - is
+  no longer offered back as "A conversion did not finish last time": starting
+  afresh loses nothing.
+- A conversion run with `--wifi` no longer asks for the Wi-Fi details again near
+  its end, as it installs official Tasmota's safeboot: it uses those typed earlier
+  in the same run.
+- Two Wi-Fi passwords typed that differ are taken off the screen before the
+  password is asked again, as any wrong answer is; they stayed under each other.
+- The arrow keys move along a typed answer on Linux and macOS. The terminal used
+  to echo them: the up arrow moved the cursor into the rows above, garbling the
+  screen, and their codes became part of the answer.
+- On Windows, a key pressed by accident at a question no longer changes the
+  answer: the console's up arrow or F3 brought the last answer back, so a
+  stray one could answer the consent question with an earlier PROCEED, F7
+  opened a list of earlier answers over the screen, and Esc cleared what was
+  typed. The arrows, Home, End and Delete still edit the answer.
+- F2 no longer stops the countdown after a Ctrl-C: in many terminals its code
+  ends in a Q, which was taken as q.
+- A Ctrl-C pressed before the first stage, while the tool looks for devices, no
+  longer leaves "! Are you sure?" on the screen for the rest of the run.
+- A Ctrl-C pressed while nothing is being asked is asked about before the next
+  question, not after it: pressed while the tool looked for devices, "You
+  pressed Ctrl-C" came only once a device was chosen and a key pressed, at the
+  end of the first stage.
+- A stage that shows notes keeps one line: its spinner turns on the line above
+  them. It was drawn again, turning, under the last note, so the stage showed
+  twice until it ended - unless the notes fill the window, where the line above
+  is out of reach.
+- The countdown after Ctrl-C counts down in an 80-column window too: its words fit
+  one row ("Carrying on to the next stage in 20 s, or press Enter now"). On two,
+  only the second was redrawn, and "in 20 s" stood still above it.
+- A run stopped by the computer as a question waits - shut down, or sent
+  SIGTERM - shows its stage stopped and takes the question off, as Ctrl-C does.
+  It left the stage under way and the question waiting.
+- Notes broken over several lines fit an 80-column window. Some were wider, so
+  each line wrapped on its own and left a word or two on a row by itself.
+- What the tool says on the screen is true where it was not. A readout of a
+  Beken device stopped with Ctrl-C says to run the readout again, which puts
+  Sonoff's firmware back: it said to switch the device off and on, which there
+  starts the reading program again, as it stands in Sonoff's firmware's place.
+  Quitting at a question says "Stopped as asked. Run this again to carry on."
+  in place of "Nothing was left half done", untrue after a quit that leaves the
+  device on the installer. A run turned away because another run holds the
+  device says nothing was done once, not twice. Every go-ahead before the first
+  write says "DO NOT CUT ITS POWER unless this tool tells you to", in the same
+  words: "during the process" contradicted the later notes that ask for the
+  device to be switched off and on.
+- What the tool prints is shorter: most notes, questions' help and warnings
+  take half the rows or fewer, and what explained rather than asked anything of
+  you - why the startup firmware needs your Wi-Fi, what a check found, the
+  hashes of a region that differs - is in the run's log alone. A stage is named
+  by its number, never a step's code ("doing stage 9 again", not "Doing B2
+  again"). Each thing has one name on the screen: the installer (its stage is
+  "Sending installer firmware"), the startup firmware and the device's setup
+  network; words such as bundle, pinned artifacts and app0 are gone. The
+  readout's "Preparing to send" fits an 80-column window: it was cut short.
+- A download the server turns away for now - GitHub's release downloads
+  answering "504 Gateway Time-out" for minutes at a time, say - is tried again
+  for a little over two minutes, waiting longer each time, rather than three
+  times in ten seconds: the official Tasmota files, Sonoff's firmware for a Beken
+  device, and the firmware eWeLink offers a device. A run stopped by one before had
+  to be started again.
+- A step whose device restarted just after fetching its instructions - switched off
+  at that moment, say - is sent them again before its start. It was sent only the
+  start, which a restarted device no longer knew ("'autoflash_run' undeclared"),
+  until the step failed and was tried again from the top.
+- The upload of Tasmota to Tasmota that most conversions make part way (D4), cut
+  off by the network, is sent again only after a restart. Sent again at once, it
+  went to a Tasmota still holding the upload cut off, which never took it: the
+  run waited ten minutes and asked for it to be uploaded by hand.
+- A device's boot is read only once Tasmota has counted it, 10 s after it starts.
+  Read sooner, as just after a restart, the count went up by one later in the
+  same boot, so an upload cut off could be taken for one the device had taken and
+  started, and a restart could be seen where there was none.
+- OpenBeken for the Sonoff S61 rebuilt with
+  [1.18.320](https://github.com/openshwprojects/OpenBK7231T_App/releases/tag/1.18.320).
+- A Sonoff S61 converted to OpenBeken says in the report the tool sends whether
+  its meter's factory calibration carried over, as on ESPHome: it said it was
+  not checked. OpenBeken's driver answers `AutoflashCalibration`,
+  working out again what it takes from Sonoff's store and comparing it with
+  OpenBeken's calibration, so it says it was not carried over once you calibrate
+  the device yourself.
+- ESPHome on the Sonoff S61 reads its voltage and current the right way round.
+  Its meter, a BL0937, measures the voltage while its SEL pin is high, where
+  ESPHome sets it high to measure the current, so each showed the other: about
+  20 A whatever was plugged in, and a voltage that rose with the load (5 V at
+  100 W). The power was right. SEL is now inverted in its config, as ESPHome's
+  page says for this chip.
+- Each run sends the project an anonymous report of how it went: the device,
+  the firmware it went to and from, and how far it got - for a run you stop,
+  the stage and how you stopped it, and for a conversion, how many devices
+  this computer has converted; with what helps find a fault, such as where in
+  the tool's code it went wrong, the device's chip, flash and firmware name,
+  and Wi-Fi or Ethernet, a VPN or a firewall on your side - never anything of
+  you, your computer or your network. Each device read out sends one too, as its
+  readout ends: how it ended (accepted by the website, not needed, kept, and
+  so on), never the readout itself. Reports from everyone add up to the figures
+  on [firmwareliberator.com/stats](https://firmwareliberator.com/stats), which
+  publishes only totals; the reports themselves are kept, so how devices fare can
+  be followed over the years.
+  `--no-report`, or `AUTOFLASH_NO_REPORT=1` in `.env`, stops it, and the tool
+  says so once, the first time it runs on a computer;
+  [what the tool sends](docs/what-the-tool-sends.md) says what a report holds.
+  A report that could not be sent is kept on your computer and sent the next
+  time, for up to 30 days.
+- A run that failed ends with where to open an issue for it,
+  firmwareliberator.com/issues, its report's ID under it, its report, the ID
+  with it, on the clipboard to paste in, and where its log is, in place of the
+  links to support the project; one you stop yourself does not. A readout that
+  failed does the same under its report, which says "Failed". A run that worked
+  no longer says where its log is, a device wanting testers' included, and
+  leaves the clipboard alone. The end of a run no longer asks for its report to be posted in
+  Discussions, nor links to them when a run fails.
+- The names of what the tool keeps say "device" too. Each device's records
+  are in `captures/devices/<MAC>/`, with `device.json`, where releases up to
+  2.3.0 kept them in `captures/plugs/<MAC>/` with `plug.json`.
+  The first time it starts, the tool renames that folder where it is - nothing
+  in it is copied or rewritten, a Sonoff backup least of all - and it carries
+  on a run an earlier release began. It stops, changing nothing, while a run
+  of the earlier release is still converting a device, or if both folders
+  exist. Its warnings say "do not cut its power" where they said "do not
+  unplug it".
+- In the emulators the same: `emu.sh --device MAC` and `--device-dir`, the
+  `device off`, `on` and `cycle` commands in the Espressif emulator's
+  terminal, and `beken-emu.sh device`. Both emulators' images are new.
+- The `README.txt` saved beside an Espressif device's Sonoff backup is true of
+  any of them. It told every owner their device was an S60: an ESP32-C3 in a
+  welded case, to be written back with `esptool.py --chip esp32c3`. It now
+  says the tool writes the backup back over the air, and gives the command
+  that suits either chip.
+
 ## 2.3.0
 
 - The tool's code is a package of modules, each for one thing - the command
@@ -37,8 +488,7 @@ check.
   S60's interim firmwares are, and once it has fetched the next firmware it
   erases its own settings, so ESPHome - or a later OpenBeken - finds nothing
   of it. A run that lost its record recognises a plug left on it, and goes on
-  from there. Tested end to end in the emulator in every direction; not yet on
-  a real plug.
+  from there. Tested end to end in the emulator in every direction.
 - From Sonoff's firmware the run finds the plug in eWeLink before it asks
   which firmware you want, because which firmware a plug can have depends on
   what plug it is. The question is a stage of its own (Choosing the firmware),

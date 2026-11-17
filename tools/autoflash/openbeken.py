@@ -1,10 +1,10 @@
-"""OpenBeken on a converted plug: what the tool asks of it over HTTP.
+"""OpenBeken on a converted device: what the tool asks of it over HTTP.
 
 OpenBeken answers on port 80: GET /api/info says what it is (its chipset,
 build, name and MAC); POST /api/cmnd runs one of its console commands and
 answers with a JSON envelope; GET /api/flash/<start>-<length>, both in hex,
 reads flash as raw bytes (the S61 build reads the whole 4 MB).  Every
-address and command goes to a plug that has already answered as OpenBeken.
+address and command goes to a device that has already answered as OpenBeken.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from typing import Any
 from . import kinds
 
 PORT = 80
-# One request per 16 KiB, paced: the plug's HTTP server is single-threaded and
+# One request per 16 KiB, paced: the device's HTTP server is single-threaded and
 # its TCP stack keeps each closed connection a while, so few, larger, spaced
 # requests are what it copes with (tools/beken/backup.py found the pace).
 FLASH_CHUNK = 0x4000
@@ -28,7 +28,12 @@ FLASH_TRIES = 4
 
 
 class CommandError(RuntimeError):
-    """OpenBeken refused a command, or did not know it."""
+    """OpenBeken refused a command, or did not know it (`unknown`)."""
+
+    def __init__(self, message: str, unknown: bool = False, empty: bool = False):
+        super().__init__(message)
+        self.unknown = unknown
+        self.empty = empty   # its words did not reach it: nothing was run (EMPTY)
 
 
 def _url(host: str, path: str) -> str:
@@ -50,7 +55,7 @@ def info(host: str, timeout: float = 4.0) -> dict[str, Any] | None:
 
 
 def kind(host: str, found: dict[str, Any], timeout: float = 4.0) -> kinds.Kind | None:
-    """The kind of plug the OpenBeken at `host` (its /api/info `found`) is
+    """The kind of device the OpenBeken at `host` (its /api/info `found`) is
     on, when the tool installed it: its driver answers AutoflashKind
     for its own kind alone - its name says nothing, being alike on every
     firmware and the user's to change.  None for an OpenBeken the tool did
@@ -78,9 +83,46 @@ def is_interim(host: str, timeout: float = 4.0) -> bool | None:
     return True
 
 
+def is_readout(host: str, timeout: float = 4.0) -> bool:
+    """Whether the OpenBeken at `host` is the readout build (readout_beken), a
+    readout's for a few minutes: its driver answers AutoflashKind for
+    "readout" alone, as each build does for its own kind."""
+    try:
+        command(host, "AutoflashKind readout", timeout)
+    except (CommandError, OSError):
+        return False
+    return True
+
+
+# Where the meter's calibration came from, in the words our ESPHome's
+# Calibration sensor uses (esphome.calibration_state), by what the driver's
+# AutoflashCalibration is asked.
+CALIBRATION_STATES = {"stock": "stock store", "missing": "missing"}
+CALIBRATION_CHANGED = "not the stock store's"
+
+
+def calibration_state(host: str, timeout: float = 4.0) -> str | None:
+    """Where the meter's calibration on the OpenBeken at `host` - one the tool
+    installed (kind) - came from, as its driver says (AutoflashCalibration):
+    the stock store's, missing from it, or neither (CALIBRATION_CHANGED: not
+    applied, or calibrated by the device's owner since).  None from an OpenBeken
+    whose driver predates the command, or that does not answer."""
+    for asked, state in CALIBRATION_STATES.items():
+        try:
+            command(host, f"AutoflashCalibration {asked}", timeout)
+        except CommandError as exc:
+            if exc.unknown:
+                return None
+            continue
+        except OSError:
+            return None
+        return state
+    return CALIBRATION_CHANGED
+
+
 def set_interim(host: str, interim: bool, timeout: float = 10.0) -> None:
     """The OpenBeken at `host` made the interim firmware (autoflash-recovery-CDEF),
-    or the plug's OpenBeken for good (openbeken-abcdef), as its driver
+    or the device's OpenBeken for good (openbeken-abcdef), as its driver
     names each; its DHCP and mDNS names follow on its next start."""
     command(host, f"AutoflashInterim {'on' if interim else 'off'}", timeout)
 
@@ -95,8 +137,30 @@ def version(found: dict[str, Any]) -> str:
     return build.rsplit("version ", 1)[1].strip() if "version " in build else build
 
 
+# What OpenBeken answers a command that came empty (CMD_GetResultString's
+# CMD_RES_EMPTY_STRING): its web server takes the first read of a request for
+# all of it, so a body that arrives a moment after the headers is never read
+# and nothing is run (new_tcp_server.c; seen in the Beken emulator, a second
+# ota_http). The tool sends no empty command, so it sends this one again,
+# up to EMPTY_TRIES times in all, a moment apart.
+EMPTY = "No command entered"
+EMPTY_TRIES, EMPTY_PAUSE = 3, 1.0
+
+
 def command(host: str, text: str, timeout: float = 10.0) -> str:
-    """Run a console command, and give what it answered (the envelope's `msg`)."""
+    """Run a console command, and give what it answered (the envelope's
+    `msg`): sent again where its words did not reach the command (EMPTY)."""
+    for attempt in range(1, EMPTY_TRIES + 1):
+        try:
+            return _command(host, text, timeout)
+        except CommandError as exc:
+            if not exc.empty or attempt == EMPTY_TRIES:
+                raise
+        time.sleep(EMPTY_PAUSE)
+    raise AssertionError("unreachable")
+
+
+def _command(host: str, text: str, timeout: float) -> str:
     request = urllib.request.Request(_url(host, "/api/cmnd"), data=text.encode("utf-8"), method="POST",
                                      headers={"Content-Type": "text/plain"})
     try:
@@ -111,8 +175,10 @@ def command(host: str, text: str, timeout: float = 10.0) -> str:
     if not isinstance(envelope, dict):
         return body.strip()
     if "error" in envelope:
+        unknown = envelope["error"] == 501
         raise CommandError(f"{text.split()[0]}: {envelope.get('msg') or envelope['error']}"
-                           + (" (not a command this OpenBeken knows)" if envelope["error"] == 501 else ""))
+                           + (" (not a command this OpenBeken knows)" if unknown else ""), unknown,
+                           empty=envelope.get("msg") == EMPTY)
     return str(envelope.get("msg", ""))
 
 
@@ -154,17 +220,23 @@ RESTART_WAIT = 120.0
 
 def restart(host: str, wait: float = RESTART_WAIT) -> bool:
     """Restart OpenBeken, and say whether it has, answering again, within
-    `wait` seconds: its uptime back below what it was."""
+    `wait` seconds: its uptime back below what it was, or answering again
+    after it stopped. Its uptime alone missed a device that had only just
+    restarted - its bootloader refusing an image - which had been up for
+    less than it takes to start and join the Wi-Fi again."""
     before = (info(host) or {}).get("uptime_s")
     try:
         command(host, "reboot", timeout=5.0)
     except (OSError, CommandError):
-        pass   # the plug may restart before it answers
+        pass   # the device may restart before it answers
+    gone = False
     deadline = time.monotonic() + wait
     while time.monotonic() < deadline:
         time.sleep(3)
         found = info(host, timeout=3.0)
-        if found and (not isinstance(before, int) or int(found.get("uptime_s") or 0) < before):
+        if not found:
+            gone = True
+        elif gone or not isinstance(before, int) or int(found.get("uptime_s") or 0) < before:
             return True
     return False
 

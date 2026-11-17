@@ -6,8 +6,8 @@ from defaults with no Wi-Fi and raises its setup network.  A record carrying the
 home Wi-Fi therefore lets a freshly installed Tasmota join it straight away.
 
 The record here is a *template*: Tasmota's own defaults with the Wi-Fi fields
-blanked, captured once from a plug running the same release.  The bridge fills
-in the Wi-Fi it joined with, so the password never leaves the plug.
+blanked, captured once from a device running the same release.  The bridge fills
+in the Wi-Fi it joined with, so the password never leaves the device.
 
 Layout: tasmota/include/tasmota_types.h and tasmota.h at commit db3ae7e.
 Algorithms: settings.ino (GetCfgCrc32, SettingsUpdateText, SettingsBufferXor).
@@ -18,10 +18,13 @@ from __future__ import annotations
 import struct
 from typing import TYPE_CHECKING
 
+from tools.espressif import chips
+
 if TYPE_CHECKING:
     from pathlib import Path
 
 SIZE = 4096
+
 CFG_HOLDER = 4617                # my_user_config.h
 CONFIG_FILE_XOR = 0x5A           # backups are XORed with this + offset
 TEXT_POOL = 0x017                # char text_pool[...]
@@ -44,9 +47,9 @@ HOSTNAME_MAX = 32                # TasmotaGlobal.hostname[33]
 
 # A template is only used with the firmware its layout was checked against.
 #
-# It was captured from a converted plug running official Tasmota 15.6.0
+# It was captured from a converted device running official Tasmota 15.6.0
 # (safeboot_migration.INTERIM_TASMOTA_COMMIT, the release the interim firmware
-# is made from - not the one a converted plug ends on, which firmware.json
+# is made from - not the one a converted device ends on, which firmware.json
 # pins), and is installed into the Berry Tasmota D1 uploads (safeboot_migration
 # PINNED_ARTIFACTS["bluetooth"], 15.6.0.1 built from f5b34a2).  At those two
 # commits the record layout, text pool order and size, cfg_holder, CRC and the
@@ -146,15 +149,17 @@ def with_crc(settings: bytes) -> bytes:
     return settings[:CRC32] + struct.pack("<I", crc32(settings[:CRC32]))
 
 
-def problems(settings: bytes) -> list[str]:
-    """Why Tasmota (ESP32-C3) would not take this record, if it would not."""
+def problems(settings: bytes, config_version: int = ESP32C3) -> list[str]:
+    """Why Tasmota would not take this record, if it would not: for an ESP32-C3,
+    or the chip family `config_version` names."""
     if len(settings) != SIZE:
         return [f"the record is {len(settings)} bytes, not {SIZE}"]
     found = []
     if holder(settings) != CFG_HOLDER:
         found.append(f"cfg_holder is {holder(settings)}, not {CFG_HOLDER}")
-    if settings[CONFIG_VERSION] != ESP32C3:
-        found.append(f"it is for chip family {settings[CONFIG_VERSION]}, not ESP32-C3")
+    if settings[CONFIG_VERSION] != config_version:
+        found.append(f"it is for chip family {settings[CONFIG_VERSION]}, not "
+                     f"{'ESP32-C3' if config_version == ESP32C3 else config_version}")
     if struct.unpack_from("<I", settings, CRC32)[0] != crc32(settings[:CRC32]):
         found.append("its checksum does not match")
     try:
@@ -203,20 +208,29 @@ def _require_size(settings: bytes) -> None:
         raise SettingsError(f"the record is {len(settings)} bytes, not {SIZE}")
 
 
-def template_path(root) -> "Path":
+# The ESP32-C3's template was published before a chip's files named it. One
+# captured at another release is named as every other chip's is
+# (tests/repo/test_firmware_pins.py holds each published file to the rule).
+UNNAMED_TEMPLATE_VERSION = 0x0F060000
+
+
+def template_path(root, chip: chips.Chip = chips.ESP32C3) -> "Path":
     from pathlib import Path
-    return Path(root) / "artifacts" / f"tasmota-settings-template-{version_text(TEMPLATE_VERSION)}.bin"
+    unnamed = chip is chips.ESP32C3 and TEMPLATE_VERSION == UNNAMED_TEMPLATE_VERSION
+    family = "" if unnamed else f"{chip.key}-"
+    return Path(root) / "artifacts" / f"tasmota-settings-template-{family}{version_text(TEMPLATE_VERSION)}.bin"
 
 
-def load_template(root, berry_sha256: str | None) -> tuple[bytes | None, str]:
+def load_template(root, berry_sha256: str | None, chip: chips.Chip = chips.ESP32C3) -> tuple[bytes | None, str]:
     """The saved template if it fits the Berry Tasmota D1 installs, else None and why not."""
-    if berry_sha256 != BERRY_FIRMWARE_SHA256:
+    wanted = BERRY_FIRMWARE_SHA256 if chip is chips.ESP32C3 else chip.pin("interim")["sha256"]
+    if berry_sha256 != wanted:
         return None, "the bundle's Berry Tasmota is not the one the settings template was checked against"
-    path = template_path(root)
+    path = template_path(root, chip)
     if not path.exists():
         return None, "no Tasmota settings template has been captured yet"
     template = path.read_bytes()
-    found = problems(template)
+    found = problems(template, chip.config_version)
     if version(template) != TEMPLATE_VERSION:
         found.append(f"it is from Tasmota {version_text(version(template))}")
     if not found and (text(template, SET_STASSID1) or text(template, SET_STAPWD1)):

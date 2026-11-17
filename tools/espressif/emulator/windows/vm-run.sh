@@ -101,10 +101,11 @@ press_any_key() {
     log "Setup did not start from the ISO within 10 minutes"
 }
 
-repo_tar() {  # $1: this checkout, without its private captures or .env, as a tar
-    # Not .env: the conversion in Windows asks for the eWeLink account, as a real one does.
-    tar -C /repo -cf "$1" --exclude=./.git --exclude=./.venv --exclude=./.python --exclude=./captures \
-        --exclude=./.env --exclude='*/__pycache__' .
+repo_tar() {  # $1: this checkout as a tar - the files windows-test.sh listed in /cache/repo-files
+    # Only what git tracks or would, as the device's emulator copies it: never captures
+    # or .env, which git ignores (the conversion in Windows asks for the eWeLink
+    # account, as a real one does). One removed since it was listed is left out.
+    tar -C /repo -cf "$1" --null --no-recursion --ignore-failed-read -T /cache/repo-files
 }
 
 set_up() {  # $1: a disk $2 (a layer's name) has just been set up on; shows its log

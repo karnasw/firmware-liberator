@@ -1,6 +1,6 @@
 """Write Wi-Fi credentials into a prebuilt firmware image.
 
-The plug spends a few minutes running a small startup firmware that has nowhere
+The device spends a few minutes running a small startup firmware that has nowhere
 to read Wi-Fi details from, so those details have to be inside the image. Asking
 every user to compile one is a wall most people will not climb.
 
@@ -11,7 +11,7 @@ checks - the one-byte XOR over segment data and the appended SHA-256 - are
 recalculated afterwards.
 
 Nothing here relaxes a check. The patched image is validated exactly as any
-downloaded artifact is, and the migration still refuses it unless the plug reads
+downloaded artifact is, and the migration still refuses it unless the device reads
 back what was sent.
 """
 
@@ -210,7 +210,7 @@ def require_imprinted(image: bytes) -> None:
 
     Such an image is not merely useless: it would boot looking for a network
     named after the placeholder, retry forever, and never raise an access point,
-    leaving the plug unreachable at the one moment it must not be. Any marker
+    leaving the device unreachable at the one moment it must not be. Any marker
     left in the image means exactly that, whether the filler behind it is
     untouched or a value was written after it by the earlier, faulty tool.
     """

@@ -62,6 +62,7 @@ class ParseTests(unittest.TestCase):
         self.assertIsNone(calibration.parse(""))
         # A b term that would not scale a reading: a damaged entry.
         self.assertIsNone(calibration.parse(FACTORY.replace("990000", "0", 1)))
+        self.assertIsNone(calibration.parse(FACTORY.replace("990000", "2000000", 1)))
 
 
 class TasmotaValueTests(unittest.TestCase):
@@ -79,6 +80,10 @@ class TasmotaValueTests(unittest.TestCase):
         values = calibration.tasmota_values({**CHIP, "VoltageCal": 1912}, 1.02)
         self.assertEqual(values["VoltageCal"], 1951)
 
+    def test_tasmotas_defaults_are_its_own(self):
+        # include/tasmota.h's HLW_UREF_PULSE, HLW_IREF_PULSE and HLW_PREF_PULSE.
+        self.assertEqual(calibration.TASMOTA_DEFAULTS, {"VoltageCal": 1950, "CurrentCal": 3500, "PowerCal": 12530})
+
     def test_the_board_factor_is_1_02_unless_every_pin_reads_high(self):
         self.assertEqual(calibration.board_factor([1, 1, 1]), 1.0)
         for levels in ([0, 1, 1], [1, 0, 1], [1, 1, 0]):
@@ -87,23 +92,25 @@ class TasmotaValueTests(unittest.TestCase):
 
 class CalibrateTasmotaTests(unittest.TestCase):
     def test_the_chips_numbers_are_scaled_and_kept(self):
-        plug = FakeTasmota()
-        outcome = calibration.calibrate_tasmota(plug, sleep=lambda _: None)
-        self.assertEqual(plug.settings, {"VoltageCal": 1885, "CurrentCal": 15435, "PowerCal": 5148})
+        fake = FakeTasmota()
+        outcome = calibration.calibrate_tasmota(fake, sleep=lambda _: None)
+        self.assertEqual(fake.settings, {"VoltageCal": 1885, "CurrentCal": 15435, "PowerCal": 5148})
         self.assertEqual((outcome["factor"], outcome["factory"], outcome["chip"]), (1.02, False, CHIP))
 
     def test_done_again_it_comes_out_the_same(self):
         # The chip's own numbers taken afresh: the factor is never applied twice.
-        plug = FakeTasmota()
-        calibration.calibrate_tasmota(plug, calibration.parse(FACTORY), sleep=lambda _: None)
-        first = dict(plug.settings)
-        calibration.calibrate_tasmota(plug, calibration.parse(FACTORY), sleep=lambda _: None)
-        self.assertEqual(plug.settings, first)
+        fake = FakeTasmota()
+        calibration.calibrate_tasmota(fake, calibration.parse(FACTORY), sleep=lambda _: None)
+        first = dict(fake.settings)
+        calibration.calibrate_tasmota(fake, calibration.parse(FACTORY), sleep=lambda _: None)
+        self.assertEqual(fake.settings, first)
 
     def test_the_pins_are_read_with_pull_ups_and_left_without(self):
         tasmota = FakeTasmota(pins=(1, 1, 1))
         outcome = calibration.calibrate_tasmota(tasmota, sleep=lambda _: None)
         self.assertEqual(outcome["factor"], 1.0)
+        self.assertEqual([text for text in tasmota.sent if text.startswith("Br gpio.digital_read(")],
+                         ["Br gpio.digital_read(6)", "Br gpio.digital_read(10)", "Br gpio.digital_read(19)"])
         for pin in calibration.BOARD_PINS:
             pulled = tasmota.sent.index(f"Br gpio.pin_mode({pin}, gpio.INPUT_PULLUP)")
             read = tasmota.sent.index(f"Br gpio.digital_read({pin})")
@@ -112,12 +119,35 @@ class CalibrateTasmotaTests(unittest.TestCase):
             self.assertLess(read, released)
 
     def test_a_meter_that_does_not_report_is_left_as_it_was(self):
-        # The emulator's plug has no meter: the chip's numbers never come.
+        # The emulator's device has no meter: the chip's numbers never come.
         tasmota = FakeTasmota(meter=False, chip={"VoltageCal": 1900, "CurrentCal": 15000, "PowerCal": 5000})
         before = dict(tasmota.settings)
         outcome = calibration.calibrate_tasmota(tasmota, wait=0, sleep=lambda _: None)
         self.assertEqual(outcome["skipped"], "the meter did not report")
         self.assertEqual(tasmota.settings, before)
+
+    def test_a_meter_slow_to_report_is_waited_for(self):
+        tasmota = FakeTasmota(meter=False)
+        slept = []
+
+        def sleep(seconds):
+            slept.append(seconds)
+            tasmota.meter = len(slept) >= 3   # its readings come a little later
+        outcome = calibration.calibrate_tasmota(tasmota, sleep=sleep)
+        self.assertEqual(outcome["chip"], CHIP)
+        self.assertEqual(len(slept), 3)
+
+    def test_a_setting_tasmota_does_not_take_is_said_not_taken(self):
+        tasmota = FakeTasmota()
+        answer = tasmota.__call__
+
+        def command(text):
+            said = answer(text)
+            if text == "PowerCal 5148":
+                return {"PowerCal": 5047}   # answered, but not with what was asked
+            return said
+        outcome = calibration.calibrate_tasmota(command, sleep=lambda _: None)
+        self.assertEqual(outcome, {"skipped": "Tasmota did not take its calibration", "factor": 1.02})
 
     def test_one_calibrated_by_hand_is_left_as_it_was(self):
         # PowerSet against a meter, say: neither the chip's numbers nor ours.
@@ -141,7 +171,7 @@ class CalibrateTasmotaTests(unittest.TestCase):
 
 
 class BackupCalibrationTests(unittest.TestCase):
-    """The factory calibration, as a plug's Sonoff backup holds it."""
+    """The factory calibration, as a device's Sonoff backup holds it."""
 
     def read(self, content):
         from tools.espressif.inspect_stock_nvs import Value
@@ -163,28 +193,28 @@ class StepTests(unittest.TestCase):
 
     def ctx(self, command=None):
         from types import SimpleNamespace
-        inputs = {"plug_ip": "192.0.2.51", "plug_mac": "12:34:56:ab:cd:ef"}
+        inputs = {"device_ip": "192.0.2.51", "device_mac": "12:34:56:ab:cd:ef"}
         return SimpleNamespace(device=SimpleNamespace(command=command), esphome_key=None,
                                state=SimpleNamespace(input=inputs.get))
 
     def test_tasmota_is_calibrated_at_f4_with_the_backups_numbers(self):
-        plug = FakeTasmota()
+        fake = FakeTasmota()
         with mock.patch.object(wifi, "backup_calibration", return_value=calibration.parse(FACTORY)), \
              mock.patch.object(output, "say") as said, mock.patch.object(calibration.time, "sleep"):
-            outcome = tasmota.calibrate_tasmota_meter(self.ctx(lambda text, timeout=None: plug(text)))
-        self.assertEqual(plug.settings, {"VoltageCal": 1866, "CurrentCal": 15589, "PowerCal": 5251})
+            outcome = tasmota.calibrate_tasmota_meter(self.ctx(lambda text, timeout=None: fake(text)))
+        self.assertEqual(fake.settings, {"VoltageCal": 1866, "CurrentCal": 15589, "PowerCal": 5251})
         self.assertTrue(outcome["factory"])
         self.assertIn("factory calibration from its backup", said.call_args.args[0])
 
-    def test_a_plug_that_does_not_answer_is_left_as_tasmota_calibrates_it(self):
+    def test_a_device_that_does_not_answer_is_left_as_tasmota_calibrates_it(self):
 
         def command(text, timeout=None):
             raise device.DeviceError("no answer")
         with mock.patch.object(wifi, "backup_calibration", return_value=None), \
-             mock.patch.object(output, "tell") as told:
+             mock.patch.object(output, "say") as said:
             outcome = tasmota.calibrate_tasmota_meter(self.ctx(command))
-        self.assertEqual(outcome, {"skipped": "no answer"})
-        self.assertIn("left as it is", told.call_args.args[0])
+        self.assertEqual(outcome, {"skipped": "no answer"})   # the report says so
+        self.assertIn("left as it is", said.call_args.args[0])
 
     def test_a_rerun_on_tasmota_checks_its_meter(self):
         with mock.patch.object(unlock, "unlock_tasmota") as unlocked, \

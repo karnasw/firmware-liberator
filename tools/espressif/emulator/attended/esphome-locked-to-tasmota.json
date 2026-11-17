@@ -1,0 +1,80 @@
+{
+ "about": "From an ESPHome with a web login and only encrypted updates to Tasmota: the login and the API encryption key each typed wrongly first",
+ "start": "stub-suite-esphome",
+ "prep": [
+  [
+   "locked esphome",
+   "login and updates"
+  ]
+ ],
+ "answers": [
+  {
+   "when": "Which device is this run for",
+   "type": "1\r"
+  },
+  {
+   "when": "What now",
+   "type": "1\r",
+   "times": 4
+  },
+  {
+   "when": "ESPHome web user name",
+   "type": "admin\r",
+   "times": 2
+  },
+  {
+   "when": "ESPHome web password",
+   "type": "wrong-1\r"
+  },
+  {
+   "when": "ESPHome web password",
+   "type": "test-login-1\r"
+  },
+  {
+   "when": "Press any key",
+   "type": "x"
+  },
+  {
+   "when": "Which firmware should the device have",
+   "type": "1\r"
+  },
+  {
+   "when": "ESPHome API encryption key",
+   "type": "not-a-key\r"
+  },
+  {
+   "when": "ESPHome API encryption key",
+   "type": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=\r"
+  },
+  {
+   "when": "This computer's password \\(for sudo\\)",
+   "type": "autoflash\r",
+   "times": 6,
+   "optional": true
+  },
+  {
+   "when": "Type .+ to go ahead",
+   "type": "PROCEED\r",
+   "times": 3
+  },
+  {
+   "when": "What next",
+   "type": "q\r"
+  },
+  {
+   "when": "\\(y/N[^)]*\\)|\\(Y/n[^)]*\\)",
+   "type": "y\r",
+   "times": 3,
+   "optional": true
+  },
+  {
+   "when": "\\[[Yy]/n\\]",
+   "type": "n\r",
+   "optional": true
+  }
+ ],
+ "expect": {
+  "exit": 0,
+  "result": "Converted"
+ }
+}

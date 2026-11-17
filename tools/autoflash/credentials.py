@@ -24,18 +24,22 @@ KEYS = {
     "EWELINK_EMAIL": None,  # an email is scrubbed from the log anyway
     "EWELINK_PASSWORD": "ewelink-password",
     "AUTOFLASH_SUDO_PASSWORD": "sudo-password",
-    # Only for a plug on an ESPHome that cannot say its Wi-Fi password (one
-    # older than this project's 1.1.0, or whose API has an encryption key):
+    # Only for a device on an ESPHome that cannot say its Wi-Fi password (one
+    # of this project's first builds, or whose API has an encryption key):
     # no password given means an open network.
     "AUTOFLASH_WIFI_SSID": "wifi-name",
     "AUTOFLASH_WIFI_PASSWORD": "wifi-password",
-    # Only for a plug on Tasmota with a web password, or on ESPHome with an
+    # Only for a device on Tasmota with a web password, or on ESPHome with an
     # update password, a web login or an API encryption key.
     "AUTOFLASH_TASMOTA_PASSWORD": "tasmota-password",
     "AUTOFLASH_ESPHOME_OTA_PASSWORD": "esphome-password",
     "AUTOFLASH_ESPHOME_WEB_USER": None,  # a user name, not a secret
     "AUTOFLASH_ESPHOME_WEB_PASSWORD": "esphome-web-password",
     "AUTOFLASH_ESPHOME_API_KEY": "esphome-api-key",
+    # The run's report to the project's API (report_upload.py): "1" sends
+    # none; "dev" marks the maintainer's own testing, left out of the figures.
+    "AUTOFLASH_NO_REPORT": None,
+    "AUTOFLASH_REPORT_TAG": None,
     # Not for a run: opens the maintainer's sealed Sonoff backup
     # (tools/repo/private_backup.py). Known, so a .env holding it still loads.
     "AUTOFLASH_BACKUP_KEY": "backup-key",

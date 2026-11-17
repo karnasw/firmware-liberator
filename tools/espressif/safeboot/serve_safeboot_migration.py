@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Serve one guarded Safeboot migration phase to one LAN device.
 
-Each invocation exposes exactly one rendered Berry program.  The plug uploads
+Each invocation exposes exactly one rendered Berry program.  The device uploads
 read-back flash bytes to this server, which validates them before recording a
 phase PASS.  The irreversible commit payload is unavailable unless the
 repository lock is deliberately renamed and an explicit risk flag is given.
@@ -24,34 +24,29 @@ import sys
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 if __package__ in (None, ""):  # run as a script: the repository root, for `tools.`
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from tools.espressif import layouts  # noqa: E402
 from tools.espressif.safeboot.safeboot_migration import (  # noqa: E402
     CANONICAL_NVS_SIZE,
     OTADATA_SIZE,
     RECOVERY_ARTIFACT,
     SAFEBOOT_SIZE,
     SECTOR_SIZE,
-    SOURCE_PARTITIONS,
-    SOURCE_TABLE_SHA256,
     TABLE_SIZE,
-    TARGET_PARTITIONS,
-    TARGET_TABLE_SHA256,
-    INTERIM_TABLE_SHA256,
-    LOW_REGIONS_OFFSET,
-    LOW_REGIONS_SIZE,
-    MOVED_LOW_OFFSET,
+    OFFICIAL_TABLE_SHA256,
     analyze_canonical_nvs,
-    interim_table,
     artifact_bytes,
     load_evidence,
     load_manifest,
+    manifest_chip,
     parse_partition_sector,
     provide_in_memory,
     require_exact_partitions,
+    require_tasmota_table,
     require_pinned_artifacts,
     require_recovery_manifest,
     is_recovery_manifest,
@@ -60,19 +55,20 @@ from tools.espressif.safeboot.safeboot_migration import (  # noqa: E402
     sha256_bytes,
     verify_manifest_files,
 )
+from tools.autoflash import hostsys  # noqa: E402
 from tools.autoflash.plans import Plan, PlanError
 
 
 ROOT = Path(__file__).resolve().parents[3]
 TEMPLATE_DIR = Path(__file__).resolve().parent / "repartition" / "berry"
 LOCK_PATH = Path(__file__).resolve().parents[1] / "REPARTITION_LOCK"
-COMMIT_FLAG = "--i-accept-power-loss-may-require-opening-the-plug"
+COMMIT_FLAG = "--i-accept-power-loss-may-require-opening-the-device"
 PHASES = ("preflight", "stage", "commit", "restore", "plan")
 # plan: whatever tools/autoflash/plans.py planned (installing ESPHome, leaving
 # Tasmota, going back to Sonoff), given whole on standard input.
 MAX_POST_SIZE = 9000
-# Longer than a phase keeps the plug busy, retrying included (about a minute),
-# so a plug that could report has reported.  A router restart is waited out
+# Longer than a phase keeps the device busy, retrying included (about a minute),
+# so a device that could report has reported.  A router restart is waited out
 # by the tool between tries, not here.
 IDLE_LIMIT = 120
 RESTORE_FLAG = "--i-confirm-normal-app-is-stable"
@@ -218,7 +214,9 @@ class MigrationState:
         max_evidence_age: int,
         plan: "Plan | None" = None,
         recovery_unproven: bool = False,
+        layout: layouts.Layout = layouts.SONOFF_DUAL_OTA,
     ) -> None:
+        self.layout = layout
         self.manifest_path = manifest_path
         self.manifest = manifest
         self.phase = phase
@@ -228,9 +226,9 @@ class MigrationState:
         self.arm_token = secrets.token_urlsafe(15)
         self.complete = False
         self.result_status: str | None = None
-        # Why the plug stopped, when it said so (receive_failure).
+        # Why the device stopped, when it said so (receive_failure).
         self.failure_reason: str | None = None
-        # When the plug last asked for anything: the server stops waiting once
+        # When the device last asked for anything: the server stops waiting once
         # it has been silent too long, rather than for the whole --wait.
         self.last_heard = time.monotonic()
         self.captures: dict[str, dict[int, bytes]] = {}
@@ -238,7 +236,7 @@ class MigrationState:
 
         if phase == "plan":
             # Given on standard input with all it writes, never as a file:
-            # some of it holds the Wi-Fi password or the plug's own secrets.
+            # some of it holds the Wi-Fi password or the device's own secrets.
             if plan is None:
                 raise ValueError("the plan phase needs its plan (--plan-from-stdin)")
             self.plan = plan
@@ -253,7 +251,7 @@ class MigrationState:
             raise ValueError("only the restore can go without the recovery Safeboot")
         # The restore of a run begun by an earlier version, whose startup
         # firmware this checkout cannot rebuild: it goes without it, and the
-        # plug's own checks (official table, official app0 running) stand.
+        # device's own checks (official table, official app0 running) stand.
         self.recovery_unproven = recovery_unproven
         self.safeboot_name = safeboot_artifact_name(manifest)
         self.safeboot = (b"" if recovery_unproven
@@ -262,11 +260,9 @@ class MigrationState:
         self.app = artifact_bytes(manifest_path, manifest, "app")
         self.target_table = artifact_bytes(manifest_path, manifest, "target_table")
         target_report = parse_partition_sector(self.target_table)
-        require_exact_partitions(target_report, TARGET_PARTITIONS)
-        if target_report["sha256"] != TARGET_TABLE_SHA256:
-            raise ValueError("target table differs from the reviewed official sector")
+        require_tasmota_table(target_report)
         self.target_table_sha256 = target_report["sha256"]
-        self.interim_table = interim_table() if phase == "commit" else b""
+        self.interim_table = layout.interim_table() if phase == "commit" else b""
 
         self.live_preflight: dict[str, Any] | None = None
         self.stage_evidence: dict[str, Any] | None = None
@@ -276,7 +272,7 @@ class MigrationState:
             )
             if self.live_preflight.get("manifest_sha256") != self.manifest_sha256:
                 raise ValueError("preflight evidence belongs to a different manifest")
-            if self.live_preflight.get("table_sha256") != SOURCE_TABLE_SHA256:
+            if self.live_preflight.get("table_sha256") != layout.table_sha256:
                 raise ValueError("preflight evidence has the wrong source table")
         if phase == "commit":
             self.stage_evidence = load_evidence(
@@ -291,9 +287,9 @@ class MigrationState:
         self.commit_evidence: dict[str, Any] | None = None
         if phase == "restore":
             # Any age: unlike preflight and staging, nothing the commit recorded
-            # goes stale.  The restore closure checks the live plug itself - the
+            # goes stale.  The restore closure checks the live device itself - the
             # official table, the running official app0 and the recovery
-            # Safeboot still in place - before it writes anything, so a plug
+            # Safeboot still in place - before it writes anything, so a device
             # left for days on the recovery Safeboot can still be finished.
             #
             # Not the whole manifest either: it changes for reasons the restore
@@ -301,11 +297,16 @@ class MigrationState:
             # the restore relies on is held to the commit's record instead: the
             # table it wrote, and the exact recovery Safeboot it put in place.
             #
-            # A commit whose report was lost (it is sent as the plug restarts)
+            # A commit whose report was lost (it is sent as the device restarts)
             # leaves the staging's record instead, of the image it then copied.
             #
             # Unproven, only the table is held to the commit's record, where
             # there is one: the image it names is not one this checkout has.
+            #
+            # The commit's table is this bundle's, or Tasmota's own: what a
+            # run begun before the identity's sector committed, its bundle
+            # since made again with the sector's table. The device's own check
+            # takes either too.
             if recovery_unproven:
                 try:
                     self.commit_evidence = load_evidence(
@@ -314,7 +315,7 @@ class MigrationState:
                 except ValueError:
                     print("  No commit report; the device's own check of its table stands.")
                 else:
-                    if self.commit_evidence.get("target_table_sha256") != self.target_table_sha256:
+                    if self.commit_evidence.get("target_table_sha256") not in self.committable_tables():
                         raise ValueError("commit evidence names a different partition table")
                 print("  The startup firmware on the device is not one this checkout can rebuild:")
                 print("  whatever follows the official sectors is written over.")
@@ -329,14 +330,19 @@ class MigrationState:
                     raise ValueError("neither commit nor stage evidence matches recovery Safeboot") from None
                 print("  The commit's report was lost; going by the staging's record of the image.")
             else:
-                if self.commit_evidence.get("target_table_sha256") != self.target_table_sha256:
+                if self.commit_evidence.get("target_table_sha256") not in self.committable_tables():
                     raise ValueError("commit evidence names a different partition table")
                 if self.commit_evidence.get("safeboot_sha256") != sha256_bytes(self.safeboot):
                     raise ValueError("commit evidence does not match recovery Safeboot")
 
+    def committable_tables(self) -> tuple[str, str]:
+        """The tables a commit may have written: this bundle's, or Tasmota's own."""
+        return self.target_table_sha256, OFFICIAL_TABLE_SHA256
+
     def replacements(self) -> dict[str, str]:
         if self.phase == "plan":
             return {
+                "ARCH": manifest_chip(self.manifest).key,
                 "BASE_URL": self.base_url,
                 "SESSION": self.session,
                 "PLAN_NAME": self.plan.name,
@@ -356,15 +362,20 @@ class MigrationState:
             self.live_preflight["nvs_sha256"] if self.live_preflight is not None else ""
         )
         return {
+            "ARCH": manifest_chip(self.manifest).key,
             "BASE_URL": self.base_url,
             "SESSION": self.session,
             "ARM_TOKEN": self.arm_token,
-            "SOURCE_TABLE_SHA256": SOURCE_TABLE_SHA256,
+            "SOURCE_TABLE_SHA256": self.layout.table_sha256,
             "TARGET_TABLE_SHA256": self.target_table_sha256,
-            "INTERIM_TABLE_SHA256": INTERIM_TABLE_SHA256,
-            "LOW_REGIONS_OFFSET": str(LOW_REGIONS_OFFSET),
-            "LOW_REGIONS_SIZE": str(LOW_REGIONS_SIZE),
-            "MOVED_LOW_OFFSET": str(MOVED_LOW_OFFSET),
+            "OFFICIAL_TABLE_SHA256": OFFICIAL_TABLE_SHA256,
+            "INTERIM_TABLE_SHA256": self.layout.interim_sha256,
+            "LOW_REGIONS_OFFSET": str(self.layout.nvs),
+            "LOW_REGIONS_SIZE": str(self.layout.low_size),
+            "MOVED_LOW_OFFSET": str(self.layout.moved_low),
+            "OLD_OTADATA": str(self.layout.otadata),
+            "STAGE_ADDRESS": str(self.layout.ota[0]),
+            "STAGE_LIMIT": str(self.layout.ota[1]),
             "LIVE_NVS_SHA256": live_nvs,
             "SAFEBOOT_SHA256": sha256_bytes(self.safeboot),
             "SAFEBOOT_LENGTH": str(safeboot_length),
@@ -429,7 +440,7 @@ class MigrationState:
         return data[index * SECTOR_SIZE : (index + 1) * SECTOR_SIZE]
 
     def receive_capture(self, kind: str, index: int, body: bytes) -> None:
-        # Only what this computer does not have: the plug's own regions, and
+        # Only what this computer does not have: the device's own regions, and
         # where a restore cut off part way had got to.
         allowed = {
             "preflight": {"table": TABLE_SIZE, "nvs": CANONICAL_NVS_SIZE, "otadata": OTADATA_SIZE},
@@ -456,7 +467,7 @@ class MigrationState:
         chunks[index] = data
 
     def restore_from(self) -> int:
-        """Where the restore should carry on, from the plug's sector digests."""
+        """Where the restore should carry on, from the device's sector digests."""
         raw = self.assembled_capture("factory-sha", FACTORY_SECTORS * 32)
         digests = [raw[i:i + 32] for i in range(0, len(raw), 32)]
         start = restore_resume_point(digests, self.official_safeboot,
@@ -493,7 +504,7 @@ class MigrationState:
             self._finish_restore(report)
 
     def receive_failure(self, requested_phase: str, body: bytes) -> None:
-        """The plug stopped, and says why: record it and stop waiting.
+        """The device stopped, and says why: record it and stop waiting.
 
         A phase that already reported (a commit that failed while writing sends
         its own FAIL report, with the rollback result) keeps that report.
@@ -537,8 +548,8 @@ class MigrationState:
         nvs = self.assembled_capture("nvs", CANONICAL_NVS_SIZE)
         otadata = self.assembled_capture("otadata", OTADATA_SIZE)
         table_report = parse_partition_sector(table)
-        require_exact_partitions(table_report, SOURCE_PARTITIONS)
-        if table_report["sha256"] != SOURCE_TABLE_SHA256:
+        require_exact_partitions(table_report, self.layout.partitions())
+        if table_report["sha256"] != self.layout.table_sha256:
             raise ValueError("uploaded table is not the allow-listed source table")
         nvs_report = analyze_canonical_nvs(nvs)
         if not nvs_report["ready"] and not self.recovery_mode:
@@ -591,7 +602,7 @@ class MigrationState:
         expected = {
             "status": "PASS",
             "current_ota": "1",
-            "table_sha256": SOURCE_TABLE_SHA256,
+            "table_sha256": self.layout.table_sha256,
             "nvs_sha256": self.live_preflight["nvs_sha256"],
             "staged_sha256": sha256_bytes(self.safeboot),
             "staged_size": str(len(self.safeboot)),
@@ -641,14 +652,14 @@ class MigrationState:
 
     def _finish_plan(self, report: dict[str, str]) -> None:
         plan = self.plan
-        # Each write's hash, as the plug read it back, is in the report.
+        # Each write's hash, as the device read it back, is in the report.
         expected = {"status": "PASS", "plan": plan.name, **plan.expected()}
         # Berry writes its hashes in capitals.
         report = {key: value.lower() if key.startswith("step") else value
                   for key, value in report.items()}
         require_report_fields(report, expected)
         # Hashes only: what a plan writes can hold the Wi-Fi password or the
-        # plug's own secrets, so none of its bytes are kept.
+        # device's own secrets, so none of its bytes are kept.
         evidence = self._base_evidence("plan", "PASS")
         evidence.update({"plan": plan.name, "steps": plan.summary(),
                          "table_sha256": plan.table_sha256,
@@ -659,7 +670,7 @@ class MigrationState:
 
 
 def chunk_body(chunk: bytes) -> bytes:
-    """A chunk as the plug takes it: its hex, then its SHA-256's. The plug
+    """A chunk as the device takes it: its hex, then its SHA-256's. The device
     checks the one against the other before writing, and asks again for a
     chunk damaged on its way; nothing it wrote is sent back, as each phase's
     report hashes the whole region it wrote."""
@@ -669,9 +680,9 @@ def chunk_body(chunk: bytes) -> bytes:
 class MigrationHandler(http.server.BaseHTTPRequestHandler):
     server_version = "AutoflashSafebootMigration/1.0"
     protocol_version = "HTTP/1.1"
-    # A request the plug stopped sending part way - its network went, say - is
+    # A request the device stopped sending part way - its network went, say - is
     # dropped after this long, not waited on for ever: one request at a time is
-    # served, and the wait for the plug's result is checked between them.
+    # served, and the wait for the device's result is checked between them.
     timeout = 30
 
     def log_message(self, fmt: str, *args: object) -> None:
@@ -697,7 +708,7 @@ class MigrationHandler(http.server.BaseHTTPRequestHandler):
         if not self._allowed():
             return
         path = urllib.parse.urlsplit(self.path).path
-        # Worked out under the lock, sent after it: a plug slow to take the
+        # Worked out under the lock, sent after it: a device slow to take the
         # reply holds up nobody else.
         with self.server.lock:
             status, body, content_type = self._answer_get(path, self.server.state)
@@ -735,7 +746,7 @@ class MigrationHandler(http.server.BaseHTTPRequestHandler):
         if content_length < 0 or content_length > MAX_POST_SIZE:
             self._response(413, b"body too large\n")
             return
-        # Read before taking the lock: a body the plug stopped sending part way
+        # Read before taking the lock: a body the device stopped sending part way
         # waits out MigrationHandler.timeout here, holding up nobody else.
         body = self.rfile.read(content_length)
         path = urllib.parse.urlsplit(self.path).path
@@ -761,9 +772,9 @@ class MigrationHandler(http.server.BaseHTTPRequestHandler):
 
 
 class MigrationServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
-    # Each request in a thread of its own. After a network outage the plug's
+    # Each request in a thread of its own. After a network outage the device's
     # abandoned requests are still open here, each waited on for up to
-    # MigrationHandler.timeout; served one at a time, they held up the plug's
+    # MigrationHandler.timeout; served one at a time, they held up the device's
     # next request past the five seconds it waits for a reply, so the phase
     # failed with the network back. State changes take `lock` in turn.
     daemon_threads = True
@@ -776,14 +787,14 @@ class MigrationServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         self.lock = threading.Lock()
 
     def handle_error(self, request: Any, client_address: Any) -> None:
-        # One line, not socketserver's traceback: a request the plug abandoned
+        # One line, not socketserver's traceback: a request the device abandoned
         # (MigrationHandler.timeout) is expected when its network drops.
         error = sys.exc_info()[1]
         print(f"  [{client_address[0]}] request dropped: {type(error).__name__}: {error}")
 
     def server_bind(self) -> None:
         # Not HTTPServer's own, which looks the address up by name between
-        # binding and listening: on Windows that takes seconds, and a plug
+        # binding and listening: on Windows that takes seconds, and a device
         # connecting meanwhile is dropped and gives up.
         socketserver.TCPServer.server_bind(self)
         self.server_name, self.server_port = self.server_address[:2]
@@ -812,13 +823,17 @@ def berry_loader(base_url: str, phase: str) -> str:
     return prefix + f"return autoflash_urlbeload('{url}')"
 
 
-def wait_for_result(server: Any, state: MigrationState, wait: float, idle: float) -> str:
-    """Serve the plug until its result: "complete", or "silent" once it has
-    sent nothing for `idle` seconds, or "timeout" after `wait` in all."""
+def wait_for_result(server: Any, state: MigrationState, wait: float, idle: float,
+                    abandoned: Callable[[], bool] = lambda: False) -> str:
+    """Serve the device until its result: "complete", or "silent" once it has
+    sent nothing for `idle` seconds, "timeout" after `wait` in all, or
+    "abandoned" once the tool that started this has gone (hostsys.parent_gone)."""
     deadline = time.monotonic() + wait
     state.last_heard = time.monotonic()
     while not state.complete:
         now = time.monotonic()
+        if abandoned():
+            return "abandoned"
         if now - state.last_heard > idle:
             return "silent"
         if now >= deadline:
@@ -828,9 +843,11 @@ def wait_for_result(server: Any, state: MigrationState, wait: float, idle: float
 
 
 def main() -> int:
+    abandoned = hostsys.parent_gone()   # as it starts: its parent may go before it serves
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=PHASES)
     parser.add_argument("--manifest", type=Path, default=Path("captures/safeboot-migration/manifest.json"))
+    parser.add_argument("--layout", default=layouts.SONOFF_DUAL_OTA.key, help="the device's stock partition table")
     parser.add_argument("--listen-ip", required=True)
     parser.add_argument("--listen-port", type=int, default=8089)
     parser.add_argument("--device-ip", required=True)
@@ -895,7 +912,7 @@ def main() -> int:
         # A plan brings what it writes, not the recovery Safeboot, which only
         # the migration phases use: that one is absent here, and its
         # provenance, proved from its bytes, is not this phase's concern.
-        # An unproven restore goes without it too: the plug has another.
+        # An unproven restore goes without it too: the device has another.
         planned = args.phase == "plan"
         without_recovery = planned or args.recovery_unproven
         verify_manifest_files(manifest_path, manifest, allow_unprovided=without_recovery)
@@ -908,7 +925,7 @@ def main() -> int:
 
     refusal = phase_confirmation_refusal(
         args.phase,
-        args.i_accept_power_loss_may_require_opening_the_plug,
+        args.i_accept_power_loss_may_require_opening_the_device,
         args.i_confirm_normal_app_is_stable,
     )
     if refusal is not None:
@@ -919,7 +936,7 @@ def main() -> int:
     try:
         state = MigrationState(
             manifest_path, manifest, args.phase, base_url, evidence_dir, args.max_evidence_age,
-            plan=plan, recovery_unproven=args.recovery_unproven,
+            plan=plan, recovery_unproven=args.recovery_unproven, layout=layouts.of(args.layout),
         )
         state.sensitive_captures = not args.no_sensitive_captures
         rendered = state.render_berry()
@@ -928,7 +945,7 @@ def main() -> int:
         return 2
 
     # Listening before the loader is printed: whoever reads it - the
-    # autoflash tool, at once - may have the plug fetch straight away.
+    # autoflash tool, at once - may have the device fetch straight away.
     try:
         server = MigrationServer((listen_ip, args.listen_port), device_ip, state)
     except OSError as exc:
@@ -948,13 +965,17 @@ def main() -> int:
         print(f'{function_name}("{state.arm_token}")')
 
     try:
-        outcome = wait_for_result(server, state, args.wait, args.idle)
+        outcome = wait_for_result(server, state, args.wait, args.idle, abandoned)
     except KeyboardInterrupt:
         print("\nStopped; no phase result was recorded.")
         return 130
     finally:
         server.server_close()
 
+    if outcome == "abandoned":
+        print("STOPPED: the tool that started this server has gone; nothing more is served.",
+              file=sys.stderr)
+        return 3
     if outcome != "complete":
         if outcome == "silent":
             print(f"TIMEOUT: the device has sent nothing for {args.idle // 60} minutes, and "

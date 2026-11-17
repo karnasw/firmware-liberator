@@ -1,13 +1,13 @@
-"""Sending an eWeLink plug new firmware: the one way its stock firmware takes
+"""Sending an eWeLink device new firmware: the one way its stock firmware takes
 any, and the first write of every conversion.
 
-The cloud passes the plug an `upgrade` command naming where to fetch the file
-and its SHA-256; the plug fetches it from this computer in ranges and checks
+The cloud passes the device an `upgrade` command naming where to fetch the file
+and its SHA-256; the device fetches it from this computer in ranges and checks
 it, then installs it and restarts.  deliver() does the whole exchange for one
-plug: signs in to the owner's eWeLink account, finds the plug, waits for it to
+device: signs in to the owner's eWeLink account, finds the device, waits for it to
 be online, opens the cloud's WebSocket as the app does, serves the file to the
-plug's address alone, sends the command and watches the delivery.  The file
-is whatever the plug's updater takes - an ESP32-C3 app wrapped for the S60
+device's address alone, sends the command and watches the delivery.  The file
+is whatever the device's updater takes - an ESP32-C3 app wrapped for the S60
 (tools/espressif/serve_tasmota_ota.py checks one), a FOTA container for the
 S61 (tools/beken/fota_wrap.py) - and is checked before it comes here.
 """
@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import http.server
 import json
+import re
 import socket
 import sys
 import threading
@@ -29,12 +30,12 @@ from typing import Any, Callable
 if __package__ in (None, ""):  # run as a script: the repository root, for `tools.`
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tools.ewelink.get_device_key import EwelinkError, get_devices, login_session, select_device  # noqa: E402
+from tools.ewelink.get_device_key import Account, EwelinkError, get_devices, select_device  # noqa: E402
 from tools.ewelink.relay import app_socket  # noqa: E402
 from tools.ewelink.websocket_minimal import WebSocket, WebSocketError  # noqa: E402
 
 
-# The body is sent in pieces this size, and a plug may take this long to take
+# The body is sent in pieces this size, and a device may take this long to take
 # the next one (seconds).
 PIECE = 16 * 1024
 SEND_STALL = 60.0
@@ -44,7 +45,7 @@ class FirmwareHandler(http.server.BaseHTTPRequestHandler):
     """Serve the wrapped Tasmota binary, including Range request support."""
     server_version = "TasmotaOTA/1.0"
     protocol_version = "HTTP/1.1"  # keep-alive by default
-    # The plug holds its keep-alive connection open after the last range. With
+    # The device holds its keep-alive connection open after the last range. With
     # no idle limit the handler waits on it forever, and shutdown() - which
     # waits for the handler - never returns.
     timeout = 10
@@ -67,6 +68,7 @@ class FirmwareHandler(http.server.BaseHTTPRequestHandler):
         if self.client_address[0] != self.server.device_ip:
             self._empty_response(403)
             return
+        self.server.last_asked = time.monotonic()
         path = urllib.parse.urlsplit(self.path).path
         if path.lstrip("/") not in self.server.names:
             self._empty_response(404)
@@ -99,7 +101,7 @@ class FirmwareHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         self.end_headers()
         # Sent a piece at a time, each counted once it is out, so a download
-        # cut off part way says how far it got. A plug may pause between
+        # cut off part way says how far it got. A device may pause between
         # pieces to write its flash: longer than the idle limit (timeout).
         self.connection.settimeout(SEND_STALL)
         for start in range(0, len(chunk), PIECE):
@@ -107,6 +109,7 @@ class FirmwareHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(piece)
             self.server.bytes_served += len(piece)
             self.server.served_ranges.append((lo + start, lo + start + len(piece) - 1))
+            self.server.last_asked = time.monotonic()
         self.connection.settimeout(self.timeout)
         if self.server.live:
             unique = self.server.unique_bytes_served()
@@ -134,11 +137,19 @@ class FirmwareServer(http.server.ThreadingHTTPServer):
         self.say = say
         self.bytes_served = 0
         self.served_ranges: list[tuple[int, int]] = []
+        self.last_asked = 0.0  # when the device last asked for or took anything
         # One updating progress line on a terminal; full per-request lines in
         # logs and tests, and to `say` whenever live is False (a caller that
         # keeps the terminal to itself, as Autoflash does).
         self.live = sys.stdout.isatty() if live is None else live
         self.progress_shown = False
+
+    def handle_error(self, request, client_address) -> None:
+        # One line, to `say`, not socketserver's traceback on the screen: a
+        # request the device abandoned - its Wi-Fi gone a moment as it
+        # downloads, say - is expected, and it asks again for what it lacks.
+        error = sys.exc_info()[1]
+        self.say(f"  [{client_address[0]}] request dropped: {type(error).__name__}: {error}")
 
     def end_progress(self) -> None:
         if self.progress_shown:
@@ -183,7 +194,7 @@ CLOUD_PRIVATE_KEYS = {"apikey", "deviceid", "at", "ssid", "bssid", "ip", "mac", 
 def describe_cloud(message: dict[str, Any], seq: str) -> str | None:
     """One plain line for a cloud message during delivery, or None to stay quiet.
 
-    The upgrade reply, the plug going offline or coming back, and what the plug
+    The upgrade reply, the device going offline or coming back, and what the device
     reports about itself are what matter here; account and device identifiers
     are never printed.
     """
@@ -206,8 +217,10 @@ def describe_cloud(message: dict[str, Any], seq: str) -> str | None:
     return f"Cloud: {action or 'message'}{error}{detail}"
 
 
-# How long a plug offline in eWeLink is waited for before the send is refused.
-OFFLINE_WAIT = 180.0
+# How long a device offline in eWeLink is waited for before the send is refused.
+# After a send cut off part way, the device stays away about 300 s, then restarts
+# by itself and is back some 18 s later (seen on the real cloud, 2026-11-06).
+OFFLINE_WAIT = 330.0
 
 
 def until_online(device: dict, look_again, *, sleep=time.sleep, say=print) -> dict:
@@ -215,24 +228,72 @@ def until_online(device: dict, look_again, *, sleep=time.sleep, say=print) -> di
     waited = 0.0
     while not device.get("online") and waited < OFFLINE_WAIT:
         if waited == 0:
-            say(f"Device is offline in eWeLink; waiting up to {OFFLINE_WAIT:.0f}s for it to come back...")
+            say(f"Device is offline in eWeLink; waiting up to {OFFLINE_WAIT:.0f}s for it to come back "
+                "(after a send cut off part way it stays away about five minutes)...")
         sleep(10)
         waited += 10
         device = look_again()
     return device
 
 
-# Said when a send failed before the upgrade command went out: the plug was
+# Said when a send failed before the upgrade command went out: the device was
 # never asked to fetch the installer, so it never came - which the run must
 # not blame on this computer's firewall (tools.autoflash.routes.espressif.installer.bridge_failure_advice).
 NOT_SENT = "The upgrade command was not sent: nothing reached the device."
 
+# A command the device lost is not passed on again by eWeLink: seen after a power
+# cut part way through the download, the device back online and nothing more asked
+# for. It is sent again, this many times in all: when the device comes back and has
+# not asked for the file after RESEND_SETTLE seconds, or, with the device online all
+# along as far as eWeLink says and nothing asked for since the command, after
+# RESEND_QUIET seconds: a command that never reached it. One that did, cut off
+# part way, waits for the device to be back - sent again sooner, it went to a device
+# still starting, a send wasted (seen on the S61). Only then: a device fetching is
+# left alone, and it checks the file's SHA-256 whatever it is sent. A send again has RESEND_WAIT seconds, if the first's are nearly up.
+COMMAND_SENDS = 3
+RESEND_SETTLE = 8.0
+RESEND_QUIET = 45.0
+RESEND_WAIT = 60.0
+
+
+@dataclass
+class Resending:
+    """Whether a command sent has been lost, from what eWeLink says of the device
+    and when the device last asked this computer for anything."""
+    sent_at: float
+    away: bool = False       # offline in eWeLink since the command
+    back_at: float | None = None
+
+    def heard(self, message: dict[str, Any], now: float) -> None:
+        params = message.get("params") if isinstance(message.get("params"), dict) else {}
+        if message.get("action") == "sysmsg" and "online" in params:
+            self.away = not params["online"]
+            self.back_at = now if params["online"] else None
+
+    def lost(self, asked_at: float, now: float) -> bool:
+        if self.back_at is not None and asked_at > self.back_at:
+            self.back_at = None   # it came back and is fetching
+        quiet = now - max(self.sent_at, asked_at)
+        if self.back_at is not None:
+            return quiet >= RESEND_SETTLE and now - self.back_at >= RESEND_SETTLE
+        return not self.away and asked_at <= self.sent_at and quiet >= RESEND_QUIET
+
+
+# A device's answer to an update while one cut off part way still holds its
+# updater: refused until it is switched off and on (seen on the Beken S61; the
+# S60, cut off, leaves eWeLink instead, so this is looked for whatever the device).
+BUSY = 410
+
+
+def busy(error: str | None) -> bool:
+    """Whether a send was refused as the device being busy (BUSY)."""
+    return bool(re.search(rf"\berror {BUSY}\b", error or ""))
 
 
 @dataclass
 class Delivery:
     """How a send went: whether the command went out, whether every byte of the
-    file reached the plug, how long it took, and what went wrong if it did."""
+    file reached the device, how long it took, and what went wrong if it did."""
     sent: bool = False
     complete: bool = False
     seconds: float = 0.0
@@ -241,16 +302,22 @@ class Delivery:
     interrupted: bool = False
 
 
-def deliver(*, email: str, password: str, country_code: str, region: str, device_id: str,
+def deliver(*, account: Account, device_id: str,
             firmware: bytes, version: str, listen_ip: str, listen_port: int, device_ip: str,
             names: tuple[str, ...] = ("user1.bin", "user2.bin"), wait: float = 120.0,
             check_device: Callable[[dict[str, Any], str], None] | None = None,
-            say: Callable[[str], None] = print, live: bool | None = None) -> Delivery:
-    """Send `firmware` to the plug `device_id` through eWeLink, as `version` of
-    its model.  `check_device(device, model)` may refuse the plug (EwelinkError)
+            say: Callable[[str], None] = print, live: bool | None = None,
+            event: Callable[..., None] | None = None,
+            abandoned: Callable[[], bool] = lambda: False) -> Delivery:
+    """Send `firmware` to the device `device_id` through eWeLink, as `version` of
+    its model.  `check_device(device, model)` may refuse the device (EwelinkError)
     once eWeLink says what it is; nothing is sent before it has passed.
-    `live`: the progress line on the terminal (FirmwareServer).
-    Failures before the command goes out leave `sent` False: the plug was
+    `live`: the progress line on the terminal (FirmwareServer). `event(name,
+    **fields)`: told as it starts serving ("phase", phase="serving") and as it
+    sends the command again ("resent", attempt=N) - autoflash's output.event.
+    `abandoned()`: true once there is no one left to serve for - the tool that
+    started serve_tasmota_ota.py gone (hostsys.parent_gone); serving stops.
+    Failures before the command goes out leave `sent` False: the device was
     never asked for anything.  Ctrl-C after every byte was served is a
     delivery completed; before, one interrupted."""
     result = Delivery()
@@ -259,16 +326,14 @@ def deliver(*, email: str, password: str, country_code: str, region: str, device
     thread: threading.Thread | None = None
     ws: WebSocket | None = None
     try:
-        region, session = login_session(email, password, country_code, region)
-        password = ""
-        devices = get_devices(region, session["at"])
-        device = select_device(devices, device_id)
+        device = account.use(lambda region, session: select_device(get_devices(region, session["at"]), device_id))
+        region, session = account.session()
         model = ((device.get("extra") or {}).get("model") or device.get("model") or device.get("productModel") or "")
         say(f"Device: {device.get('name')} ({model}, stock {(device.get('params') or {}).get('fwVersion')})")
         if check_device is not None:
             check_device(device, str(model))
         # Offline a while after a send cut off part way (this computer stopped
-        # mid-download, say): the plug keeps its firmware and comes back to
+        # mid-download, say): the device keeps its firmware and comes back to
         # eWeLink in its own time - or, seen in the emulator, only once it is
         # switched off and on.  Waited for, not refused at once.
         device = until_online(device, lambda: select_device(get_devices(region, session["at"]), device_id),
@@ -287,22 +352,36 @@ def deliver(*, email: str, password: str, country_code: str, region: str, device
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         base_url = f"http://{listen_ip}:{listen_port}"
+        if event is not None:
+            event("phase", phase="serving")
         say(f"Serving only {device_ip} at {' and '.join(f'{base_url}/{name}' for name in names)}")
         say(f"SHA-256 (complete file): {digest}")
         entries = [{"name": name, "downloadUrl": f"{base_url}/{name}", "digest": digest} for name in names]
-        seq = str(int(time.time() * 1000))
-        ws.send_json({
-            "action": "upgrade", "deviceid": device["deviceid"],
-            "apikey": device["apikey"], "userAgent": "app", "sequence": seq,
-            "params": {"model": model, "version": version, "binList": entries},
-        })
+
+
+        def send_command(socket_to_cloud: WebSocket) -> str:
+            sequence = str(int(time.time() * 1000))
+            socket_to_cloud.send_json({
+                "action": "upgrade", "deviceid": device["deviceid"],
+                "apikey": device["apikey"], "userAgent": "app", "sequence": sequence,
+                "params": {"model": model, "version": version, "binList": entries},
+            })
+            return sequence
+
+        seq = send_command(ws)
         result.sent = True
+        sends = 1
+        resending = Resending(time.monotonic())
         say("\nUpgrade command sent with owner-controlled private-LAN URLs.")
         say(f"Waiting up to {wait:.0f}s for device to connect...")
 
         deadline = time.monotonic() + wait
         complete_at: float | None = None
         while time.monotonic() < deadline:
+            if abandoned():
+                server.end_progress()
+                say("  The tool that started this has gone: stopped serving.")
+                break
             # Delivery is checked first.  A quiet cloud socket must never delay
             # the exit: every byte may already be on the device.
             if server.unique_bytes_served() == len(firmware):
@@ -319,7 +398,9 @@ def deliver(*, email: str, password: str, country_code: str, region: str, device
                     line = describe_cloud(msg, seq)
                     if line:
                         say(f"  {line}")
-                    if msg.get("sequence") == seq and msg.get("error", 0) != 0:
+                    resending.heard(msg, time.monotonic())
+                    # A send again refused is no worse than the first still going.
+                    if sends == 1 and msg.get("sequence") == seq and msg.get("error", 0) != 0:
                         raise EwelinkError(f"Cloud rejected upgrade command: error {msg['error']}")
                 except socket.timeout:
                     pass
@@ -335,6 +416,18 @@ def deliver(*, email: str, password: str, country_code: str, region: str, device
                     ws = None
             else:
                 time.sleep(0.25)
+            now = time.monotonic()
+            if (ws is not None and sends < COMMAND_SENDS and complete_at is None
+                    and resending.lost(server.last_asked, now)):
+                sends += 1
+                server.end_progress()
+                say(f"  The device has not asked for the file: upgrade command sent again "
+                    f"(attempt {sends} of {COMMAND_SENDS}).")
+                if event is not None:
+                    event("resent", attempt=sends)
+                seq = send_command(ws)
+                resending = Resending(now)
+                deadline = max(deadline, now + RESEND_WAIT)
     except KeyboardInterrupt:
         # Ctrl-C after the whole image has been delivered is not a failure: the
         # device already has it and is rebooting.  Interrupting before that is.
@@ -346,7 +439,6 @@ def deliver(*, email: str, password: str, country_code: str, region: str, device
     except (EwelinkError, WebSocketError, OSError, KeyError, json.JSONDecodeError) as exc:
         result.error = str(exc)
     finally:
-        password = ""
         if ws is not None:
             ws.close()
         if server is not None:

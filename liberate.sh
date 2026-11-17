@@ -15,7 +15,7 @@
 #
 # The latest release is unpacked into ~/Firmware-Liberator and started there. Run
 # again, the folder is updated in place: the files the release it holds put
-# there are replaced or removed, nothing else - captures/, with the plugs'
+# there are replaced or removed, nothing else - captures/, with the devices'
 # Sonoff backups and an unfinished conversion, and the portable Python in
 # .python/ stay as they are. A git clone there is left to git.
 set -eu

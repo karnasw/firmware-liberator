@@ -37,6 +37,14 @@ class VersionTests(unittest.TestCase):
                              capture_output=True, text=True, check=True).stdout.strip()
         self.assertEqual(out, __version__)
 
+    def test_only_main_is_released(self):
+        # Run by hand from another branch, the workflow would tag that branch's commit.
+        text = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        jobs = re.split(r"(?m)^  (?=[a-z-]+:\n)", text[text.index("\njobs:"):])[1:]
+        self.assertTrue(jobs[0].startswith("version:\n    if: github.ref == 'refs/heads/main'\n"))
+        for job in jobs[1:]:   # each waits on it, so none runs where it is skipped
+            self.assertRegex(job, r"\n    needs: (version|\[version\b)", job.split(":")[0])
+
     def test_the_tool_reports_its_version(self):
         out = subprocess.run([sys.executable, str(ROOT / "tools/autoflash/cli.py"), "--version"],
                              capture_output=True, text=True, check=True).stdout
@@ -63,7 +71,7 @@ class AdoptionTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         self.assertIn("release_notes.py --adoption-tags", workflow)
 
-    def test_each_plug_with_an_esphome_config_names_one(self):
+    def test_each_device_with_an_esphome_config_names_one(self):
         tags = release_notes.adoption_tags()
         self.assertTrue(tags)
         for tag in tags:

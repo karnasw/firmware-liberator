@@ -12,7 +12,7 @@
 // calibration lives in EF40 `elecCalibCoef` (80 B): a u32 magic, a flag byte,
 // then three 24-byte records in the order current, voltage, power, each
 // starting with three int32 a, b, c. Reverse-engineered from the stock
-// firmware's bl0937b driver (docs/beken-s61-emulation.md): it first forms the
+// firmware's bl0937b driver (devices/sonoff-s61/research.md): it first forms the
 // HLW8012-datasheet nominal value from the pulse frequency f (Hz),
 //
 //     I_nom = f * 1.1 * 1000 / 94638          (1 mOhm shunt)
@@ -22,13 +22,13 @@
 // then applies the factory trim  x = a*x^2/1e7 + b*x/1e6 + c/1e6  (the same
 // CoolKit quadratic as the S60). OpenBeken's BL0937 driver also measures f
 // (it counts falling edges per second) and scales it as real = f * cal, so for
-// the linear trim every plug we have seen uses (a = c = 0) the OpenBeken
+// the linear trim every device we have seen uses (a = c = 0) the OpenBeken
 // calibration is simply  cal = K_nom * b / 1e6.  A non-zero a or c has no
 // OpenBeken equivalent; we then still use b and say so.
 #define S61_K_CURRENT (1.1 * 1000.0 / 94638.0)
 #define S61_K_VOLTAGE (1.1 * 2040.0 / 15397.0)
 #define S61_K_POWER   (1.21 * 2040.0 * 1000.0 / 1721506.0)
-#define S61_RATED_POWER_W 3840.0f   // 16 A plug (the OpenBeken default PowerMax is 3680)
+#define S61_RATED_POWER_W 3840.0f   // 16 A device (the OpenBeken default PowerMax is 3680)
 
 typedef struct { int32_t a, b, c; } s61_cal_rec_t;
 
@@ -42,35 +42,61 @@ static int s61_read_stock_calibration(s61_cal_rec_t rec[3]) {
 	return 1;
 }
 
-static float s61_cal(const char *what, double k, const s61_cal_rec_t *r) {
-	if (r->a || r->c)
+static float s61_cal(const char *what, double k, const s61_cal_rec_t *r, int say) {
+	if (say && (r->a || r->c))
 		ADDLOG_WARN(LOG_FEATURE_CFG, "AutoflashImport: %s trim is quadratic (a=%d c=%d); using the linear term only",
 					what, (int)r->a, (int)r->c);
 	return (float)(k * (double)r->b / 1e6);
 }
 
-// Carry the factory meter calibration into OpenBeken (first boot only).
-static int s61_apply_stock_calibration(void) {
+// The stock store's calibration as OpenBeken's current, voltage and power
+// settings: 1 when it holds a valid one, else 0 (and why, when `say`).
+static int s61_stock_calibration(float cal[3], int say) {
 	s61_cal_rec_t rec[3];
 	if (!s61_read_stock_calibration(rec)) {
-		ADDLOG_INFO(LOG_FEATURE_CFG, "AutoflashImport: no stock elecCalibCoef; OpenBeken's BL0937 defaults stay");
+		if (say)
+			ADDLOG_INFO(LOG_FEATURE_CFG, "AutoflashImport: no stock elecCalibCoef; OpenBeken's BL0937 defaults stay");
 		return 0;
 	}
 	if (rec[0].b <= 0 || rec[1].b <= 0 || rec[2].b <= 0) {
-		ADDLOG_WARN(LOG_FEATURE_CFG, "AutoflashImport: stock calibration looks invalid (b=%d/%d/%d); not applied",
-					(int)rec[0].b, (int)rec[1].b, (int)rec[2].b);
+		if (say)
+			ADDLOG_WARN(LOG_FEATURE_CFG, "AutoflashImport: stock calibration looks invalid (b=%d/%d/%d); not applied",
+						(int)rec[0].b, (int)rec[1].b, (int)rec[2].b);
 		return 0;
 	}
-	float ci = s61_cal("current", S61_K_CURRENT, &rec[0]);
-	float cv = s61_cal("voltage", S61_K_VOLTAGE, &rec[1]);
-	float cp = s61_cal("power", S61_K_POWER, &rec[2]);
-	CFG_SetPowerMeasurementCalibrationFloat(CFG_OBK_CURRENT, ci);
-	CFG_SetPowerMeasurementCalibrationFloat(CFG_OBK_VOLTAGE, cv);
-	CFG_SetPowerMeasurementCalibrationFloat(CFG_OBK_POWER, cp);
+	cal[0] = s61_cal("current", S61_K_CURRENT, &rec[0], say);
+	cal[1] = s61_cal("voltage", S61_K_VOLTAGE, &rec[1], say);
+	cal[2] = s61_cal("power", S61_K_POWER, &rec[2], say);
+	if (say)
+		ADDLOG_INFO(LOG_FEATURE_CFG, "AutoflashImport: stock BL0937 factory trim b=%d/%d/%d (I/V/P)",
+					(int)rec[0].b, (int)rec[1].b, (int)rec[2].b);
+	return 1;
+}
+
+static const int s61_cal_settings[3] = {CFG_OBK_CURRENT, CFG_OBK_VOLTAGE, CFG_OBK_POWER};
+
+// Carry the factory meter calibration into OpenBeken (first boot only).
+static int s61_apply_stock_calibration(void) {
+	float cal[3];
+	if (!s61_stock_calibration(cal, 1))
+		return 0;
+	for (int i = 0; i < 3; i++)
+		CFG_SetPowerMeasurementCalibrationFloat(s61_cal_settings[i], cal[i]);
 	CFG_SetPowerMeasurementCalibrationFloat(CFG_OBK_POWER_MAX, S61_RATED_POWER_W);
-	ADDLOG_INFO(LOG_FEATURE_CFG, "AutoflashImport: stock BL0937 factory trim b=%d/%d/%d (I/V/P) -> OpenBeken cal "
-				"I=%.6f V=%.6f P=%.6f, PowerMax %d W",
-				(int)rec[0].b, (int)rec[1].b, (int)rec[2].b, ci, cv, cp, (int)S61_RATED_POWER_W);
+	ADDLOG_INFO(LOG_FEATURE_CFG, "AutoflashImport: OpenBeken cal I=%.6f V=%.6f P=%.6f, PowerMax %d W",
+				cal[0], cal[1], cal[2], (int)S61_RATED_POWER_W);
+	return 1;
+}
+
+// Whether OpenBeken's calibration is the one the first boot sets from the
+// stock store, worked out again the same way (AutoflashCalibration).
+static int s61_calibration_is_stock(void) {
+	float cal[3];
+	if (!s61_stock_calibration(cal, 0))
+		return -1;
+	for (int i = 0; i < 3; i++)
+		if (CFG_GetPowerMeasurementCalibrationFloat(s61_cal_settings[i], 0.0f) != cal[i])
+			return 0;
 	return 1;
 }
 
@@ -101,4 +127,5 @@ const autoflash_device_t autoflash_device = {
 	.pins_described = "Rel P26, Btn P9, LED P0, WifiLED P1, BL0937 CF P8 CF1 P6 SEL P24",
 	.relay_channel = 1,
 	.apply_calibration = s61_apply_stock_calibration,
+	.calibration_is_stock = s61_calibration_is_stock,
 };

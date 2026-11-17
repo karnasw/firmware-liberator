@@ -1,0 +1,1033 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Firmware Liberator API",
+    "version": "1.0.0",
+    "description": "What the Firmware Liberator tool sends the project: each run's report, and readouts of devices it does not convert yet, with the questions asked before one. Its only client is the tool (tools/autoflash/), which is open source, so the API holds no secret it could carry: each request is paid for with a proof of work, and daily limits bound the rest (website/api/index.js says how each path is guarded). A path under /v1/ keeps working, as this file says, for every version of the tool released against it: a change it cannot take goes under /v2/. /confirm and /forget are pages a person opens from an email, outside any version, as a link once sent must keep working."
+  },
+  "servers": [
+    {
+      "url": "https://api.firmwareliberator.com"
+    }
+  ],
+  "paths": {
+    "/v1/wanted": {
+      "post": {
+        "operationId": "wanted",
+        "summary": "Whether a readout of a device would add anything, asked before it is made",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/LightProof"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Question"
+              },
+              "example": {
+                "format": 1,
+                "model": "NEWTHING",
+                "stock_model": "SN-NEW-01",
+                "stock_version": "1.0.0",
+                "stage": "first",
+                "firmware": [],
+                "nonce": "0123456789abcdef"
+              }
+            }
+          },
+          "x-max-bytes": 4096
+        },
+        "responses": {
+          "200": {
+            "description": "The answer: wanted or not, and why not, and which of the files named are held already",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Wanted"
+                },
+                "example": {
+                  "wanted": true,
+                  "held": []
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a question the tool asks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Its proof of work does not check out, or was used already",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "413": {
+            "description": "Its length not given, or over 4096 bytes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Not application/json",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/v1/readout": {
+      "post": {
+        "operationId": "readout",
+        "summary": "A readout of a device, made with its owner's consent",
+        "description": "A tar, uncompressed, its first file manifest.json; then each file eWeLink offers the device, as served, at the place the manifest's `offered` gives it, which the API checks against the SHA-256 given; then the device's memory, each .bin xz-compressed. .github/readouts.md has the format.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Proof"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-tar": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          },
+          "x-max-bytes": 25165824
+        },
+        "responses": {
+          "200": {
+            "description": "Not kept, and nothing more is wanted of it: the same readout sent before (its id), or one of a device enough readouts of are in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Kept"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "enough"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "enough": {
+                          "const": true
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Kept, under the reference its sender is shown",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Kept"
+                },
+                "example": {
+                  "id": "2026-11-07-0123456789ab"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a readout the tool makes, or a file it names is not in it or not the file it says",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Its proof of work does not check out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "411": {
+            "description": "Its length not given",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Over 24 MiB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Not application/x-tar",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "More than two a minute from one sender",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/UnavailableOrFull"
+          }
+        }
+      }
+    },
+    "/v1/notify": {
+      "post": {
+        "operationId": "notify",
+        "summary": "An owner's email address, to be emailed as more devices are supported",
+        "description": "The address is sent a link to confirm it (/confirm), and nothing is kept until it is followed. Answered 202 alike whether a confirmation was sent or not, so no answer says whether an address was given before. The website's sign-up page posts to it too, from the browser, with the same work: its answers let that one origin read them (CORS).",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/LightProof"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignUp"
+              },
+              "example": {
+                "format": 1,
+                "email": "me@example.com",
+                "devices": [
+                  {
+                    "model": "NEWTHING",
+                    "stock_model": "SN-NEW-01"
+                  }
+                ],
+                "nonce": "0123456789abcdef",
+                "readouts": [
+                  "2026-11-07-0123456789ab"
+                ]
+              }
+            }
+          },
+          "x-max-bytes": 4096
+        },
+        "responses": {
+          "202": {
+            "description": "Taken: a confirmation is on its way, or was sent today already",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "confirming"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "confirming": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a request the tool makes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Its proof of work does not check out, or was used already",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "413": {
+            "description": "Its length not given, or over 4096 bytes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Not application/json",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The confirmation could not be sent: try again later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/UnavailableOrFull"
+          }
+        }
+      },
+      "options": {
+        "operationId": "notifyPreflight",
+        "summary": "The browser's question before the website's sign-up page posts (CORS preflight)",
+        "responses": {
+          "204": {
+            "description": "The website's origin may post, with the headers the tool sends",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "schema": {
+                  "const": "https://firmwareliberator.com"
+                }
+              },
+              "Access-Control-Allow-Methods": {
+                "schema": {
+                  "const": "POST"
+                }
+              },
+              "Access-Control-Allow-Headers": {
+                "schema": {
+                  "const": "Content-Type, X-Proof"
+                }
+              },
+              "Access-Control-Max-Age": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/reports": {
+      "post": {
+        "operationId": "reports",
+        "summary": "The reports of the tool's runs, and of each device's readout: the latest, with any it could not send before",
+        "description": "Each report carries its own proof of work, made for its id. Every report sent is answered in one of the four lists: the tool forgets those accepted, duplicate or rejected, and sends those left for later again another time.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "reports"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "reports": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 99,
+                    "items": {
+                      "anyOf": [
+                        {
+                          "$ref": "report-schema.json"
+                        },
+                        {
+                          "$ref": "report-schema.json#/readout"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "x-max-bytes": 1048576,
+          "x-proof-bits": 24,
+          "x-proof-age": 2678400,
+          "description": "Each report's proof is as a readout's X-Proof, made for \"report-<its id>\" in place of a body's SHA-256, and good for x-proof-age, so a report kept unsent is sent within it."
+        },
+        "responses": {
+          "200": {
+            "description": "What came of each",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportsTaken"
+                },
+                "example": {
+                  "accepted": [
+                    "0123456789abcdef"
+                  ],
+                  "duplicate": [],
+                  "rejected": [],
+                  "later": []
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not reports the tool sends",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "411": {
+            "description": "Its length not given",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Over 1 MiB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Not application/json",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "More than three requests a minute from one sender",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/confirm": {
+      "get": {
+        "operationId": "confirmPage",
+        "summary": "The link a confirmation email carries: a page asking first",
+        "description": "Opening it confirms nothing, so a mail scanner following the link does nothing.",
+        "parameters": [
+          {
+            "name": "t",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The page, with its button",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such link, or used, or too old",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      },
+      "post": {
+        "operationId": "confirm",
+        "summary": "The page's button: the address kept",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "t": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Confirmed",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such link, or used, or too old",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/forget": {
+      "get": {
+        "operationId": "forgetPage",
+        "summary": "The link every email to a kept address carries: a page asking first",
+        "parameters": [
+          {
+            "name": "a",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "t",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The page, with its button",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such link, or removed already",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      },
+      "post": {
+        "operationId": "forget",
+        "summary": "The page's button, or a mail program's one-click unsubscribe: the address removed",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "a": {
+                    "type": "string"
+                  },
+                  "t": {
+                    "type": "string"
+                  },
+                  "List-Unsubscribe": {
+                    "const": "One-Click"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Removed",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such link, or removed already",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "description": "The page's button, or a mail program's one-click unsubscribe (RFC 8058), which posts to the link itself with the body List-Unsubscribe=One-Click: the address and token then come from the link's query.",
+        "parameters": [
+          {
+            "name": "a",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "t",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "Proof": {
+        "name": "X-Proof",
+        "in": "header",
+        "required": true,
+        "description": "Proof of work: <time>:<nonce>, such that the SHA-256 of \"<time>:<the body's SHA-256 in hex>:<nonce>\" starts with x-proof-bits zero bits, <time> in Unix seconds within x-proof-age of the API's clock.",
+        "schema": {
+          "type": "string",
+          "pattern": "^\\d{1,12}:\\d{1,20}$"
+        },
+        "x-proof-bits": 24,
+        "x-proof-age": 900
+      },
+      "LightProof": {
+        "name": "X-Proof",
+        "in": "header",
+        "required": true,
+        "description": "As a readout's, with lighter work, good for a minute and taken once: the body carries a random nonce of its own, so two alike questions differ.",
+        "schema": {
+          "type": "string",
+          "pattern": "^\\d{1,12}:\\d{1,20}$"
+        },
+        "x-proof-bits": 20,
+        "x-proof-age": 60
+      }
+    },
+    "headers": {
+      "RetryAfter": {
+        "description": "Seconds to wait before trying again",
+        "schema": {
+          "type": "string",
+          "pattern": "^\\d+$"
+        }
+      }
+    },
+    "responses": {
+      "MethodNotAllowed": {
+        "description": "Not the method this path takes",
+        "headers": {
+          "Allow": {
+            "schema": {
+              "type": "string"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Unavailable": {
+        "description": "Taking no requests just now (switched off, or the database being brought up to date)",
+        "headers": {
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "UnavailableOrFull": {
+        "description": "Taking no requests just now, or a limit reached: a sender's, the day's or the store's",
+        "headers": {
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "limit": {
+            "const": true,
+            "description": "One sender's daily limit, not everyone's"
+          }
+        }
+      },
+      "Sha256": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "Question": {
+        "type": "object",
+        "required": [
+          "format",
+          "model",
+          "stock_model",
+          "stock_version",
+          "stage"
+        ],
+        "properties": {
+          "format": {
+            "const": 1
+          },
+          "model": {
+            "$ref": "#/components/schemas/Model"
+          },
+          "stock_model": {
+            "$ref": "#/components/schemas/StockModel"
+          },
+          "stock_version": {
+            "$ref": "#/components/schemas/StockVersion"
+          },
+          "stage": {
+            "enum": [
+              "first",
+              "whole"
+            ]
+          },
+          "firmware": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "$ref": "#/components/schemas/Sha256"
+            },
+            "description": "The SHA-256 eWeLink gives each file it offers the device"
+          },
+          "nonce": {
+            "type": "string"
+          },
+          "device_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "The device, as a report names it: the SHA-256 the tool makes of its MAC, never the MAC; counted once a day for its model, and kept only as a keyed hash. Left out or null where the tool cannot tell"
+          }
+        }
+      },
+      "Wanted": {
+        "type": "object",
+        "required": [
+          "wanted",
+          "held"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "wanted": {
+            "type": "boolean"
+          },
+          "why": {
+            "enum": [
+              "enough",
+              "held",
+              "full",
+              "store-full",
+              "limit"
+            ]
+          },
+          "held": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Sha256"
+            },
+            "description": "Those of the files named that are held already, to be left out"
+          }
+        }
+      },
+      "SignUp": {
+        "type": "object",
+        "required": [
+          "format",
+          "email",
+          "devices"
+        ],
+        "properties": {
+          "format": {
+            "const": 1
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 254
+          },
+          "devices": {
+            "type": "array",
+            "minItems": 0,
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "required": [
+                "model"
+              ],
+              "properties": {
+                "model": {
+                  "$ref": "#/components/schemas/Model"
+                },
+                "stock_model": {
+                  "$ref": "#/components/schemas/StockModel"
+                }
+              }
+            },
+            "description": "The devices in the owner's eWeLink account, supported or not: [] where none was seen"
+          },
+          "nonce": {
+            "type": "string"
+          },
+          "readouts": {
+            "type": "array",
+            "maxItems": 20,
+            "description": "The readouts the owner sent that sitting, by the reference each was given",
+            "items": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}-[0-9a-f]{12}$"
+            }
+          },
+          "update": {
+            "type": "boolean",
+            "description": "A later sitting's devices and readouts for the address given before: added to a confirmed address, and nothing done for one not confirmed (no email)"
+          }
+        }
+      },
+      "Kept": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d\\d-\\d\\d-[0-9a-f]{12}$"
+          }
+        }
+      },
+      "ReportId": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{16}$"
+      },
+      "ReportsTaken": {
+        "type": "object",
+        "required": [
+          "accepted",
+          "duplicate",
+          "rejected",
+          "later"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReportId"
+            }
+          },
+          "duplicate": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReportId"
+            }
+          },
+          "rejected": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "why"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ReportId"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "why": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "later": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReportId"
+            }
+          }
+        }
+      },
+      "Model": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,23}$",
+        "description": "eWeLink's product model, the model on the box, as a report's model is written, in either case"
+      },
+      "StockModel": {
+        "type": "string",
+        "pattern": "^(?:-|[A-Za-z0-9][A-Za-z0-9._-]{0,63})$",
+        "description": "The stock model eWeLink gives (its firmware model), or - for none"
+      },
+      "StockVersion": {
+        "type": "string",
+        "pattern": "^(?:-|[A-Za-z0-9][A-Za-z0-9._-]{0,31})$",
+        "description": "The Sonoff firmware version the device runs, or - for none"
+      }
+    }
+  }
+}

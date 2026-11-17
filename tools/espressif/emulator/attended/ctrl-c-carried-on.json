@@ -1,0 +1,58 @@
+{
+ "about": "Ctrl-C part way through leaving Tasmota for ESPHome, then Enter at the countdown: the run carries on",
+ "start": "stub-suite-tasmota",
+ "answers": [
+  {
+   "when": "Which device is this run for",
+   "type": "1\r",
+   "optional": true
+  },
+  {
+   "when": "Press any key",
+   "type": "x"
+  },
+  {
+   "when": "Which firmware should the device have",
+   "type": "2\r"
+  },
+  {
+   "when": "Stage +\\d+ - Leaving Tasmota +- Underway",
+   "type": "\u0003",
+   "anywhere": true
+  },
+  {
+   "when": "press Enter now",
+   "type": "\r"
+  },
+  {
+   "when": "This computer's password \\(for sudo\\)",
+   "type": "autoflash\r",
+   "times": 6,
+   "optional": true
+  },
+  {
+   "when": "Type .+ to go ahead",
+   "type": "PROCEED\r",
+   "times": 3
+  },
+  {
+   "when": "What next",
+   "type": "q\r"
+  },
+  {
+   "when": "\\(y/N[^)]*\\)|\\(Y/n[^)]*\\)",
+   "type": "y\r",
+   "times": 3,
+   "optional": true
+  },
+  {
+   "when": "\\[[Yy]/n\\]",
+   "type": "n\r",
+   "optional": true
+  }
+ ],
+ "expect": {
+  "exit": 0,
+  "result": "Converted"
+ }
+}

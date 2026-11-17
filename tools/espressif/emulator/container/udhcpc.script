@@ -1,6 +1,6 @@
 #!/bin/sh
-# udhcpc hook for joining the plug's own network: take the address, keep the
-# container's own routes (the plug's network has no internet anyway).
+# udhcpc hook for joining the device's own network: take the address, keep the
+# container's own routes (the device's network has no internet anyway).
 RUN=/run/autoflash-emu
 case "$1" in
 deconfig)

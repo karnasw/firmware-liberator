@@ -1,0 +1,74 @@
+#!/bin/bash
+# Keeps the emulated device powered: runs QEMU while /run/autoflash-emu/power says "on",
+# and starts it again after it is killed (that is what a power cut looks like).
+# QEMU runs through the device's board (tools/espressif/emulator/board.py, from the
+# checkout's copy), which serves its serial ports and gives the device its power
+# meter; the console's output goes through the redactor before it reaches the log.
+#
+# -no-reboot: the fork keeps its peripherals running across a guest software
+# reset, so firmware restarting into a different image (stock into the bridge,
+# the bridge into Tasmota) crashes at start-up on stale state. QEMU exits on a
+# guest reset instead and is started again here, so every restart is a clean
+# power-on. Nothing in the conversion depends on the reset type: the bridge
+# picks its next boot itself, and Tasmota's quick power-cycle count clears
+# after 8 s of uptime.
+RUN=/run/autoflash-emu
+LOG=/state/logs/uart.log
+. "$RUN/env"
+
+# The chip the device's flash is for (emu.sh). A classic ESP32 boots from flash by
+# its strapping pins, which the fork takes as a value; every input idles high,
+# as with pull-ups, so an active-low button does not read as held.
+case "${CHIP:-esp32c3}" in
+esp32)
+    qemu=qemu-system-xtensa machine=esp32-picsimlab efuse=nvram.esp32.efuse nic=esp32_wifi
+    pins=(-global "driver=esp32.gpio,property=strap_mode,value=0x12"
+          -global "driver=esp32.gpio,property=gpio_in,value=0xffffffff"
+          -global "driver=esp32.gpio,property=gpio_in1,value=0xff")
+    ;;
+*)
+    qemu=qemu-system-riscv32 machine=esp32c3-picsimlab efuse=nvram.esp32c3.efuse nic=esp32c3_wifi
+    pins=(-global "driver=esp32c3.gpio,property=gpio_in,value=0x3fffff")
+    ;;
+esac
+psram=()
+[ -n "${PSRAM:-}" ] && psram=(-m "${PSRAM}M")
+# What the board's analog inputs read (emu.sh, from the kind): e.g. adc1_ch3=2700
+# for a thermistor at room temperature, which the ADC would otherwise read as 0.
+adc=()
+for reading in ${ADC:-}; do
+    adc+=(-global "driver=misc.esp32c3.saradc,property=${reading%%=*},value=${reading#*=}")
+done
+capture=()
+[ "$PCAP" = 1 ] && capture=(-object "filter-dump,id=d0,netdev=n0,file=/state/logs/wifi-$(date +%Y%m%d-%H%M%S).pcap")
+
+while true; do
+    if [ "$(cat "$RUN/power")" != on ]; then
+        sleep 0.3
+        continue
+    fi
+    echo "===== device powered on $(date '+%F %T') =====" >> "$LOG"
+    router=()
+    [ -e "$RUN/router-off" ] && router=(-global "driver=esp32_wifi,property=access-points-off,value=on")
+    python3 -I -B /work/tools/espressif/emulator/board.py --chip "${CHIP:-esp32c3}" --kind "${KIND:-}" -- \
+        "/opt/qemu/bin/$qemu" \
+        -L /opt/qemu/pc-bios -machine "$machine" "${psram[@]}" -display none -no-reboot \
+        -monitor "unix:$RUN/monitor.sock,server,nowait" -pidfile "$RUN/qemu.pid" \
+        -drive file=/state/flash.bin,if=mtd,format=raw \
+        -drive file=/state/efuse.bin,if=none,format=raw,id=efuse \
+        -global "driver=$efuse,property=drive,value=efuse" "${pins[@]}" "${adc[@]}" \
+        -netdev tap,id=n0,ifname=tap0,script=no,downscript=no \
+        -net "nic,model=$nic,netdev=n0" "${capture[@]}" "${router[@]}" \
+        </dev/null 2>&1 \
+        | /opt/autoflash-emu/bin/softap-status "$RUN/softap" \
+        | python3 -I /work/tools/espressif/emulator/redact.py /secrets/stock-flash.bin >> "$LOG"
+    : > "$RUN/softap"
+    rm -f "$RUN/qemu.pid"
+    if [ -f "$RUN/power-cut" ]; then
+        rm -f "$RUN/power-cut"
+        echo "===== device powered off $(date '+%F %T') =====" >> "$LOG"
+        sleep 1   # off long enough to count as a power cut
+    else
+        echo "===== device restarted itself $(date '+%F %T') =====" >> "$LOG"
+    fi
+done

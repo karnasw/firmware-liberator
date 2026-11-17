@@ -1,0 +1,21 @@
+# Sent with every page and file of the site (Cloudflare's static assets read
+# this file). website/test/headers.test.mjs holds the policy to what the
+# layout loads.
+#
+# - HTTPS only, for a year, on every name under the domain: each is served by
+#   Cloudflare over HTTPS. Not preloaded into browsers yet, which is hard to undo.
+# - The site's own scripts and styles, Cloudflare Web Analytics' beacon and
+#   where it reports, the API the sign-up page (/notify) sends an address
+#   to, and badge images from shields.io; nothing else, and no inline
+#   script. Inline styles stay allowed: the highlighted code blocks colour
+#   each word with one.
+# - Not framed by another site, no referrer beyond this origin to others,
+#   and none of the browser features a page of text needs none of.
+/*
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  Content-Security-Policy: default-src 'none'; script-src 'self' https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com https://api.firmwareliberator.com; img-src 'self' data: https://img.shields.io; style-src 'self' 'unsafe-inline'; font-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Cross-Origin-Opener-Policy: same-origin
+  Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()

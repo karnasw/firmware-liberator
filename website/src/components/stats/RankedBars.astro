@@ -1,0 +1,20 @@
+---
+// Ranked horizontal bars, largest first, in one hue: each row a label (a
+// link where it has one), a bar, and its value at the tip, with what the
+// tooltip says on hover and focus. `max` sets the scale (100 for a share).
+const { rows, max = Math.max(1, ...rows.map((row) => row.value ?? 0)), unit = "", label: name } = Astro.props;
+const width = (value) => `${Math.max(0, Math.min(100, (100 * (value ?? 0)) / max))}%`;
+---
+<ol class="bars" aria-label={name}>
+  {rows.map((row) => (
+    <li class="bar-row">
+      <span class="bar-label">{row.href ? <a href={row.href}>{row.label}</a> : row.label}</span>
+      <span class="bar-track">
+        <span class="bar" style={`width: ${width(row.value)}`} tabindex="0" data-tip={row.tip}
+          aria-label={row.tip}></span>
+        <span class="bar-value">{row.value === null ? "fewer than 5" : `${row.value.toLocaleString("en")}${unit}`}</span>
+      </span>
+      {row.note && <span class="bar-note">{row.note}</span>}
+    </li>
+  ))}
+</ol>

@@ -1,0 +1,53 @@
+{
+ "about": "Back to Sonoff with no backup, its firmware not to be had (simulated): put back on Tasmota, not left part way",
+ "start": "stub-suite-tasmota-nobackup",
+ "args": [
+  "--simulate-no-sonoff-firmware"
+ ],
+ "minutes": 40,
+ "answers": [
+  {
+   "when": "Which device is this run for",
+   "type": "1\r",
+   "optional": true
+  },
+  {
+   "when": "Press any key",
+   "type": "x"
+  },
+  {
+   "when": "Which firmware should the device have",
+   "type": "3\r"
+  },
+  {
+   "when": "This computer's password \\(for sudo\\)",
+   "type": "autoflash\r",
+   "times": 6,
+   "optional": true
+  },
+  {
+   "when": "Type .+ to go ahead",
+   "type": "PROCEED\r",
+   "times": 3
+  },
+  {
+   "when": "What next",
+   "type": "q\r"
+  },
+  {
+   "when": "\\(y/N[^)]*\\)|\\(Y/n[^)]*\\)",
+   "type": "y\r",
+   "times": 3,
+   "optional": true
+  },
+  {
+   "when": "\\[[Yy]/n\\]",
+   "type": "n\r",
+   "optional": true
+  }
+ ],
+ "expect": {
+  "exit": 0,
+  "result": "Put back on Tasmota"
+ }
+}

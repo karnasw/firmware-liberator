@@ -2,12 +2,12 @@
 <title id="title">A successful conversion to Tasmota: all 16 stages complete, then the report to share</title>
 <style>:root{--pp:#7c3aed}@media(prefers-color-scheme:dark){:root{--pp:#af5fff}}.ps{stroke:var(--pp)}.pf{fill:var(--pp)}text{font-family:'DejaVu Sans Mono',Menlo,Consolas,'Liberation Mono',monospace;font-size:14px;fill:#1f2328;white-space:pre}.b{font-weight:bold}@media(prefers-color-scheme:dark){text{fill:#ffffff}}</style>
 <rect x="1" y="1" width="708" height="486" rx="8" fill="none" class="ps" stroke-width="1"/>
-<text x="18" y="30" xml:space="preserve"> Converting a plug usually takes under 10 minutes. Some stages take a</text>
-<text x="18" y="49" xml:space="preserve"> minute or two with little to see - that's normal. Keep the plug plugged</text>
-<text x="18" y="68" xml:space="preserve"> in, and this computer awake, until the last stage says complete.</text>
+<text x="18" y="30" xml:space="preserve"> Converting a device usually takes under 10 minutes. Some stages take a</text>
+<text x="18" y="49" xml:space="preserve"> minute or two with little to see - that's normal. Keep the device powered,</text>
+<text x="18" y="68" xml:space="preserve"> and this computer awake, until the last stage says complete.</text>
 <text x="18" y="106" xml:space="preserve"> <tspan fill="#4e9a06">Stage  1 of 16</tspan> - Confirming prerequisites    - <tspan fill="#4e9a06">Complete</tspan> (0s)</text>
 <text x="18" y="125" xml:space="preserve"> <tspan fill="#4e9a06">Stage  2 of 16</tspan> - Validating local files      - <tspan fill="#4e9a06">Complete</tspan> (4s)</text>
-<text x="18" y="144" xml:space="preserve"> <tspan fill="#4e9a06">Stage  3 of 16</tspan> - Discovering the plug        - <tspan fill="#4e9a06">Complete</tspan> (7s)</text>
+<text x="18" y="144" xml:space="preserve"> <tspan fill="#4e9a06">Stage  3 of 16</tspan> - Discovering the device      - <tspan fill="#4e9a06">Complete</tspan> (7s)</text>
 <text x="18" y="163" xml:space="preserve"> <tspan fill="#4e9a06">Stage  4 of 16</tspan> - Querying Sonoff firmware    - <tspan fill="#4e9a06">Complete</tspan> (9s)</text>
 <text x="18" y="182" xml:space="preserve"> <tspan fill="#4e9a06">Stage  5 of 16</tspan> - Sending bridge firmware     - <tspan fill="#4e9a06">Complete</tspan> (20s)</text>
 <text x="18" y="201" xml:space="preserve"> <tspan fill="#4e9a06">Stage  6 of 16</tspan> - Backing up Sonoff firmware  - <tspan fill="#4e9a06">Complete</tspan> (14s)</text>
@@ -22,6 +22,6 @@
 <text x="18" y="372" xml:space="preserve"> <tspan fill="#4e9a06">Stage 15 of 16</tspan> - Installing Safeboot         - <tspan fill="#4e9a06">Complete</tspan> (33s)</text>
 <text x="18" y="391" xml:space="preserve"> <tspan fill="#4e9a06">Stage 16 of 16</tspan> - Verifying conversion        - <tspan fill="#4e9a06">Complete</tspan> (3s)</text>
 <text x="18" y="429" xml:space="preserve"> <tspan fill="#4e9a06">Conversion complete!</tspan></text>
-<text x="18" y="448" xml:space="preserve"> The plug is running official Tasmota...</text>
-<text x="18" y="467" xml:space="preserve">     <tspan class="b pf">Your plug:</tspan> http://192.168.99.50/</text>
+<text x="18" y="448" xml:space="preserve"> The device is running official Tasmota...</text>
+<text x="18" y="467" xml:space="preserve">     <tspan class="b pf">Your device:</tspan> http://192.168.99.50/</text>
 </svg>

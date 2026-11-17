@@ -1,0 +1,1036 @@
+{
+  "$comment": "Written by tools/repo/report_schema.py: change that, not this.",
+  "maxBytes": 8192,
+  "failurePatterns": [
+    [
+      "declined",
+      "^not confirmed|was not confirmed|requires an explicit confirmation|^skipped as asked"
+    ],
+    [
+      "nothing-to-do",
+      "already runs Sonoff's firmware: there is nothing to convert"
+    ],
+    [
+      "crash",
+      "^something unexpected went wrong"
+    ],
+    [
+      "no-room",
+      "has no room to save"
+    ],
+    [
+      "device-lost",
+      "connection to the device was lost"
+    ],
+    [
+      "weak-signal",
+      "weak Wi-Fi signal"
+    ],
+    [
+      "unsupported-device",
+      "which this tool does not convert yet|not set up as a device this tool converts"
+    ],
+    [
+      "device-busy",
+      "busy with an update"
+    ],
+    [
+      "credentials",
+      "encryption key|encryption: line|has a password|password|NeedsPassword"
+    ],
+    [
+      "unsafe-state",
+      "refusing to start from an unsafe state|another run is converting this device|has no record of|is not set; pass|address is not known|device id is not known|firmware files changed since|is on this tool's installer from an earlier run|is running Tasmota, not Sonoff's firmware|so the installer has to be sent again"
+    ],
+    [
+      "backup",
+      "backup cannot be written back|backup could not be read|no backup of|found neither with a backup|cannot be put back without a backup|--simulate-backup-failure"
+    ],
+    [
+      "identity",
+      "identity cannot be kept"
+    ],
+    [
+      "integrity",
+      "checksums failed|do not check out|does not match the official firmware files|hash differs|is not the file firmware\\.json pins|refusing to send it|rt_ota"
+    ],
+    [
+      "download",
+      "could not be fetched|no public dump of|no \\S+ image is published|image is missing|public dump holds no|the download was cut off"
+    ],
+    [
+      "ewelink-unreachable",
+      "eWeLink could not be reached|has not reached eWeLink|but not in eWeLink"
+    ],
+    [
+      "ewelink-refused",
+      "official update file for the .* was refused|firmware was not sent:|readout firmware was not sent"
+    ],
+    [
+      "bad-option",
+      "--replace-own-build|needs to be told which firmware|cannot go to |cannot switch to|not sent from a test run|^not from a test run|eWeLink account given|needs its firmware: --supla"
+    ],
+    [
+      "ewelink-account",
+      "eWeLink account|eWeLink query failed"
+    ],
+    [
+      "computer-network",
+      "this computer reaches|this computer's address|are all in use on this computer|--listen-ip|readout could not be sent|did not fetch the \\S+ instructions|without reaching this computer|firewall rule|^sudo |the website answered"
+    ],
+    [
+      "network-join",
+      "did not join|cannot join it|has not answered on your Wi-Fi|has not come back on your Wi-Fi|did not answer on your Wi-Fi|is not on your Wi-Fi|neither rejoined|did not come back after its settings were reset|did not say which Wi-Fi network|but the firmware to come would join|has not shown the device online again"
+    ],
+    [
+      "settings-lost",
+      "lost its settings|did not keep its template"
+    ],
+    [
+      "unexpected-layout",
+      "not laid out as this tool expects|partition table|memory could not be read|short read of the device's flash|bytes were read"
+    ],
+    [
+      "not-taken",
+      "did not take|did not hold|still running from slot|kept running its old firmware|keeps going back to the startup firmware|still answers as the firmware it was to leave|was not seen running|did not come back after the upload|has not started ESPHome|did not switch to its safeboot|would not take its new name|went back to its Sonoff firmware before|still on its Sonoff firmware, so nothing was read|would not fetch Sonoff's firmware back|refused to fetch Sonoff's firmware|after it was sent \\d+ times|neither its own network"
+    ],
+    [
+      "upload-cut",
+      "stopped part way|was not uploaded|to the device failed|could not be sent to the device|did not complete within|did not print|nothing was armed|delivery failed|installer was not fully delivered|installer was not delivered|the device fetched \\S+ of \\S+ bytes"
+    ],
+    [
+      "unexpected-firmware",
+      "did not answer as a device this tool converts|Berry|did not say twice alike|did not say which slot|it is not the one this tool installs|metadata just written|redirected .* too many times|official update file for the .* is for "
+    ],
+    [
+      "preparation",
+      "cannot be used|could not be prepared|cannot be prepared|could not be set up for|firmware cannot be written"
+    ],
+    [
+      "device-not-found",
+      "nothing answers at|could not tell which device"
+    ],
+    [
+      "device-no-answer",
+      "did not answer within|did not restart within|did not answer\\b"
+    ]
+  ],
+  "failureClasses": {
+    "device-not-found": "nothing answered at the device's address, or which device is there could not be told",
+    "device-no-answer": "the device stopped answering within a wait",
+    "device-lost": "the connection to the device was reset, cut off or timed out mid-request",
+    "device-busy": "the device turned firmware down, busy with an update cut off",
+    "weak-signal": "stopped for the device's weak Wi-Fi signal",
+    "network-join": "this computer or the device did not join a network in time",
+    "computer-network": "this computer's address, ports or firewall kept it from the device",
+    "unsupported-device": "a device this tool does not convert yet",
+    "unexpected-firmware": "the device answered as firmware other than the run expected",
+    "unexpected-layout": "the device's memory or partition table is not as expected",
+    "upload-cut": "sending to the device stopped part way, or nothing was sent",
+    "not-taken": "an image was sent but did not take, did not hold, or the device went back",
+    "settings-lost": "the new firmware runs but lost its settings or template",
+    "identity": "the device's Sonoff identity could not be kept",
+    "backup": "the Sonoff backup is missing, unreadable or could not be written back",
+    "download": "a published image, public dump or official update could not be fetched",
+    "integrity": "a file's hash or pin differs, so it was refused",
+    "preparation": "what is sent to the device could not be prepared on this computer",
+    "ewelink-unreachable": "eWeLink could not be reached",
+    "ewelink-account": "the device is not in the account, or the account could not be used",
+    "ewelink-refused": "eWeLink did not take the command or the update",
+    "credentials": "a password or key was needed or wrong",
+    "bad-option": "options that cannot go together, or a firmware the device cannot take",
+    "unsafe-state": "a safety lock, or the run's record of the device, was not as needed",
+    "no-room": "this computer had no room to save what the run needs",
+    "declined": "the person said no at a confirmation",
+    "nothing-to-do": "the device already runs what was asked",
+    "crash": "an error the tool did not anticipate",
+    "other": "not classed yet"
+  },
+  "stoppedBy": [
+    "quit",
+    "ctrl-c",
+    "window-closed"
+  ],
+  "deviceNames": {
+    "sonoff-s60": "Sonoff S60",
+    "sonoff-s61": "Sonoff S61",
+    "sonoff-pow-elite": "Sonoff POW Elite 16A",
+    "sonoff-powct": "Sonoff POW Ring",
+    "sonoff-th-elite": "Sonoff TH Elite 20A",
+    "sonoff-dualr3": "Sonoff Dual R3",
+    "sonoff-basic-1gs": "Sonoff Basic Gen5",
+    "sonoff-nspanel": "Sonoff NSPanel",
+    "sonoff-basicr4": "Sonoff BASICR4",
+    "sonoff-minir4": "Sonoff MINI Extreme",
+    "sonoff-m5-1c": "Sonoff M5 1-gang",
+    "sonoff-m5-2c": "Sonoff M5 2-gang",
+    "sonoff-m5-3c": "Sonoff M5 3-gang"
+  },
+  "readout": {
+    "type": "object",
+    "properties": {
+      "format": {
+        "type": "integer",
+        "enum": [
+          1
+        ]
+      },
+      "id": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{16}$",
+        "maxLength": 16
+      },
+      "proof": {
+        "type": "string",
+        "pattern": "^[0-9]{1,12}:[0-9]{1,20}$",
+        "maxLength": 33
+      },
+      "tag": {
+        "type": "string",
+        "enum": [
+          "user",
+          "dev"
+        ]
+      },
+      "tool": {
+        "type": "string",
+        "pattern": "^[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$",
+        "maxLength": 11
+      },
+      "kind": {
+        "type": "string",
+        "enum": [
+          "readout"
+        ]
+      },
+      "result": {
+        "type": "string",
+        "enum": [
+          "accepted",
+          "kept",
+          "not-needed",
+          "website-full",
+          "skipped",
+          "not-read",
+          "cancelled",
+          "failed",
+          "crashed"
+        ]
+      },
+      "error": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "enum": [
+          "device-not-found",
+          "device-no-answer",
+          "device-lost",
+          "device-busy",
+          "weak-signal",
+          "network-join",
+          "computer-network",
+          "unsupported-device",
+          "unexpected-firmware",
+          "unexpected-layout",
+          "upload-cut",
+          "not-taken",
+          "settings-lost",
+          "identity",
+          "backup",
+          "download",
+          "integrity",
+          "preparation",
+          "ewelink-unreachable",
+          "ewelink-account",
+          "ewelink-refused",
+          "credentials",
+          "bad-option",
+          "unsafe-state",
+          "no-room",
+          "declined",
+          "nothing-to-do",
+          "crash",
+          "other",
+          null
+        ]
+      },
+      "family": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "enum": [
+          "espressif",
+          "beken",
+          null
+        ]
+      },
+      "device": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "enum": [
+          "sonoff-s60",
+          "sonoff-s61",
+          "sonoff-pow-elite",
+          "sonoff-powct",
+          "sonoff-th-elite",
+          "sonoff-dualr3",
+          "sonoff-basic-1gs",
+          "sonoff-nspanel",
+          "sonoff-basicr4",
+          "sonoff-minir4",
+          "sonoff-m5-1c",
+          "sonoff-m5-2c",
+          "sonoff-m5-3c",
+          null
+        ]
+      },
+      "model": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "pattern": "^[A-Z0-9][A-Z0-9-]{0,23}$",
+        "maxLength": 24
+      },
+      "stock_model": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "pattern": "^[A-Z0-9][A-Z0-9-]{0,23}$",
+        "maxLength": 24
+      },
+      "stock_version": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "pattern": "^\\d{1,4}(\\.\\d{1,4}){1,3}$",
+        "maxLength": 19
+      },
+      "whole": {
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "device_hash": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "pattern": "^[0-9a-f]{64}$",
+        "maxLength": 64
+      },
+      "os": {
+        "type": "object",
+        "properties": {
+          "family": {
+            "type": "string",
+            "enum": [
+              "windows",
+              "macos",
+              "linux"
+            ]
+          },
+          "version": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9 ._()+/-]{1,48}$",
+            "maxLength": 48
+          },
+          "arch": {
+            "type": "string",
+            "enum": [
+              "x86-64",
+              "arm64",
+              "other"
+            ]
+          }
+        },
+        "required": [
+          "family",
+          "version",
+          "arch"
+        ],
+        "additionalProperties": false
+      },
+      "python": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "string",
+            "pattern": "^([0-9]{1,4}(\\.[0-9]{1,4}){1,3}|unknown)$",
+            "maxLength": 19
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "portable",
+              "start-sh",
+              "venv",
+              "system",
+              "other"
+            ]
+          }
+        },
+        "required": [
+          "version",
+          "source"
+        ],
+        "additionalProperties": false
+      },
+      "seconds": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 604800
+      },
+      "converted_here": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 1000000
+      }
+    },
+    "required": [
+      "format",
+      "id",
+      "proof",
+      "tag",
+      "tool",
+      "kind",
+      "result",
+      "error",
+      "family",
+      "device",
+      "model",
+      "stock_model",
+      "stock_version",
+      "whole",
+      "device_hash",
+      "os",
+      "python",
+      "seconds",
+      "converted_here"
+    ],
+    "additionalProperties": false
+  },
+  "type": "object",
+  "properties": {
+    "format": {
+      "type": "integer",
+      "enum": [
+        1
+      ]
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "maxLength": 16
+    },
+    "proof": {
+      "type": "string",
+      "pattern": "^[0-9]{1,12}:[0-9]{1,20}$",
+      "maxLength": 33
+    },
+    "tag": {
+      "type": "string",
+      "enum": [
+        "user",
+        "dev"
+      ]
+    },
+    "tool": {
+      "type": "string",
+      "pattern": "^[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$",
+      "maxLength": 11
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "run"
+      ]
+    },
+    "result": {
+      "type": "string",
+      "enum": [
+        "converted",
+        "updated",
+        "put-back",
+        "failed",
+        "crashed",
+        "cancelled"
+      ]
+    },
+    "stopped": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "step": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[A-Z][0-9]{1,2}$",
+          "maxLength": 3
+        },
+        "error": {
+          "type": "string",
+          "enum": [
+            "device-not-found",
+            "device-no-answer",
+            "device-lost",
+            "device-busy",
+            "weak-signal",
+            "network-join",
+            "computer-network",
+            "unsupported-device",
+            "unexpected-firmware",
+            "unexpected-layout",
+            "upload-cut",
+            "not-taken",
+            "settings-lost",
+            "identity",
+            "backup",
+            "download",
+            "integrity",
+            "preparation",
+            "ewelink-unreachable",
+            "ewelink-account",
+            "ewelink-refused",
+            "credentials",
+            "bad-option",
+            "unsafe-state",
+            "no-room",
+            "declined",
+            "nothing-to-do",
+            "crash",
+            "other",
+            "quit",
+            "ctrl-c",
+            "window-closed"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "pattern": "^[ -~]*$",
+          "maxLength": 200
+        },
+        "crash_site": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,59} at tools/[A-Za-z0-9_./-]{1,120}\\.py:[0-9]{1,6}$",
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "step",
+        "error",
+        "text",
+        "crash_site"
+      ],
+      "additionalProperties": false
+    },
+    "family": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "espressif",
+        "beken",
+        null
+      ]
+    },
+    "device": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "sonoff-s60",
+        "sonoff-s61",
+        "sonoff-pow-elite",
+        "sonoff-powct",
+        "sonoff-th-elite",
+        "sonoff-dualr3",
+        "sonoff-basic-1gs",
+        "sonoff-nspanel",
+        "sonoff-basicr4",
+        "sonoff-minir4",
+        "sonoff-m5-1c",
+        "sonoff-m5-2c",
+        "sonoff-m5-3c",
+        null
+      ]
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[A-Z0-9][A-Z0-9-]{0,23}$",
+      "maxLength": 24
+    },
+    "stock_version": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^\\d{1,4}(\\.\\d{1,4}){1,3}$",
+      "maxLength": 19
+    },
+    "device_hash": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$",
+      "maxLength": 64
+    },
+    "firmware": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "tasmota",
+        "esphome",
+        "supla",
+        "sonoff",
+        "openbeken",
+        null
+      ]
+    },
+    "source": {
+      "type": "string",
+      "enum": [
+        "sonoff",
+        "tasmota",
+        "esphome",
+        "openbeken",
+        "midway",
+        "committed",
+        "installer",
+        "interim",
+        "safeboot",
+        "untemplated",
+        "outdated",
+        "tasmota-direct"
+      ]
+    },
+    "backup": {
+      "type": "string",
+      "enum": [
+        "saved",
+        "existing",
+        "failed",
+        "not wanted",
+        "unreadable",
+        "not taken"
+      ]
+    },
+    "identity": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "backup",
+        "kept",
+        "account",
+        null
+      ]
+    },
+    "os": {
+      "type": "object",
+      "properties": {
+        "family": {
+          "type": "string",
+          "enum": [
+            "windows",
+            "macos",
+            "linux"
+          ]
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9 ._()+/-]{1,48}$",
+          "maxLength": 48
+        },
+        "arch": {
+          "type": "string",
+          "enum": [
+            "x86-64",
+            "arm64",
+            "other"
+          ]
+        }
+      },
+      "required": [
+        "family",
+        "version",
+        "arch"
+      ],
+      "additionalProperties": false
+    },
+    "python": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^([0-9]{1,4}(\\.[0-9]{1,4}){1,3}|unknown)$",
+          "maxLength": 19
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "portable",
+            "start-sh",
+            "venv",
+            "system",
+            "other"
+          ]
+        }
+      },
+      "required": [
+        "version",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 604800
+    },
+    "resumed": {
+      "type": "boolean"
+    },
+    "stages": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Z][0-9]{1,2}$",
+        "maxLength": 3
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 86400
+          },
+          "busy": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 86400
+          },
+          "tries": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 99
+          },
+          "wait": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 604800
+          },
+          "setup_network": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "not given",
+              "not joined",
+              "settings lost",
+              null
+            ]
+          },
+          "power_cycles": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 99
+          }
+        },
+        "required": [
+          "seconds",
+          "busy",
+          "tries",
+          "wait",
+          "setup_network",
+          "power_cycles"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "signal": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": -127,
+      "maximum": 0
+    },
+    "wifi_typed": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "setup_network": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "power_cycled": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "checks": {
+      "type": "string",
+      "enum": [
+        "passed",
+        "failed",
+        "not-run"
+      ]
+    },
+    "meter": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "sonoff",
+        "carried",
+        "carried-factory",
+        "skipped",
+        "stock-nvs",
+        "from-backup",
+        "missing",
+        "stock-store",
+        "changed",
+        "reported",
+        "not-checked",
+        null
+      ]
+    },
+    "nth_device": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1,
+      "maximum": 1000000
+    },
+    "chip": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9]{1,3}\\.[0-9]{1,3}$",
+          "maxLength": 7
+        },
+        "flash_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{6}$",
+          "maxLength": 6
+        },
+        "flash_mb": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 128
+        }
+      },
+      "required": [
+        "revision",
+        "flash_id",
+        "flash_mb"
+      ],
+      "additionalProperties": false
+    },
+    "computer": {
+      "type": "object",
+      "properties": {
+        "connection": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "wifi",
+            "ethernet",
+            "other",
+            null
+          ]
+        },
+        "vpn": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "networks": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 64
+        },
+        "security_note": {
+          "type": "boolean"
+        },
+        "firewall": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "none",
+            "added",
+            "there",
+            "failed",
+            "managed",
+            null
+          ]
+        },
+        "admin": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "connection",
+        "vpn",
+        "networks",
+        "security_note",
+        "firewall",
+        "admin"
+      ],
+      "additionalProperties": false
+    },
+    "ewelink_region": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "cn",
+        "as",
+        "us",
+        "eu",
+        null
+      ]
+    },
+    "ctrl_c_carried_on": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 99
+    },
+    "launcher": {
+      "type": "string",
+      "enum": [
+        "start.sh",
+        "start.cmd",
+        "other"
+      ]
+    },
+    "install": {
+      "type": "string",
+      "enum": [
+        "git",
+        "download"
+      ]
+    },
+    "firmware_name": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[A-Z][A-Z0-9_]*(-[A-Z0-9_]+)*$",
+      "maxLength": 64
+    },
+    "firmware_name_expected": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "begun_on": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$",
+      "maxLength": 11
+    },
+    "back_after_power_cycle": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 604800
+    }
+  },
+  "required": [
+    "format",
+    "id",
+    "proof",
+    "tag",
+    "tool",
+    "kind",
+    "result",
+    "stopped",
+    "family",
+    "device",
+    "model",
+    "stock_version",
+    "device_hash",
+    "firmware",
+    "source",
+    "backup",
+    "identity",
+    "os",
+    "python",
+    "seconds",
+    "resumed",
+    "stages",
+    "signal",
+    "wifi_typed",
+    "setup_network",
+    "power_cycled",
+    "checks",
+    "meter",
+    "nth_device",
+    "chip",
+    "computer",
+    "ewelink_region",
+    "ctrl_c_carried_on",
+    "launcher",
+    "install",
+    "firmware_name",
+    "firmware_name_expected",
+    "begun_on",
+    "back_after_power_cycle"
+  ],
+  "additionalProperties": false
+}

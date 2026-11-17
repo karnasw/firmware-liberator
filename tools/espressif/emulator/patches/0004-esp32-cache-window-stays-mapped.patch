@@ -1,0 +1,70 @@
+From 969b1e80a2f038d9b0e8fb33ead04bd60e7c9e17 Mon Sep 17 00:00:00 2001
+From: Adam Matthews <52178922+adamsthws@users.noreply.github.com>
+Date: Sat, 7 Nov 2026 15:21:44 +0000
+Subject: [PATCH] esp32 dport: keep a cache window mapped once it is on
+
+Each flash operation switches a classic ESP32's cache off and on, and with it
+the window was taken out of the memory map and put back, which is slow: a
+32-byte flash read took milliseconds of the firmware's time. Firmware that
+reads flash a lot in one go, Tasmota among them, outlasted its 5-second task
+watchdog and panicked.
+
+A window now stays mapped once it is on. Boot is about 2.5 times faster
+again, and 2,000 small flash reads about 9 times, with no panics. It gives
+up the fault for reading the window while its cache is off, so this stays a
+patch of the emulator's and is not offered upstream.
+---
+ hw/misc/esp32_dport.c | 33 ++++++++++++++++++++-------------
+ 1 file changed, 20 insertions(+), 13 deletions(-)
+
+diff --git a/hw/misc/esp32_dport.c b/hw/misc/esp32_dport.c
+index f2c57d62021..7f62e4c6d31 100644
+--- a/hw/misc/esp32_dport.c
++++ b/hw/misc/esp32_dport.c
+@@ -289,23 +289,30 @@ static void esp32_cache_invalidate_all_entries(Esp32CacheRegionState* crs)
+     }
+ }
+ 
++static void esp32_cache_region_update(Esp32CacheRegionState* crs, bool enabled)
++{
++    /*
++     * Once on, a window stays mapped while its cache is off. Switching it off
++     * and on changes the memory map around every flash operation, which is
++     * slow, and firmware that reads flash a lot then panics. This gives up the
++     * fault for reading the window while its cache is off.
++     */
++    if (enabled) {
++        esp32_cache_data_sync(crs);
++        if (!crs->mem.enabled) {
++            memory_region_set_enabled(&crs->mem, true);
++        }
++    }
++}
++
+ static void esp32_cache_state_update(Esp32CacheState* cs)
+ {
+     bool cache_enabled = FIELD_EX32(cs->cache_ctrl_reg, DPORT_PRO_CACHE_CTRL, CACHE_ENA) != 0;
+ 
+-    bool drom0_enabled = cache_enabled &&
+-        FIELD_EX32(cs->cache_ctrl1_reg, DPORT_PRO_CACHE_CTRL1, MASK_DROM0) == 0;
+-    if (!cs->drom0.mem.enabled && drom0_enabled) {
+-        esp32_cache_data_sync(&cs->drom0);
+-    }
+-    memory_region_set_enabled(&cs->drom0.mem, drom0_enabled);
+-
+-    bool iram0_enabled = cache_enabled &&
+-        FIELD_EX32(cs->cache_ctrl1_reg, DPORT_PRO_CACHE_CTRL1, MASK_IRAM0) == 0;
+-    if (!cs->iram0.mem.enabled && iram0_enabled) {
+-        esp32_cache_data_sync(&cs->iram0);
+-    }
+-    memory_region_set_enabled(&cs->iram0.mem, iram0_enabled);
++    esp32_cache_region_update(&cs->drom0, cache_enabled &&
++        FIELD_EX32(cs->cache_ctrl1_reg, DPORT_PRO_CACHE_CTRL1, MASK_DROM0) == 0);
++    esp32_cache_region_update(&cs->iram0, cache_enabled &&
++        FIELD_EX32(cs->cache_ctrl1_reg, DPORT_PRO_CACHE_CTRL1, MASK_IRAM0) == 0);
+ 
+     if (cs->dport->has_psram) {
+         bool dram1_enabled = cache_enabled &&
+-- 
+2.43.0
+

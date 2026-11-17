@@ -4,6 +4,6 @@ The final canonical-layout commit server refuses to expose its Berry payload
 while this file exists. Preflight and staging remain available because they do
 not replace the partition table or boot metadata.
 
-Only rename this file after all earlier phase reports say PASS, the plug is
+Only rename this file after all earlier phase reports say PASS, the device is
 running from old ota_1, mains power is stable, and loss of network recovery is
 accepted. Restore this lock immediately after the commit server exits.

@@ -1,120 +1,343 @@
 {
   "about": "The firmware the tool installs that follows Tasmota's and ESPHome's releases, pinned. Written by tools/repo/update_firmware.py - see docs/updating-firmware.md - never by hand.",
-  "tasmota": {
-    "version": "16.0.0",
-    "tag": "v16.0.0",
-    "commit": "1c2173927cdf1be61759bcc3b064b9511a18e5d7",
-    "cfg_holder": 4617,
-    "files": {
-      "factory": {
-        "name": "tasmota32c3.factory.bin",
-        "size": 3153824,
-        "sha256": "cb9f1ac713119cd32ac7c8040027360a16e92a441bc3bbfd6d7beb7a1ddb3a30"
-      },
-      "safeboot": {
-        "name": "tasmota32c3-safeboot.bin",
-        "size": 819488,
-        "sha256": "93a103c9de4f537ce9d99d9e407ded690cf5324ba5b94fc7c789514a4aaae644"
-      },
-      "app": {
-        "name": "tasmota32c3.bin",
-        "size": 2236320,
-        "sha256": "42be8bc2add07ed845607d26ffd0eea8db8fa3194feb765c271ca1b23d670aba"
-      }
-    },
-    "earlier": [
-      {
-        "version": "15.6.0",
-        "tag": "v15.6.0",
-        "commit": "db3ae7e0276fdc38b7aeb241a2a8e33d8ffd6892",
+  "espressif": {
+    "esp32c3": {
+      "tasmota": {
+        "version": "16.0.0",
+        "tag": "v16.0.0",
+        "commit": "1c2173927cdf1be61759bcc3b064b9511a18e5d7",
+        "cfg_holder": 4617,
         "files": {
           "factory": {
             "name": "tasmota32c3.factory.bin",
-            "size": 3098496,
-            "sha256": "5c4181c756fb0a98c107a4d53389536f878b69fedbbce47168b07458122f53e8"
+            "size": 3153824,
+            "sha256": "cb9f1ac713119cd32ac7c8040027360a16e92a441bc3bbfd6d7beb7a1ddb3a30"
           },
           "safeboot": {
             "name": "tasmota32c3-safeboot.bin",
-            "size": 810672,
-            "sha256": "364339a828c243ddf5fee3ed24f8bf352dffc87b2572ca9d7f48736bcb852bdc"
+            "size": 819488,
+            "sha256": "93a103c9de4f537ce9d99d9e407ded690cf5324ba5b94fc7c789514a4aaae644"
           },
           "app": {
             "name": "tasmota32c3.bin",
-            "size": 2180992,
-            "sha256": "5991d11ad8f8b100b165974e81544594394df1d12d165012a42c002e1985cb1c"
+            "size": 2236320,
+            "sha256": "42be8bc2add07ed845607d26ffd0eea8db8fa3194feb765c271ca1b23d670aba"
+          }
+        },
+        "earlier": [
+          {
+            "version": "15.6.0",
+            "tag": "v15.6.0",
+            "commit": "db3ae7e0276fdc38b7aeb241a2a8e33d8ffd6892",
+            "files": {
+              "factory": {
+                "name": "tasmota32c3.factory.bin",
+                "size": 3098496,
+                "sha256": "5c4181c756fb0a98c107a4d53389536f878b69fedbbce47168b07458122f53e8"
+              },
+              "safeboot": {
+                "name": "tasmota32c3-safeboot.bin",
+                "size": 810672,
+                "sha256": "364339a828c243ddf5fee3ed24f8bf352dffc87b2572ca9d7f48736bcb852bdc"
+              },
+              "app": {
+                "name": "tasmota32c3.bin",
+                "size": 2180992,
+                "sha256": "5991d11ad8f8b100b165974e81544594394df1d12d165012a42c002e1985cb1c"
+              }
+            }
+          }
+        ]
+      },
+      "bootloader": {
+        "file": "artifacts/esphome-sonoff-s60-bootloader-1.2.0.bin",
+        "config": "devices/sonoff-s60/esphome.yaml",
+        "version": "1.2.0",
+        "esphome": "2026.9.1",
+        "esp_idf": "5.5.5",
+        "size": 21088,
+        "sha256": "3792bb665916d69c410c9fd10f69d1a6968e61f2a9e4969829a1c49f9ea6f433"
+      },
+      "mover": {
+        "file": "artifacts/autoflash-mover-esp32c3-1.2.0.bin",
+        "config": "devices/esp32c3/mover.yaml",
+        "version": "1.2.0",
+        "esphome": "2026.10.0",
+        "esp_idf": "5.5.6",
+        "builder": "ghcr.io/esphome/esphome:2026.10.0@sha256:1dff19a59070cdb523b76576cdc74d200f862d43c1407809088855920cf57145",
+        "size": 757568,
+        "sha256": "111de916da3c43845938d10f0bd348def91ba5acf7d72d90a6d13fb526baf776"
+      },
+      "bridge": {
+        "file": "artifacts/autoflash-bridge-esp32c3-4.4.6.ota",
+        "version": "4.4.6",
+        "size": 880180,
+        "sha256": "3f1a871231bcec9cb78a5222f4eb46bca0c8ab9726987a9927c0bdd241be3a38"
+      }
+    },
+    "esp32": {
+      "tasmota": {
+        "version": "16.0.0",
+        "tag": "v16.0.0",
+        "commit": "1c2173927cdf1be61759bcc3b064b9511a18e5d7",
+        "files": {
+          "factory": {
+            "name": "tasmota32.factory.bin",
+            "size": 3152416,
+            "sha256": "a0c6ed5fa59e18885db435cb22cb0456d6c9bce92477092462224ab6fa5942eb"
+          },
+          "safeboot": {
+            "name": "tasmota32-safeboot.bin",
+            "size": 807328,
+            "sha256": "202aa207f6e5f967529a1f241a851a4a1116ad5e95d850d14960f2f10711f4a0"
+          },
+          "app": {
+            "name": "tasmota32.bin",
+            "size": 2234912,
+            "sha256": "977fd69e58cbae01b8298dade7e7a30eefa5ac5c58b06e021ee63618bfc9add6"
           }
         }
+      },
+      "interim": {
+        "url": "https://github.com/arendst/Tasmota/releases/download/v15.6.0/tasmota32-display.bin",
+        "size": 1471024,
+        "sha256": "07b888e8f57e47ccfeb9b0ba87268009ba3e8e49b64efad63f1d66292d260231"
+      },
+      "mover": {
+        "file": "artifacts/autoflash-mover-esp32-1.1.0.bin",
+        "config": "devices/esp32/mover.yaml",
+        "version": "1.1.0",
+        "esphome": "2026.10.0",
+        "esp_idf": "5.5.6",
+        "builder": "ghcr.io/esphome/esphome:2026.10.0@sha256:1dff19a59070cdb523b76576cdc74d200f862d43c1407809088855920cf57145",
+        "size": 715664,
+        "sha256": "5a4ae1ff9c0d1052ff7aab8965252749eac395fb4a1ae6b3b6f1c379513ccbcf"
+      },
+      "bootloader": {
+        "file": "artifacts/esphome-esp32-bootloader-1.1.0.bin",
+        "config": "devices/esp32/mover.yaml",
+        "version": "1.1.0",
+        "esphome": "2026.10.0",
+        "esp_idf": "5.5.6",
+        "builder": "ghcr.io/esphome/esphome:2026.10.0@sha256:1dff19a59070cdb523b76576cdc74d200f862d43c1407809088855920cf57145",
+        "size": 26016,
+        "sha256": "b52ccf9f4602c83db673d44e84d391c44fed6d24329d4fefb9fc0d72a95a0d4f"
+      },
+      "bridge": {
+        "file": "artifacts/autoflash-bridge-esp32-4.4.6.bin",
+        "version": "4.4.6",
+        "size": 841760,
+        "sha256": "3e27f0f649bac9b7ba4df98d5487bb0953d34fbab7a398d223a6468847bd8b09"
+      },
+      "recovery": {
+        "file": "artifacts/autoflash-recovery-safeboot-esp32-imprintable.bin",
+        "tasmota_commit": "db3ae7e0276fdc38b7aeb241a2a8e33d8ffd6892",
+        "size": 801568,
+        "sha256": "f1a25251f7756303e3d65061f9429d1f4da81968b89737d3d5d7364ea959860c"
+      },
+      "settings_template": {
+        "file": "artifacts/tasmota-settings-template-esp32-15.6.0.0.bin",
+        "size": 4096,
+        "sha256": "7c790d6d445756cf7124841136a676741fbad33020706a8dd477e3dc51fbef49"
       }
-    ]
-  },
-  "esphome": {
-    "image": {
-      "file": "artifacts/esphome-sonoff-s60-imprintable-1.6.0.bin",
-      "config": "devices/sonoff-s60/esphome.yaml",
-      "version": "1.6.0",
-      "esphome": "2026.10.0",
-      "esp_idf": "5.5.6",
-      "builder": "ghcr.io/esphome/esphome:2026.10.0@sha256:1dff19a59070cdb523b76576cdc74d200f862d43c1407809088855920cf57145",
-      "size": 967936,
-      "sha256": "ff4dbbccb202e9e663340f47b1797c027b0a3a1eb24462ad7460597a645f7875",
-      "built": "2026-11-04 14:38:48 +0000",
-      "earlier_builds": [
-        "2026-10-21 02:35:20 +0100",
-        "2026-10-22 19:49:39 +0000",
-        "2026-10-26 17:26:39 +0000"
-      ]
     },
-    "bootloader": {
-      "file": "artifacts/esphome-sonoff-s60-bootloader-1.2.0.bin",
-      "config": "devices/sonoff-s60/esphome.yaml",
-      "version": "1.2.0",
-      "esphome": "2026.9.1",
-      "esp_idf": "5.5.5",
-      "size": 21088,
-      "sha256": "3792bb665916d69c410c9fd10f69d1a6968e61f2a9e4969829a1c49f9ea6f433"
+    "sonoff-s60": {
+      "esphome": {
+        "file": "artifacts/esphome-sonoff-s60-imprintable-2026.10.0-2.bin",
+        "config": "devices/sonoff-s60/esphome.yaml",
+        "version": "2026.10.0-2",
+        "esphome": "2026.10.0",
+        "esp_idf": "5.5.6",
+        "builder": "ghcr.io/esphome/esphome:2026.10.0@sha256:1dff19a59070cdb523b76576cdc74d200f862d43c1407809088855920cf57145",
+        "built": "2026-11-10 15:55:44 +0000",
+        "earlier_builds": [
+          "2026-10-21 02:35:20 +0100",
+          "2026-10-22 19:49:39 +0000",
+          "2026-10-26 17:26:39 +0000",
+          "2026-11-04 14:38:48 +0000",
+          "2026-11-06 22:21:09 +0000"
+        ],
+        "size": 967936,
+        "sha256": "78a9796bdc169e1f208e2ebe93766d9be9a3c69ab33d3b9bdc79e05b3188fcab"
+      }
     },
-    "mover": {
-      "file": "artifacts/autoflash-mover-1.1.0.bin",
-      "config": "devices/sonoff-s60/mover.yaml",
-      "version": "1.1.0",
-      "esphome": "2026.9.1",
-      "esp_idf": "5.5.5",
-      "size": 756960,
-      "sha256": "f6e131e1599c886d742c151c3ba3f84a285bba462b438c36b611d577e01ad243"
+    "sonoff-pow-elite": {
+      "esphome": {
+        "file": "artifacts/esphome-sonoff-pow-elite-imprintable-2026.10.0-2.bin",
+        "config": "devices/sonoff-pow-elite/esphome.yaml",
+        "version": "2026.10.0-2",
+        "esphome": "2026.10.0",
+        "esp_idf": "5.5.6",
+        "builder": "ghcr.io/esphome/esphome:2026.10.0@sha256:1dff19a59070cdb523b76576cdc74d200f862d43c1407809088855920cf57145",
+        "built": "2026-11-10 15:57:05 +0000",
+        "earlier_builds": [
+          "2026-11-05 23:13:00 +0000",
+          "2026-11-06 22:23:44 +0000"
+        ],
+        "size": 883312,
+        "sha256": "1a462e946c051e8c735cdb53f0b8100e28203c488f697e5a548d8a2c29d4cc0d"
+      }
+    },
+    "sonoff-powct": {
+      "esphome": {
+        "file": "artifacts/esphome-sonoff-powct-imprintable-2026.10.0-3.bin",
+        "config": "devices/sonoff-powct/esphome.yaml",
+        "version": "2026.10.0-3",
+        "esphome": "2026.10.0",
+        "esp_idf": "5.5.6",
+        "builder": "ghcr.io/esphome/esphome:2026.10.0@sha256:1dff19a59070cdb523b76576cdc74d200f862d43c1407809088855920cf57145",
+        "built": "2026-11-10 15:57:40 +0000",
+        "earlier_builds": [
+          "2026-11-06 01:00:39 +0000",
+          "2026-11-06 22:24:31 +0000",
+          "2026-11-08 18:48:06 +0000"
+        ],
+        "size": 870656,
+        "sha256": "d75f9b4e4a7ed58a95cb1ad6a08fa4a0bfce5f03af3b65443fa924506a11c31f"
+      }
+    },
+    "sonoff-th-elite": {
+      "esphome": {
+        "file": "artifacts/esphome-sonoff-th-elite-imprintable-2026.10.0-2.bin",
+        "config": "devices/sonoff-th-elite/esphome.yaml",
+        "version": "2026.10.0-2",
+        "esphome": "2026.10.0",
+        "esp_idf": "5.5.6",
+        "builder": "ghcr.io/esphome/esphome:2026.10.0@sha256:1dff19a59070cdb523b76576cdc74d200f862d43c1407809088855920cf57145",
+        "built": "2026-11-10 15:58:17 +0000",
+        "earlier_builds": [
+          "2026-11-06 01:04:22 +0000",
+          "2026-11-06 22:25:23 +0000"
+        ],
+        "size": 863120,
+        "sha256": "6783373bce2d8941b7e20080a85360a24f6a57e72e57ad72a7a2d511f3983d0a"
+      },
+      "table": {
+        "file": "artifacts/sonoff-th-elite-partition-table.bin",
+        "size": 4096,
+        "sha256": "36d7dc76c5d2459ea174e48aaa19ff93dcb8130c43b124bba409d78b9c01c1b6"
+      }
+    },
+    "sonoff-dualr3": {
+      "esphome": {
+        "file": "artifacts/esphome-sonoff-dualr3-imprintable-2026.10.0-2.bin",
+        "config": "devices/sonoff-dualr3/esphome.yaml",
+        "version": "2026.10.0-2",
+        "esphome": "2026.10.0",
+        "esp_idf": "5.5.6",
+        "builder": "ghcr.io/esphome/esphome:2026.10.0@sha256:1dff19a59070cdb523b76576cdc74d200f862d43c1407809088855920cf57145",
+        "built": "2026-11-10 15:58:52 +0000",
+        "earlier_builds": [
+          "2026-11-06 01:27:40 +0000",
+          "2026-11-06 22:26:08 +0000"
+        ],
+        "size": 868816,
+        "sha256": "3923e646cea3bd5e39692e2a92b39234677ebd94f0454d1487554fbfa0712c2a"
+      }
+    },
+    "sonoff-nspanel": {
+      "table": {
+        "file": "artifacts/sonoff-nspanel-partition-table.bin",
+        "size": 4096,
+        "sha256": "3c6436bcbd529015fcb3fd98565b7753199910b3dba30c9d6ccce77d08e09d70"
+      }
     }
   },
   "beken": {
     "sonoff-s61": {
       "openbeken": {
-        "file": "artifacts/openbeken-sonoff-s61-1.1.0.rbl",
-        "version": "1.1.0",
+        "file": "artifacts/openbeken-sonoff-s61-1.18.320-2.rbl",
+        "version": "1.18.320-2",
+        "release": "1.18.320",
         "app_commit": "ce1abad8dc931720167a7628840adae30b92afaf",
         "sdk_commit": "f5a64d4cda03bac6d885f4f30c27bbd3435c5e3a",
         "sources": {
-          "tools/beken/openbeken/drv_autoflash.c": "d13081fa1478b4567f2c1de9b897aa80805099b266d770fb81a6a0b3b17bb469",
-          "tools/beken/openbeken/drv_autoflash.h": "2218efb6dca42e52ad92ec42afbeef8d43b33c6fee27006cf1c9025376d0c381",
-          "devices/sonoff-s61/drv_autoflash_sonoff_s61.c": "b7b0e311cd7b7d17dc0d74fa287824447ddee2c81da8875a08436063c620bb40"
+          "tools/beken/openbeken/drv_autoflash.c": "9a94d9c09d383abf0e12e1256bafd1d7e02568711228e9d9199e8fc68db8d293",
+          "tools/beken/openbeken/drv_autoflash.h": "29ccfdfd9cd9a8874275784fa41222a91d4cffadfce9740a74bc3913f0e6a23f",
+          "devices/sonoff-s61/drv_autoflash_sonoff_s61.c": "bf0eb0ff7eefacb2f0b41bda41ccee3b9fdcbd0b5d665c6292e31b99876f663e"
         },
         "patches": {
           "openbk7231t_app-bk7238-4m-flash.patch": "257b02a72a217d1644d35051dc3ba97f8522154fa25b4f67e6c0b44e63aada58",
           "openbk7231t_app-ota-before-reboot-hook.patch": "cb1575c22da2a2e4e0a071e107e9db064d4b5bec57925ee1ee2f5d501a22ed1a",
           "beken_freertos_sdk-4m-pack-profile.patch": "9d9e35179e947107b8664da51f1e75c3dbc5a575682f7fe5e59792222e2e7fe8"
         },
-        "builder": "ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852 with tools/beken/openbeken/build.Dockerfile 4b04244bb63658a1",
-        "size": 510288,
-        "sha256": "07f45d62f32b8f89f782ae6460253c7dc17fdbaceb20b2521e6db2e59a254687"
+        "builder": "ubuntu@sha256:24737cef17f4e22b1977df7d9a05e77c4e28b7da5b8911f8d8ccda136bf3573c with tools/beken/openbeken/build.Dockerfile 4b04244bb63658a1",
+        "size": 510432,
+        "sha256": "4faef4259545557d2eee7e12499cb24c89c51e443cb987d7ad90d5f7d0bf68c1"
       },
       "esphome": {
-        "file": "artifacts/esphome-sonoff-s61-1.2.0.rbl",
+        "file": "artifacts/esphome-sonoff-s61-2026.10.0-3.rbl",
         "config": "devices/sonoff-s61/esphome.yaml",
-        "version": "1.2.0",
+        "version": "2026.10.0-3",
         "esphome": "2026.10.0",
         "libretiny": "1.13.0",
         "builder": "ghcr.io/esphome/esphome:2026.10.0@sha256:1dff19a59070cdb523b76576cdc74d200f862d43c1407809088855920cf57145",
-        "size": 505168,
-        "sha256": "2c61622bcbbc11b7ee1b1e9b082a73f4d35c19570471efb7b0e41a75ad181172",
-        "built": "2026-11-04 14:39:04 +0000",
-        "earlier_builds": []
+        "built": "2026-11-10 15:56:18 +0000",
+        "earlier_builds": [
+          "2026-11-04 14:39:04 +0000",
+          "2026-11-06 22:21:51 +0000",
+          "2026-11-08 18:44:20 +0000"
+        ],
+        "size": 505216,
+        "sha256": "f1a5e519ba079e4d45a8a77f7ca81cadb8398e21fd1914dda86addbac84f59f7"
+      }
+    },
+    "sonoff-basic-1gs": {
+      "openbeken": {
+        "file": "artifacts/openbeken-sonoff-basic-1gs-1.18.320-1.rbl",
+        "version": "1.18.320-1",
+        "release": "1.18.320",
+        "app_commit": "ce1abad8dc931720167a7628840adae30b92afaf",
+        "sdk_commit": "f5a64d4cda03bac6d885f4f30c27bbd3435c5e3a",
+        "sources": {
+          "tools/beken/openbeken/drv_autoflash.c": "9a94d9c09d383abf0e12e1256bafd1d7e02568711228e9d9199e8fc68db8d293",
+          "tools/beken/openbeken/drv_autoflash.h": "29ccfdfd9cd9a8874275784fa41222a91d4cffadfce9740a74bc3913f0e6a23f",
+          "devices/sonoff-basic-1gs/drv_autoflash_sonoff_basic_1gs.c": "147b462777fdd8e15532a3b9d731dc2c2065fc43307d5336aa4ceaa023cce9e6"
+        },
+        "patches": {
+          "openbk7231t_app-bk7238-4m-flash.patch": "257b02a72a217d1644d35051dc3ba97f8522154fa25b4f67e6c0b44e63aada58",
+          "openbk7231t_app-ota-before-reboot-hook.patch": "cb1575c22da2a2e4e0a071e107e9db064d4b5bec57925ee1ee2f5d501a22ed1a",
+          "beken_freertos_sdk-4m-pack-profile.patch": "9d9e35179e947107b8664da51f1e75c3dbc5a575682f7fe5e59792222e2e7fe8"
+        },
+        "builder": "ubuntu@sha256:24737cef17f4e22b1977df7d9a05e77c4e28b7da5b8911f8d8ccda136bf3573c with tools/beken/openbeken/build.Dockerfile 4b04244bb63658a1",
+        "size": 509680,
+        "sha256": "5129951d1e89b06f4c5c7e39a0d01b081010d338c562d78c6e422f7175965952"
+      },
+      "esphome": {
+        "file": "artifacts/esphome-sonoff-basic-1gs-2026.10.0-2.rbl",
+        "config": "devices/sonoff-basic-1gs/esphome.yaml",
+        "version": "2026.10.0-2",
+        "esphome": "2026.10.0",
+        "libretiny": "1.13.0",
+        "builder": "ghcr.io/esphome/esphome:2026.10.0@sha256:1dff19a59070cdb523b76576cdc74d200f862d43c1407809088855920cf57145",
+        "built": "2026-11-10 15:59:22 +0000",
+        "earlier_builds": [
+          "2026-11-07 01:43:32 +0000"
+        ],
+        "size": 489824,
+        "sha256": "92f00bd1476d44110c63f61d1da955c804e81e79f5f0eefec85083595fb8fa0d"
+      }
+    },
+    "readout": {
+      "openbeken": {
+        "file": "artifacts/openbeken-readout-1.18.320-1.rbl",
+        "version": "1.18.320-1",
+        "release": "1.18.320",
+        "app_commit": "ce1abad8dc931720167a7628840adae30b92afaf",
+        "sdk_commit": "f5a64d4cda03bac6d885f4f30c27bbd3435c5e3a",
+        "sources": {
+          "tools/beken/openbeken/drv_autoflash.c": "9a94d9c09d383abf0e12e1256bafd1d7e02568711228e9d9199e8fc68db8d293",
+          "tools/beken/openbeken/drv_autoflash.h": "29ccfdfd9cd9a8874275784fa41222a91d4cffadfce9740a74bc3913f0e6a23f",
+          "tools/beken/openbeken/drv_autoflash_readout.c": "4e45d77d02316db8a95ac50e36abf695697fe426b4741a779bd5afbb1e6126d8"
+        },
+        "patches": {
+          "openbk7231t_app-bk7238-4m-flash.patch": "257b02a72a217d1644d35051dc3ba97f8522154fa25b4f67e6c0b44e63aada58",
+          "openbk7231t_app-ota-before-reboot-hook.patch": "cb1575c22da2a2e4e0a071e107e9db064d4b5bec57925ee1ee2f5d501a22ed1a",
+          "beken_freertos_sdk-4m-pack-profile.patch": "9d9e35179e947107b8664da51f1e75c3dbc5a575682f7fe5e59792222e2e7fe8"
+        },
+        "builder": "ubuntu@sha256:24737cef17f4e22b1977df7d9a05e77c4e28b7da5b8911f8d8ccda136bf3573c with tools/beken/openbeken/build.Dockerfile 4b04244bb63658a1",
+        "size": 509600,
+        "sha256": "811a8437129eea92b4c29c60e5c56e623fd32ca7b1629625d91e295a901bd572"
       }
     }
   }

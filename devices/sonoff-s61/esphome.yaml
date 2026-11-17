@@ -2,31 +2,31 @@
 # WBBK_01P board), on LibreTiny.
 #
 # The conversion tool installs this pre-built, as an rt_ota update (.rbl) the
-# plug's stock bootloader applies from its download slot - the update format
-# the stock firmware itself is shipped in (docs/beken-s61-emulation.md). No
-# Wi-Fi and no passwords are in it: at boot the plug reads its own Wi-Fi
+# device's stock bootloader applies from its download slot - the update format
+# the stock firmware itself is shipped in (docs/beken-research.md). No
+# Wi-Fi and no passwords are in it: at boot the device reads its own Wi-Fi
 # from where the stock firmware left it, the EasyFlash store at 0x3e2000 that
-# no conversion touches, and joins. The tool backs the plug up before this
-# goes on, through the interim firmware, so nothing here reads the plug out.
-# Kept in this one file, so that Home Assistant can adopt the plug from it
+# no conversion touches, and joins. The tool backs the device up before this
+# goes on, through the interim firmware, so nothing here reads the device out.
+# Kept in this one file, so that Home Assistant can adopt the device from it
 # (dashboard_import) and build it there.
 #
 # The S60's config (sonoff_s60.yaml) is the model: the same entities, actions,
-# calibration handling and energy totals, so the two plugs look alike.
+# calibration handling and energy totals, so the two devices look alike.
 
 esphome:
-  # Named as every firmware the conversion installs is, whatever the plug:
+  # Named as every firmware the conversion installs is, whatever the device:
   # the firmware and the last three bytes of its MAC (esphome-abcdef), its
   # own network too; ESPHome adds them to the friendly name with a space
-  # (esphome abcdef). The comment says what plug it is, which the tool tells
+  # (esphome abcdef). The comment says what device it is, which the tool tells
   # it by - one for every model of the S61.
   name: esphome
   friendly_name: esphome
   comment: Sonoff-S61
   name_add_mac_suffix: true
   project:
-    name: adamsthws.sonoff-s61
-    version: "1.2.0"
+    name: liberator.sonoff-s61
+    version: "2026.10.0-3"
   # System headers only: adoption takes this one file
   includes:
     - <libretiny.h>
@@ -34,10 +34,10 @@ esphome:
   # generic BK7238 board is the SDK's 2 MB layout). The bootloader's partition
   # table: app 0x10000+0x250000 (0x11000+0x275000 with its CRC stripes),
   # download 0x286000+0x15A000 - where the stock bootloader applies an update
-  # from, so ESPHome's own updates go through it too. Above that the plug's own
+  # from, so ESPHome's own updates go through it too. Above that the device's own
   # data: the factory store with the radio calibration at 0x3e0000, the stock
   # EasyFlash store (Wi-Fi, meter trim, identity) at 0x3e2000, which stays as
-  # it is so the plug can always go back to stock. ESPHome's preferences take
+  # it is so the device can always go back to stock. ESPHome's preferences take
   # the empty 32 KB at 0x3ee000; LittleFS (unused) the sector at 0x3e1000,
   # where the interim firmware left its settings.
   platformio_options:
@@ -121,12 +121,12 @@ esphome:
             wifi::WiFiAP ap;
             ap.set_ssid(App.get_name());
             wifi::global_wifi_component->set_ap(ap);
-    # After globals are restored (800), before the meter is read: the plug's
+    # After globals are restored (800), before the meter is read: the device's
     # factory calibration, as the stock firmware applies it.
     - priority: 600
       then:
         - lambda: |-
-            // Else the one the conversion tool gave from the plug's Sonoff
+            // Else the one the conversion tool gave from the device's Sonoff
             // backup (autoflash_calibration), once the stock store has none.
             const char *source;
             if (id(calibration_stock_found)) {
@@ -176,13 +176,13 @@ esphome:
               }
             }
 
-# Adopting the plug in Home Assistant's ESPHome builder takes this config as
-# a package: the plug's own config names it, with the plug's name, API key
+# Adopting the device in Home Assistant's ESPHome builder takes this config as
+# a package: the device's own config names it, with the device's name, API key
 # and Wi-Fi. It names the release this image came out in, which cannot change,
-# so nothing of ours reaches an adopted plug until its owner names a newer one.
+# so nothing of ours reaches an adopted device until its owner names a newer one.
 # update_firmware.py writes the release.
 dashboard_import:
-  package_import_url: github://adamsthws/firmware-liberator/devices/sonoff-s61/esphome.yaml@v2.3.0
+  package_import_url: github://adamsthws/firmware-liberator/devices/sonoff-s61/esphome.yaml@v3.0.0
   import_full_config: false
 
 globals:
@@ -211,8 +211,8 @@ globals:
   - id: calibration_status
     type: std::string
     initial_value: '"unknown"'
-  # The factory calibration the conversion tool gave from the plug's Sonoff
-  # backup, for a plug whose stock store no longer has it.
+  # The factory calibration the conversion tool gave from the device's Sonoff
+  # backup, for a device whose stock store no longer has it.
   - id: calibration_from_backup
     type: std::array<double, 9>
     restore_value: true
@@ -252,12 +252,12 @@ preferences:
 logger:
 
 api:
-  # Not restarting when Home Assistant is away: a plug without it would cut
+  # Not restarting when Home Assistant is away: a device without it would cut
   # the power to what it runs every 15 minutes (the default).
   reboot_timeout: 0s
   actions:
-    # The Wi-Fi the plug is on, name and password, for the conversion tool to
-    # hand to the next firmware when the plug leaves ESPHome: ESPHome says
+    # The Wi-Fi the device is on, name and password, for the conversion tool to
+    # hand to the next firmware when the device leaves ESPHome: ESPHome says
     # neither otherwise. Anything that can use this API can ask - anything on
     # the network, while the API has no encryption key. Give the API a key to
     # close it; the tool then asks for the details instead.
@@ -268,9 +268,9 @@ api:
             data: !lambda |-
               root["ssid"] = wifi::global_wifi_component->get_sta().get_ssid();
               root["password"] = wifi::global_wifi_component->get_sta().get_password();
-    # The plug's factory calibration (a, b, c for current, voltage and power,
+    # The device's factory calibration (a, b, c for current, voltage and power,
     # as the stock firmware stores it), which the conversion tool gives from
-    # the plug's Sonoff backup: saved, and used when the stock store has none.
+    # the device's Sonoff backup: saved, and used when the stock store has none.
     # The tool then reads the Calibration sensor.
     - action: autoflash_calibration
       variables:
@@ -287,7 +287,7 @@ api:
             }
         - component.update: calibration_sensor
         # Written to flash now, once the globals have saved themselves (each
-        # loop), not up to a minute later: unplugged in that minute, the plug
+        # loop), not up to a minute later: unplugged in that minute, the device
         # would forget it.
         - delay: 1s
         - lambda: global_preferences->sync();
@@ -297,7 +297,7 @@ ota:
 
 web_server:
   version: 3
-  # The page's code from the plug itself, so it works where the plug has no internet.
+  # The page's code from the device itself, so it works where the device has no internet.
   local: true
 
 wifi:
@@ -456,10 +456,14 @@ sensor:
   # and a 2040:1 divider. Calibrated as the stock firmware does: it reckons
   # the pulse rate with a reference of 1.1 V where the BL0937 datasheet (and
   # ESPHome) say 1.218 V, then applies the factory trim a*x^2/1e7 + b*x/1e6 +
-  # c/1e6 to a reading x in A, V or W.
+  # c/1e6 to a reading x in A, V or W. A BL0937 measures the voltage with SEL
+  # high, where hlw8012 drives it high for the current (an HLW8012's sense),
+  # so SEL is inverted, as ESPHome's page says for this model.
   - platform: hlw8012
     model: BL0937
-    sel_pin: P24
+    sel_pin:
+      number: P24
+      inverted: true
     cf_pin: P8
     cf1_pin: P6
     current_resistor: 0.001
@@ -517,7 +521,7 @@ sensor:
         - throttle: 5s
 
   # The energy totals, kept through restarts and updates. Named as the S60's,
-  # so the two plugs look alike in Home Assistant.
+  # so the two devices look alike in Home Assistant.
   - platform: template
     name: "Daily energy"
     id: energy_daily
@@ -558,9 +562,9 @@ sensor:
     device_class: energy
     state_class: total_increasing
 
-  # The Wi-Fi signal where the plug is, in dBm. The conversion tool reads it
-  # (/sensor/WiFi Signal) before it changes the plug's firmware, to suggest
-  # moving a plug whose signal is weak; keep its name for that.
+  # The Wi-Fi signal where the device is, in dBm. The conversion tool reads it
+  # (/sensor/WiFi Signal) before it changes the device's firmware, to suggest
+  # moving a device whose signal is weak; keep its name for that.
   - platform: wifi_signal
     name: "WiFi Signal"
     entity_category: diagnostic

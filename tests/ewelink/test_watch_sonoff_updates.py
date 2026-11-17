@@ -8,10 +8,10 @@ import unittest
 from pathlib import Path
 
 from tools.ewelink.get_device_key import EwelinkError
-from tools.ewelink.watch_sonoff_updates import (PacketParser, Recorder, describe, end_process, find_plug, offers,
+from tools.ewelink.watch_sonoff_updates import (PacketParser, Recorder, describe, end_process, find_device, offers,
                                         redact, remote_capture, summarise)
 
-# Real tcpdump 4.99 output (-l -e -nn -tttt -A -s 0) for a plug that boots,
+# Real tcpdump 4.99 output (-l -e -nn -tttt -A -s 0) for a device that boots,
 # looks up its server, opens the firmware port and asks for a download.
 CAPTURE = """\
 2026-10-03 05:00:00.000000 aa:bb:cc:11:22:33 > ff:ff:ff:ff:ff:ff, ethertype IPv4 (0x0800), length 282: 0.0.0.0.68 > 255.255.255.255.67: BOOTP/DHCP, Request, length 240
@@ -40,7 +40,7 @@ class PacketParserTests(unittest.TestCase):
                          ["dhcp", "dns_query", "dns_answer", "connect", "http_request", "connect", "ntp"])
         self.assertEqual(events[1]["name"], "eu-disp.coolkit.cc")
         self.assertEqual(events[2]["addresses"], ["52.57.99.135"])
-        # The connection is named from the plug's own lookup.
+        # The connection is named from the device's own lookup.
         self.assertEqual(events[3], {"kind": "connect", "address": "52.57.99.135", "port": 8088,
                                      "name": "eu-disp.coolkit.cc"})
         self.assertEqual(events[4]["port"], 8088)
@@ -74,17 +74,17 @@ def tls(second, outbound, length):
 
 
 class CloudConnectionTests(unittest.TestCase):
-    """Encrypted traffic is judged by timing: replies follow the plug, pushes do not."""
+    """Encrypted traffic is judged by timing: replies follow the device, pushes do not."""
 
     def events(self, packets):
         parser = PacketParser(None, "aa:bb:cc:12:34:56")
         return [e for second, out, length in packets for e in parser.feed(tls(second, out, length))]
 
-    def test_a_reply_to_the_plug_is_not_a_push(self):
+    def test_a_reply_to_the_device_is_not_a_push(self):
         events = self.events([(1, True, 40), (1.3, False, 40)])
         self.assertEqual([e["kind"] for e in events], ["tcp_data", "tcp_data"])
 
-    def test_data_the_plug_did_not_ask_for_is_a_push_counted_once(self):
+    def test_data_the_device_did_not_ask_for_is_a_push_counted_once(self):
         events = self.events([(1, True, 40), (1.3, False, 40), (20, False, 1400), (20.01, False, 300)])
         pushes = [e for e in events if e["kind"] == "cloud_push"]
         self.assertEqual(len(pushes), 1)          # the second segment is the same message
@@ -105,12 +105,12 @@ class CloudConnectionTests(unittest.TestCase):
                 recorder.event(event.pop("kind"), None, **event)
             report = summarise(recorder, time.monotonic())
             recorder.close()
-        self.assertIn("3.120.0.1:8081: plug checked in 4 times, typically every 1.0 min", report)
+        self.assertIn("3.120.0.1:8081: device checked in 4 times, typically every 1.0 min", report)
         self.assertIn("Cloud spoke first: 1 time(s)", report)
         self.assertIn("1 x 500 bytes", report)
 
-    def test_the_plug_answering_the_cloud_is_not_a_check_in(self):
-        # The real pattern: the cloud speaks, the plug answers, later a heartbeat.
+    def test_the_device_answering_the_cloud_is_not_a_check_in(self):
+        # The real pattern: the cloud speaks, the device answers, later a heartbeat.
         packets = [(17.8, False, 194), (18.0, True, 232), (18.07, True, 168), (18.1, False, 128),
                    (163.2, True, 35), (163.3, False, 31)]
         with tempfile.TemporaryDirectory() as tmp:
@@ -119,7 +119,7 @@ class CloudConnectionTests(unittest.TestCase):
                 recorder.event(event.pop("kind"), None, **event)
             report = summarise(recorder, time.monotonic())
             recorder.close()
-        self.assertIn("plug sent data 1 time(s)", report)
+        self.assertIn("device sent data 1 time(s)", report)
         self.assertIn("Cloud spoke first: 1 time(s)", report)
 
 
@@ -140,10 +140,10 @@ class CloudHelperTests(unittest.TestCase):
     def test_finds_the_only_s60(self):
         s60 = {"deviceid": "1", "extra": {"model": "SN-ESP32C3-S60-01"}, "params": {"fwVersion": "1.2.0"}}
         other = {"deviceid": "2", "extra": {"model": "OTHER"}, "params": {"fwVersion": "3.0"}}
-        self.assertIs(find_plug([other, {"deviceid": "3"}, s60], None), s60)
+        self.assertIs(find_device([other, {"deviceid": "3"}, s60], None), s60)
         with self.assertRaises(EwelinkError):
-            find_plug([s60, dict(s60, deviceid="4")], None)
-        self.assertIs(find_plug([other, s60], "2"), other)
+            find_device([s60, dict(s60, deviceid="4")], None)
+        self.assertIs(find_device([other, s60], "2"), other)
 
 
 class SummaryTests(unittest.TestCase):
@@ -175,7 +175,7 @@ class RouterSafetyTests(unittest.TestCase):
 
     def command(self, **kwargs):
         from types import SimpleNamespace
-        args = SimpleNamespace(**{"plug_ip": None, "plug_mac": "aa:bb:cc:11:22:33", "interface": "em0", **kwargs})
+        args = SimpleNamespace(**{"device_ip": None, "device_mac": "aa:bb:cc:11:22:33", "interface": "em0", **kwargs})
         return remote_capture(args, 3720)
 
     def test_capture_never_changes_the_interface_and_ends_by_itself(self):
@@ -189,7 +189,7 @@ class RouterSafetyTests(unittest.TestCase):
 
     def test_an_address_filter_is_used_without_a_mac(self):
         import shlex
-        self.assertTrue(shlex.split(self.command(plug_ip="192.0.2.50", plug_mac=None))[-1]
+        self.assertTrue(shlex.split(self.command(device_ip="192.0.2.50", device_mac=None))[-1]
                         .startswith("host 192.0.2.50 and ("))
 
     def test_a_process_that_ignores_terminate_is_killed(self):

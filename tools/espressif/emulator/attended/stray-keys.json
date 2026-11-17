@@ -1,0 +1,89 @@
+{
+ "about": "From Sonoff's firmware to Tasmota in a window 80 wide, keys pressed by accident throughout - letters, the arrows, function keys, Enter - as stages run, as the report is put together, and before each answer: none shows, moves the cursor or answers a question",
+ "start": "fresh",
+ "size": "80x40",
+ "answers": [
+  {
+   "when": "Press any key",
+   "type": "x"
+  },
+  {
+   "when": "Which firmware should the device have",
+   "type": "\u001b[A\u001b[B\u001b[C\u001b[D\u001b[H\u001b[F\u001bOP\t\u001b[5~1\r"
+  },
+  {
+   "when": "Stage +5 - .* +- Underway",
+   "type": "zq\u001b[A\u001b[B\u001b[C\u001b[D\u001b[H\u001b[F\u001bOP\t\u001b[5~\u007f",
+   "anywhere": true
+  },
+  {
+   "when": "Stage +9 - .* +- Underway",
+   "type": "zq\u001b[A\u001b[B\u001b[C\u001b[D\u001b[H\u001b[F\u001bOP\t\u001b[5~\u007f\r",
+   "anywhere": true
+  },
+  {
+   "when": "Stage +15 - .* +- Underway",
+   "type": "zq\u001b[A\u001b[B\u001b[C\u001b[D\u001b[H\u001b[F\u001bOP\t\u001b[5~\u007f",
+   "anywhere": true
+  },
+  {
+   "when": "Generating your report",
+   "type": "zq\u001b[A\u001b[B\u001b[C\u001b[D\u001b[H\u001b[F\u001bOP\t\u001b[5~\u007f",
+   "anywhere": true
+  },
+  {
+   "when": "Type .+ to go ahead",
+   "type": "\u001b[A\u001b[B\u001b[C\u001b[D\u001b[H\u001b[F\u001bOP\t\u001b[5~PROCEED\r",
+   "times": 3
+  },
+  {
+   "when": "What next",
+   "type": "\u001b[A\u001b[B\u001b[C\u001b[D\u001b[H\u001b[F\u001bOP\t\u001b[5~q\r"
+  },
+  {
+   "when": "Which device is this run for",
+   "type": "1\r",
+   "optional": true
+  },
+  {
+   "when": "This computer's password \\(for sudo\\)",
+   "type": "autoflash\r",
+   "times": 6,
+   "optional": true
+  },
+  {
+   "when": "Which eWeLink account is this device in",
+   "type": "2\r",
+   "optional": true
+  },
+  {
+   "when": "eWeLink account email or phone number",
+   "type": "someone@example.invalid\r",
+   "optional": true
+  },
+  {
+   "when": "eWeLink password for",
+   "type": "made-up-password\r",
+   "optional": true
+  },
+  {
+   "when": "\\[[Yy]/n\\]",
+   "type": "n\r",
+   "optional": true
+  },
+  {
+   "when": "\\(y/N[^)]*\\)|\\(Y/n[^)]*\\)",
+   "type": "y\r",
+   "times": 3,
+   "optional": true
+  }
+ ],
+ "expect": {
+  "exit": 0,
+  "result": "Converted",
+  "never": [
+   "zq",
+   "\\^\\["
+  ]
+ }
+}

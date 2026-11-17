@@ -1,0 +1,56 @@
+{
+ "about": "Told the device is still on Sonoff's firmware when it runs Tasmota: not found, so its address typed - not an address, then one nothing answers at, then one that is not the device - then quit",
+ "start": "stub-suite-tasmota",
+ "minutes": 20,
+ "answers": [
+  {
+   "when": "Which device is this run for",
+   "type": "2\r"
+  },
+  {
+   "when": "Press any key",
+   "type": "x"
+  },
+  {
+   "when": "What now",
+   "type": "3\r"
+  },
+  {
+   "when": "The device's address",
+   "type": "eth0\r"
+  },
+  {
+   "when": "The device's address",
+   "type": "192.168.60.99\r"
+  },
+  {
+   "when": "The device's address",
+   "type": "192.168.60.1\r"
+  },
+  {
+   "when": "The device's address",
+   "type": "q\r"
+  },
+  {
+   "when": "This computer's password \\(for sudo\\)",
+   "type": "autoflash\r",
+   "times": 6,
+   "optional": true
+  },
+  {
+   "when": "\\(y/N[^)]*\\)|\\(Y/n[^)]*\\)",
+   "type": "y\r",
+   "times": 3,
+   "optional": true
+  },
+  {
+   "when": "\\[[Yy]/n\\]",
+   "type": "n\r",
+   "optional": true
+  }
+ ],
+ "expect": {
+  "exit": 130,
+  "screen": false
+ }
+}

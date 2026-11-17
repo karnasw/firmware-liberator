@@ -1,0 +1,47 @@
+---
+// The tool's downloads and the devices converted, all time to each day, as
+// two lines on one scale, so the one reads against the other. `days` the
+// figures' downloads.days, oldest first. A day the devices were under the
+// smallest figure shows no point of theirs. Only each line's last point is a
+// tab stop, as a year is hundreds of days: the table under it has every one.
+const { days } = Astro.props;
+const series = [["downloads", "Downloads of the tool", "series-1"], ["converted", "Devices converted", "series-2"]];
+const present = series.filter(([key]) => days.some((day) => day[key] !== null));
+const top = Math.max(1, ...days.flatMap((day) => series.map(([key]) => day[key] ?? 0)));
+const step = 10 ** Math.floor(Math.log10(top));
+const ceiling = Math.ceil(top / step) * step;
+const ticks = [0, ceiling / 2, ceiling];
+const [W, H, left, bottom, topPad] = [640, 240, 44, 28, 18];
+const x = (index) => left + ((W - left - 8) * index) / Math.max(1, days.length - 1);
+const y = (value) => topPad + (H - topPad - bottom) * (1 - value / ceiling);
+const label = (day) => new Date(`${day}T00:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+// A series' line, broken where a day has none.
+const path = (key) => days.map((day, index) => (day[key] === null ? null : [index, day[key]]))
+  .map((point, index, all) => (point ? `${all[index - 1] ? "L" : "M"}${x(point[0]).toFixed(1)},${y(point[1]).toFixed(1)}` : ""))
+  .join(" ");
+---
+<figure class="chart">
+  <ul class="legend">
+    {present.map(([, name, colour]) => <li><span class={`swatch ${colour}`}></span>{name}</li>)}
+  </ul>
+  <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Downloads of the tool and devices converted, all time to each day">
+    {ticks.map((tick) => (
+      <g>
+        <line class="grid" x1={left} x2={W} y1={y(tick)} y2={y(tick)} />
+        <text class="tick" x={left - 8} y={y(tick) + 4} text-anchor="end">{tick.toLocaleString("en")}</text>
+      </g>
+    ))}
+    {present.map(([key, name, colour]) => (
+      <g>
+        <path class={`trend-line ${colour}`} d={path(key)} />
+        {days.map((day, index) => day[key] !== null && (
+          <circle class={`trend-dot ${colour}`} cx={x(index)} cy={y(day[key])} r={index === days.length - 1 ? 4 : 2}
+            tabindex={index === days.length - 1 ? "0" : undefined} data-tip={`${label(day.day)}: ${day[key].toLocaleString("en")} ${name.toLowerCase()}`}
+            aria-label={`${label(day.day)}: ${day[key].toLocaleString("en")} ${name.toLowerCase()}`} />
+        ))}
+      </g>
+    ))}
+    <text class="tick" x={left} y={H - 8}>{label(days[0].day)}</text>
+    <text class="tick" x={W} y={H - 8} text-anchor="end">{label(days.at(-1).day)}</text>
+  </svg>
+</figure>

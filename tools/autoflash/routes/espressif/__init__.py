@@ -1,5 +1,5 @@
-"""The Espressif routes (the Sonoff S60): every step of every direction,
-and what the runner needs to know of each - which write to the plug, which
+"""The Espressif routes: every step of every direction,
+and what the runner needs to know of each - which write to the device, which
 may be tried again, what each is called and what it leaves behind.
 """
 
@@ -7,28 +7,71 @@ from __future__ import annotations
 
 from typing import Any, Callable, TYPE_CHECKING
 
-from tools.autoflash import account, esphome, kinds
+from tools.autoflash import account, esphome as esphome, kinds
+from tools.autoflash.device import DeviceError
 from tools.autoflash.routes import update
-from tools.autoflash.routes.espressif import bundle, hub, installer, mover, sonoff, supla, tasmota
+from tools.autoflash.routes.espressif import bundle, hub, identity, installer, mover, sonoff, supla, tasmota
 from tools.autoflash.routes.espressif.evidence import ATTEMPTED_EVIDENCE, DESTRUCTIVE_STEPS  # noqa: F401
+from tools.autoflash.routes.espressif import images
 
-# Sonoff's firmware goes back on from the plug's own backup: there is no other.
+# Sonoff's firmware goes back on from the device's own backup where this computer
+# has it - or else from Sonoff's official firmware and the device's identity
+# (sonoff_without_backup).
 SONOFF_FROM_BACKUP = True
+
+
+def sonoff_without_backup(ctx: Context, source: str) -> str | None:
+    """What going back to Sonoff's firmware uses for a device with no backup on
+    this computer, once it is chosen - before anything is written - in words
+    for the run; None where there is nothing. Sonoff's official firmware is
+    always to be had; the device's identity is what may not be. A device on
+    Tasmota keeps it in a sector this reads; failing that, the eWeLink
+    account's record of the device rebuilds it. ESPHome, and a device part way,
+    keep it too - in that sector and in Sonoff's settings - but only the
+    interim Tasmota can read them (R1 does): with no record in the account,
+    the run goes on counting on them, as a device this tool converted has them."""
+    try:
+        kept = source in ("tasmota", "untemplated") and identity.kept_in_sector(ctx) is not None
+    except (DeviceError, OSError):
+        kept = False  # only what a run would use is said here
+    if kept:
+        return "the Sonoff identity the device keeps, with Sonoff's official firmware"
+    record = identity.account_record(ctx) is not None
+    if source in ("esphome", "midway", "committed", "safeboot"):
+        return ("the Sonoff identity the device keeps" + (" - or, failing that, your eWeLink account's record of it"
+                                                          if record else "") + ", with Sonoff's official firmware")
+    if record:
+        return "your eWeLink account's record of the device, with Sonoff's official firmware"
+    return None
+
+
+# Tasmota to ESPHome without the hub, for a device found with ESPHome's bootloader
+# already (source.leaves_tasmota_direct): the steps a run takes, not what it left
+# from, which stays "tasmota" (routes.route_source). Every other device goes through
+# the hub, so that every device ends with the same bootloader.
+DIRECT_FROM_TASMOTA = "tasmota-direct"
 
 if TYPE_CHECKING:
     from tools.autoflash.context import Context
 
-# What a plug of this family may run: the firmware a run installs, by its key.
+# What a device of this family may run: the firmware a run installs, by its key.
 FIRMWARES = {"tasmota": "Tasmota", "esphome": "ESPHome", "supla": "Supla", "sonoff": "Sonoff"}
-# After this step the plug no longer runs its Sonoff firmware.
+# The firmware only some kinds may have, and which (routes.firmwares_of): Supla's
+# route knows the S60's layout and template alone (tools/autoflash/supla.py).
+ONLY_FOR: dict[str, tuple[str, ...]] = {"supla": (kinds.SONOFF_S60.key,)}
+# After this step the device no longer runs its Sonoff firmware.
 POINT_OF_NO_RETURN = "C2"
+# The steps a dry run goes through (--dry-run): those that only read, before
+# the first that writes - the prerequisites. It stops there, as
+# every step after needs what that one would have written (runner.run_steps, cli.cmd_step).
+READ_ONLY_STEPS = {"A0", "A1", "A2", "A3", "A5"}
 
 
 def published_version(kind: kinds.Kind, firmware: str) -> str | None:
-    """The release of `firmware` this tool installs on a plug of `kind`: its
+    """The release of `firmware` this tool installs on a device of `kind`: its
     own ESPHome's, and the official Tasmota it pins."""
-    return {"esphome": str(esphome.PINS["image"]["version"]),
-            "tasmota": tasmota.OFFICIAL_TASMOTA_VERSION}.get(firmware)
+    return {"esphome": str(images.image_pin(kind)["version"]),
+            "tasmota": str(images.chip_of(kind).pin("tasmota")["version"])}.get(firmware)
 
 
 def resume_check(ctx: Context) -> None:
@@ -37,10 +80,13 @@ def resume_check(ctx: Context) -> None:
 
 
 RESUME_CHECK = resume_check
+# What an update of a device just converted needs first (runner.bring_up_to_date):
+# official Tasmota's bundle, of this release rather than the one the run began with.
+PREPARE_UPDATE = {"tasmota": tasmota.prepare_update}
 
 
 # From Sonoff's firmware, after the start every route shares (routes.STOCK_START:
-# A0, the plug found in eWeLink, the firmware chosen): stock Sonoff layout is
+# A0, the device found in eWeLink, the firmware chosen): stock Sonoff layout is
 # still in place through D1 inclusive.
 COMMON_STEPS: list[tuple[str, str, Callable[[Context], dict[str, Any]]]] = [
     ("A5", "Offline preconditions", bundle.step_check),
@@ -49,14 +95,18 @@ COMMON_STEPS: list[tuple[str, str, Callable[[Context], dict[str, Any]]]] = [
     ("C3", "Back up the Sonoff firmware", installer.step_backup),
     ("D1", "Berry-capable Tasmota via bridge AP", installer.step_berry_tasmota),
 ]
-# The hub every route but Tasmota to ESPHome passes through: Sonoff's layout,
+# The hub every route but DIRECT_FROM_TASMOTA passes through: Sonoff's layout,
 # the Berry Tasmota running from slot 1, ESPHome's bootloader in place.
 HUB_STEPS: list[tuple[str, str, Callable[[Context], dict[str, Any]]]] = [
     ("D4", "Promote to high slot and freeze NVS", hub.step_promote),
     ("D5", "ESPHome's bootloader, once for every firmware", hub.step_bootloader),
 ]
+# The device's Sonoff identity, kept where Tasmota's layout keeps it, and where it
+# outlasts ESPHome's settings being wiped as the device leaves ESPHome.
+KEEP_IDENTITY_STEP = ("K1", "Keep the Sonoff identity at the top of memory", identity.step_keep_identity)
 # Full Tasmota product: repartition to Safeboot layout, then official image.
 TASMOTA_FINAL_STEPS: list[tuple[str, str, Callable[[Context], dict[str, Any]]]] = [
+    KEEP_IDENTITY_STEP,
     ("E1", "Preflight (read-only)", tasmota.step_preflight),
     ("E2", "Stage Safeboot into the spare slot", tasmota.step_stage),
     ("E3", "Commit the new layout", tasmota.step_commit),
@@ -67,6 +117,7 @@ TASMOTA_FINAL_STEPS: list[tuple[str, str, Callable[[Context], dict[str, Any]]]] 
 ]
 # ESPHome product: stay on stock dual-OTA table; flash ESPHome from interim Tasmota.
 ESPHOME_FINAL_STEPS: list[tuple[str, str, Callable[[Context], dict[str, Any]]]] = [
+    KEEP_IDENTITY_STEP,
     ("I1", "ESPHome into the other slot, every block checked", mover.step_esphome_install),
     ("I2", "ESPHome started and on the Wi-Fi", mover.step_esphome_check),
 ]
@@ -75,14 +126,14 @@ ESPHOME_FINAL_STEPS: list[tuple[str, str, Callable[[Context], dict[str, Any]]]] 
 # its own bootloader in place of ESPHome's: so the hub's D5 is not run.
 SUPLA_CHECK_STEP = ("S0", "The Supla firmware checked", supla.step_image)
 SUPLA_FINAL_STEPS: list[tuple[str, str, Callable[[Context], dict[str, Any]]]] = [
-    ("S1", "Supla into the other slot, every block checked, and its layout", supla.step_supla_install),
+    ("S1", "Supla as the builder lays it out, every block checked", supla.step_supla_install),
     ("S2", "Supla started and set up through its own network", supla.step_supla_check),
 ]
 SONOFF_FINAL_STEPS: list[tuple[str, str, Callable[[Context], dict[str, Any]]]] = [
-    ("R1", "The device's own Sonoff firmware and settings, from its backup", sonoff.step_sonoff_restore),
+    ("R1", "The device's own Sonoff firmware and settings", sonoff.step_sonoff_restore),
     ("R2", "Sonoff's firmware started and on the Wi-Fi", sonoff.step_sonoff_check),
 ]
-# From a converted plug: Tasmota leaves its layout for the mover; ESPHome, or
+# From a converted device: Tasmota leaves its layout for the mover; ESPHome, or
 # the mover, takes the startup firmware, which takes the Berry Tasmota.
 LEAVE_TASMOTA_STEP = ("L1", "From Tasmota's layout to the mover on Sonoff's", mover.step_leave_tasmota)
 TO_HUB_STEPS: list[tuple[str, str, Callable[[Context], dict[str, Any]]]] = [
@@ -91,7 +142,7 @@ TO_HUB_STEPS: list[tuple[str, str, Callable[[Context], dict[str, Any]]]] = [
 ]
 # What every run of this family begins with, after A0: the checks on this computer.
 START_STEPS = [step for step in COMMON_STEPS if step[0] == "A5"]
-# "midway": a plug a run left part way, found by a new one: on Sonoff's layout,
+# "midway": a device a run left part way, found by a new one: on Sonoff's layout,
 # running the mover, the startup firmware or the interim Tasmota.
 # "committed": one a run left past the commit (E3), on Tasmota's layout with the
 # startup firmware or an official Tasmota not yet set up - which only this
@@ -99,12 +150,12 @@ START_STEPS = [step for step in COMMON_STEPS if step[0] == "A5"]
 # firmware, on Sonoff's layout.
 # "installer": one a run left on this tool's installer (the bridge), part way
 # from Sonoff's firmware: the backup and D1 need only the installer, not eWeLink.
-# "safeboot": a converted plug on Tasmota's own safeboot, its Tasmota missing -
+# "safeboot": a converted device on Tasmota's own safeboot, its Tasmota missing -
 # an upload through Tasmota's page that failed part way (another firmware's
 # whole-flash image, say): official Tasmota goes back on, then on from there.
-# "untemplated": official Tasmota without the plug's template, on a plug this
-# computer knows, not left past a commit by its runs: a converted plug that
-# lost it, which switches nothing.  It leaves Tasmota as any converted plug;
+# "untemplated": official Tasmota without the device's template, on a device this
+# computer knows, not left past a commit by its runs: a converted device that
+# lost it, which switches nothing.  It leaves Tasmota as any converted device;
 # staying on Tasmota, it is given the template.
 SOURCES = ("sonoff", "tasmota", "esphome", "midway", "committed", "installer", "safeboot",
            "untemplated", "outdated")
@@ -145,7 +196,7 @@ def _steps_for(firmware: str, source: str) -> list[tuple[str, str, Callable[[Con
              "supla": SUPLA_FINAL_STEPS, "sonoff": SONOFF_FINAL_STEPS}[firmware]
     if source == "sonoff":
         return COMMON_STEPS + HUB_STEPS + final
-    if source == "tasmota" and firmware == "esphome":
+    if source == DIRECT_FROM_TASMOTA:
         # The mover takes ESPHome itself: no need to pass through the hub.
         return START_STEPS + [LEAVE_TASMOTA_STEP,
                               ("M1", "ESPHome, sent to the mover as an update", mover.step_esphome_from_mover),
@@ -160,7 +211,7 @@ def _steps_for(firmware: str, source: str) -> list[tuple[str, str, Callable[[Con
             rest += _steps_for(firmware, "tasmota")[len(START_STEPS):]
         return START_STEPS + rest
     if source == "safeboot":
-        # Tasmota back first, as it was; then on from Tasmota, as any converted plug.
+        # Tasmota back first, as it was; then on from Tasmota, as any converted device.
         return START_STEPS + [TASMOTA_BACK_STEP] + _steps_for(firmware, "tasmota")[len(START_STEPS):]
     if source == "untemplated":
         if firmware == "tasmota":
@@ -178,18 +229,19 @@ def _steps_for(firmware: str, source: str) -> list[tuple[str, str, Callable[[Con
 # for anything, nor C2 or E3, which must happen once.
 # U1 sends ESPHome an update, which it writes to the slot it does not run from;
 # U5 switches Tasmota to its safeboot, which takes app0 again until it holds.
-# I1 too: until the plug restarts it runs Tasmota from ota_1, and writes the
+# I1 too: until the device restarts it runs Tasmota from ota_1, and writes the
 # same checked image again; once it runs ESPHome, I1 finds it and stops.  I2
-# only waits for ESPHome and gives it the calibration again; T1 finds Tasmota
-# back already, or uploads to Tasmota's safeboot only.
-RETRY_STEPS = {"A2", "D1", "D4", "E1", "E2", "F4", "G1", "H1", "I1", "I2",
-               "L1", "M1", "X1", "X2", "D5", "R1", "T1", "U1", "U2", "U5", "U6"}
+# only waits for ESPHome and gives it the calibration again, as R2 only waits
+# for Sonoff's firmware; T1 finds Tasmota back already, or uploads to Tasmota's
+# safeboot only.
+RETRY_STEPS = {"A2", "D1", "D4", "K1", "E1", "E2", "F4", "G1", "H1", "I1", "I2",
+               "L1", "M1", "X1", "X2", "D5", "R1", "R2", "T1", "U1", "U2", "U5", "U6"}
 # A step whose verifier doubts it, recorded done, is done again, unasked.
 STEP_VERIFIERS = {**tasmota.STEP_VERIFIERS, "U1": update.still_updated, "U5": update.still_updated}
 # The steps run on a Tasmota given the Wi-Fi: one that has lost its settings
 # instead raises its own network (F4 looks for that itself, F2 starts on the
 # startup firmware).
-ERASED_CHECK_STEPS = {"D4", "D5", "E1", "E2", "E3", "I1", "S1", "G1", "H1"}
+ERASED_CHECK_STEPS = {"D4", "D5", "K1", "E1", "E2", "E3", "I1", "S1", "G1", "H1"}
 
 
 # Each step's name on its stage line, in words that need no knowledge of the
@@ -197,10 +249,11 @@ ERASED_CHECK_STEPS = {"D4", "D5", "E1", "E2", "E3", "I1", "S1", "G1", "H1"}
 STAGE_NAMES = {
     "A5": "Validating local files",
     "A2": "Querying Sonoff firmware",
-    "C2": "Sending bridge firmware",
+    "C2": "Sending installer firmware",
     "C3": "Backing up Sonoff firmware",
     "D1": "Installing interim firmware",
     "D4": "Preparing memory layout",
+    "K1": "Keeping Sonoff identity",
     "E1": "Verifying memory layout",
     "E2": "Staging startup firmware",
     "E3": "Committing memory layout",
@@ -239,10 +292,11 @@ TARGET_STAGE_NAMES = {
 PLAIN_DESCRIPTION = {
     "A5": "checks the files on this computer before anything is touched",
     "A2": "asks the device what firmware it is running",
-    "C2": "replaces the device's Sonoff firmware with our small installer firmware",
+    "C2": "replaces the device's Sonoff firmware with this tool's small installer",
     "C3": "keeps a backup of the device's Sonoff firmware on this computer",
     "D1": "puts a full Tasmota onto the device through the installer's own Wi-Fi",
     "D4": "moves Tasmota into the other half of the device's memory, out of the way",
+    "K1": "keeps the device's Sonoff identity in the last sector of its memory, for going back without a backup",
     "E1": "reads the device's memory layout and checks it, changing nothing",
     "E2": "copies the new startup firmware into the unused half of the memory",
     "E3": "rewrites the device's memory map - the one step that cannot be undone",
@@ -253,14 +307,14 @@ PLAIN_DESCRIPTION = {
     "I1": "writes ESPHome into the device, checks every block, and switches to it",
     "I2": "checks the device has started ESPHome and joined your Wi-Fi",
     "S0": "checks the Supla GUI-Generic file you built is one for the device, before anything is written",
-    "S1": "writes Supla into the device, checks every block, gives it room for its settings and switches to it",
+    "S1": "writes Supla with the bootloader and memory layout it was built with, checks every block, and switches to it",
     "S2": "has you set Supla up through its own network, then finds it on your Wi-Fi",
     "L1": "moves the device off Tasmota's memory layout, onto a small firmware that takes the next",
     "M1": "sends ESPHome to the device, which checks it and switches to it",
     "X1": "sends the startup firmware to the device as an ESPHome update",
     "X2": "puts a full Tasmota onto the device through the startup firmware",
     "D5": "updates the device's bootloader, the program that starts its firmware",
-    "R1": "writes the device's own Sonoff firmware and settings back, from its backup",
+    "R1": "writes the device's own Sonoff firmware and settings back, from its backup or its identity",
     "R2": "checks the device has started its Sonoff firmware and joined your Wi-Fi",
     "T1": "puts official Tasmota back from its safeboot, its settings kept as they are",
     "U1": "sends the device this release's ESPHome as an ordinary ESPHome update, its settings kept",

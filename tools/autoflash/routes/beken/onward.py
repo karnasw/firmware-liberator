@@ -5,7 +5,7 @@ firmware); an ESPHome on LibreTiny takes a UF2 carrying one through ESPHome's
 OTA (E1, E2, and U1, this release's ESPHome to an earlier one; U3 is
 OpenBeken's own update, this release's to an earlier one).  The stock bootloader
 applies whichever is there on the restart that follows, and the new firmware
-reads the plug's Wi-Fi from the stock store.
+reads the device's Wi-Fi from the stock store.
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ import threading
 import time
 from typing import Any, Callable, TYPE_CHECKING
 
-from tools.autoflash import detect, esphome, firewall, handover, join, kinds, openbeken, output, runs
-from tools.autoflash.errors import Abort
+from tools.autoflash import esphome, firewall, handover, join, kinds, openbeken, output, runs
+from tools.autoflash.errors import Abort, NothingWritten, StoppedPartWay
 from tools.autoflash.routes.beken import images
 from tools.beken import uf2
 from tools.ewelink import ota_push
@@ -23,11 +23,11 @@ from tools.ewelink import ota_push
 if TYPE_CHECKING:
     from tools.autoflash.context import Context
 
-# ESPHome's OTA listens here on LibreTiny (3232 on an Espressif plug).
+# ESPHome's OTA listens here on LibreTiny (3232 on an Espressif device).
 ESPHOME_OTA_PORT = 8892
 # OpenBeken fetches an image in a minute or two; it then restarts by itself.
 FETCH_WAIT = 240.0
-# A plug that has asked for nothing this long after being told to fetch is
+# A device that has asked for nothing this long after being told to fetch is
 # stuck - OpenBeken whose last download was cut off (this computer stopped
 # mid-download) refuses another until it restarts: restarted, and asked again.
 FIRST_BYTE_WAIT = 30.0
@@ -36,25 +36,52 @@ IMAGE_NAME = "firmware.rbl"
 INTERIM_FIRMWARE = images.INTERIM_NAME.removeprefix("the ")
 
 
-def serve_to_plug(ctx: Context, image: bytes, what: str, fetch: Callable[[str], None],
+def serve_to_device(ctx: Context, image: bytes, what: str, fetch: Callable[[str], None],
                   unstick: Callable[[], bool] | None = None) -> float:
-    """Serve `image` to the plug's address alone and have the plug fetch it
+    """Serve `image` to the device's address alone and have the device fetch it
     (`fetch(url)`), until it has every byte.  How long that took.  If it asks
-    for nothing in FIRST_BYTE_WAIT, `unstick()` - a restart - and ask once more."""
-    plug_ip = ctx.state.input("plug_ip")
+    for nothing in FIRST_BYTE_WAIT, `unstick()` - a restart - and ask once more.
+    A fetch that stops part way - a power cut, the Wi-Fi gone - is a stop the
+    person can act on (StoppedPartWay, as stock.py's delivery's), not an error
+    nobody foresaw: the device keeps the firmware it runs.
+
+    Redoing a step a run before was cut off in, OpenBeken is restarted first:
+    the fetch that run began may still be waiting, inside it, on a server gone
+    with the run, and OpenBeken refuses another while one is under way - saying
+    "OK" all the same - so the device would ask for nothing until restarted
+    (seen in the Beken fault suite, J2:crash-1, after FIRST_BYTE_WAIT). One
+    whose ota_http says it would not start the fetch is restarted too."""
+    device_ip = ctx.state.input("device_ip")
     listen_ip = ctx.listen_ip()
     port = firewall.choose_port(ctx, "delivery_port", firewall.DELIVERY_PORTS, what)
     firewall.ensure_firewall(ctx)
     # Each range it fetches is logged, not counted on screen: the stage line is the run's.
-    server = ota_push.FirmwareServer((listen_ip, port), image, plug_ip, say=output.say, names=(IMAGE_NAME,),
+    server = ota_push.FirmwareServer((listen_ip, port), image, device_ip, say=output.say, names=(IMAGE_NAME,),
                                      live=False)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     started = time.monotonic()
     try:
         url = f"http://{listen_ip}:{port}/{IMAGE_NAME}"
-        output.say(f"Serving {what} to {plug_ip} at {url}")
-        fetch(url)
+        output.event("phase", phase="serving")
+        output.say(f"Serving {what} to {device_ip} at {url}")
+        if unstick and getattr(ctx, "running_step", None) in getattr(ctx, "redoing_interrupted", ()):
+            output.say("    The fetch the last run began may still be under way in OpenBeken: restarting it first.")
+            if unstick():
+                unstick = None
+        try:
+            fetch(url)
+        except openbeken.CommandError as refused:
+            # OpenBeken that refuses a fetch while one is under way says so.
+            if not unstick or refused.unknown:
+                raise
+            output.say(f"    OpenBeken would not start the fetch ({refused}): restarting it, then asking again.")
+            if not unstick():
+                raise NothingWritten(f"OpenBeken would not fetch {what}, and did not answer again after being "
+                                     "restarted: switch it off and on, then run the same command again",
+                                     failure="device-no-answer") from refused
+            unstick = None
+            fetch(url)
         asked = time.monotonic()
         while time.monotonic() - started < FETCH_WAIT:
             served = server.unique_bytes_served()
@@ -64,16 +91,19 @@ def serve_to_plug(ctx: Context, image: bytes, what: str, fetch: Callable[[str], 
                 output.progress_clear()
                 output.say(f"    The device has not asked for {what} yet - restarting it, then asking again.")
                 if not unstick():
-                    raise OSError(f"the device asked for nothing of {what}, and did not answer again after "
-                                  "being restarted")
+                    raise NothingWritten(f"the device asked for nothing of {what}, and did not answer again "
+                                         "after being restarted: switch it off and on, then run the same command "
+                                         "again", failure="device-no-answer")
                 unstick = None
                 fetch(url)
                 started = asked = time.monotonic()
             output.progress(f"the device is fetching {what}: {100 * served // len(image)}%")
             time.sleep(2)
         else:
-            raise OSError(f"the device fetched {server.unique_bytes_served():,} of {len(image):,} bytes of {what} "
-                          f"in {FETCH_WAIT:.0f}s")
+            raise StoppedPartWay(
+                f"the delivery stopped part way: the device fetched {server.unique_bytes_served():,} of "
+                f"{len(image):,} bytes of {what} in {FETCH_WAIT:.0f}s. It keeps the firmware it runs: switch it "
+                "off and on, then run the same command again")
     finally:
         output.progress_clear()
         server.shutdown()
@@ -89,8 +119,8 @@ def read_signal(ctx: Context, leaving: str) -> int | None:
     Tasmota does (Status 11), ESPHome through its signal sensor - asked about
     if weak before the go-ahead, as from Sonoff's firmware (B1): every
     direction checks it while nothing is written."""
-    host = ctx.state.input("plug_ip")
-    signal = (join.plug_signal(ctx.device) if leaving == "OpenBeken"
+    host = ctx.state.input("device_ip")
+    signal = (join.device_signal(ctx.device) if leaving == "OpenBeken"
               else esphome.signal(host, ctx.esphome_key) if host else None)
     return join.note_signal(ctx, signal, [
         "Nothing has been written yet. After the change the device has to",
@@ -106,9 +136,9 @@ def step_openbeken_to_esphome(ctx: Context) -> dict[str, Any]:
 
 def step_interim_to_esphome(ctx: Context) -> dict[str, Any]:
     """J2 - ESPHome, fetched by the interim firmware as O1, once it has
-    backed the plug up: the run's go-ahead was given before Sonoff's firmware
+    backed the device up: the run's go-ahead was given before Sonoff's firmware
     was replaced (B2), and the signal read there - or, on a run that found
-    the plug left on the interim firmware, asked for here, as O1 asks."""
+    the device left on the interim firmware, asked for here, as O1 asks."""
     if runs.run_source(ctx.state) != "interim":
         return _fetch_esphome(ctx, "J2")
     signal = read_signal(ctx, "OpenBeken")
@@ -117,24 +147,22 @@ def step_interim_to_esphome(ctx: Context) -> dict[str, Any]:
 
 
 def step_interim_to_openbeken(ctx: Context) -> dict[str, Any]:
-    """J3 - a plug found on the interim firmware, on a run to OpenBeken: the
+    """J3 - a device found on the interim firmware, on a run to OpenBeken: the
     interim firmware is the OpenBeken the run would install, so it is made
-    the plug's own (openbeken.leave_interim, named as OpenBeken names it) in
+    the device's own (openbeken.leave_interim, named as OpenBeken names it) in
     place, nothing sent - then restarted, so its network knows it by its new
     name: OpenBeken asks for its address under it only as it starts."""
-    if ctx.dry_run:
-        return {"dry_run": True}
     return {"restarted": set_interim(ctx, False, "The device is set up on OpenBeken.")}
 
 
 def set_interim(ctx: Context, interim: bool, why: str, *, restart: bool = True) -> bool:
-    """The OpenBeken on the plug made the interim firmware, or the plug's own
+    """The OpenBeken on the device made the interim firmware, or the device's own
     (openbeken.set_interim), saying `why` - then restarted, so its network knows
     it by its new name: the name it keeps.  Not the interim firmware's
     (`restart` false), which it has only until the next firmware replaces it:
     the record is what matters there, and its network keeps the name it has.
     Whether it answered again."""
-    host = ctx.state.input("plug_ip")
+    host = ctx.state.input("device_ip")
     try:
         openbeken.set_interim(host, interim)
     except openbeken.CommandError as exc:
@@ -145,7 +173,7 @@ def set_interim(ctx: Context, interim: bool, why: str, *, restart: bool = True) 
     output.say(f"    {why} Restarting it, so your network knows it by its new name...")
     restarted = openbeken.restart(host)
     if not restarted:
-        output.tell("    It has not answered again yet; it keeps its new name either way.")
+        output.log_only("    It has not answered again yet; it keeps its new name either way.")
     return restarted
 
 
@@ -154,14 +182,21 @@ def _fetch_esphome(ctx: Context, step: str) -> dict[str, Any]:
     Its uptime before (uptime_before) and when it had all of it (fetched_at):
     an OpenBeken started since did not take it (arrived.step_esphome_check)."""
     image, version = images.image(ctx, "esphome")
-    if ctx.dry_run:
-        return {"dry_run": True, "version": version}
-    host = ctx.state.input("plug_ip")
-    uptime = (openbeken.info(host) or {}).get("uptime_s")
-    seconds = serve_to_plug(ctx, images.as_sent(ctx, step, image), f"ESPHome {version}",
-                            lambda url: openbeken.ota_http(host, url), unstick=lambda: openbeken.restart(host))
+    host = ctx.state.input("device_ip")
+    uptime = [(openbeken.info(host) or {}).get("uptime_s")]
+
+    def unstick() -> bool:
+        # Restarted to fetch it afresh: its uptime before is from then, or the
+        # check after (arrived.step_esphome_check) takes this restart for its
+        # bootloader refusing the image, and sends it again into a device
+        # restarting to install it (seen in the Beken fault suite, J2:crash-1).
+        restarted = openbeken.restart(host)
+        uptime[0] = (openbeken.info(host) or {}).get("uptime_s") if restarted else None
+        return restarted
+    seconds = serve_to_device(ctx, images.as_sent(ctx, step, image), f"ESPHome {version}",
+                            lambda url: openbeken.ota_http(host, url), unstick=unstick)
     return {"seconds": seconds, "version": version, "fetched_at": round(time.time()),
-            **({"uptime_before": uptime} if isinstance(uptime, int) else {})}
+            **({"uptime_before": uptime[0]} if isinstance(uptime[0], int) else {})}
 
 
 def step_openbeken_to_sonoff(ctx: Context, leaving: str = "OpenBeken") -> dict[str, Any]:
@@ -171,10 +206,8 @@ def step_openbeken_to_sonoff(ctx: Context, leaving: str = "OpenBeken") -> dict[s
     signal = read_signal(ctx, "OpenBeken")
     handover.consent_to_leave(ctx, leaving)
     kind = kinds.of_run(ctx.state)
-    stock, version = images.stock_rbl(kind)
-    if ctx.dry_run:
-        return {"dry_run": True, "version": version}
-    host = ctx.state.input("plug_ip")
+    stock, version = images.stock_rbl(kind, ctx)
+    host = ctx.state.input("device_ip")
     command = kind.openbeken_revert or "ota_http"
 
     def fetch(url: str) -> None:
@@ -186,14 +219,14 @@ def step_openbeken_to_sonoff(ctx: Context, leaving: str = "OpenBeken") -> dict[s
                             f"{kind.name}, so where it would write Sonoff's firmware cannot be checked") from exc
             raise Abort(f"OpenBeken refused to fetch Sonoff's firmware: {exc}") from exc
 
-    seconds = serve_to_plug(ctx, stock, f"Sonoff's firmware {version}", fetch,
+    seconds = serve_to_device(ctx, stock, f"Sonoff's firmware {version}", fetch,
                             unstick=lambda: openbeken.restart(host))
     return {"seconds": seconds, "version": version, "signal_dbm": signal}
 
 
 def step_interim_to_sonoff(ctx: Context) -> dict[str, Any]:
     """J4 - Sonoff's firmware, fetched by the interim firmware as O2, on a run
-    that found the plug left on it."""
+    that found the device left on it."""
     return step_openbeken_to_sonoff(ctx, INTERIM_FIRMWARE)
 
 
@@ -204,8 +237,6 @@ def step_esphome_to_openbeken(ctx: Context) -> dict[str, Any]:
     handover.consent_to_leave(ctx, "ESPHome")
     kind = kinds.of_run(ctx.state)
     image, version = images.image(ctx, "openbeken")
-    if ctx.dry_run:
-        return {"dry_run": True, "version": version}
     data = uf2.write(image, name=f"openbeken-{kind.key}", version=version)
     seconds = handover.send_as_esphome_update(ctx, data, f"OpenBeken {version}", port=ESPHOME_OTA_PORT)
     return {"seconds": seconds, "version": version, "signal_dbm": signal}
@@ -216,9 +247,7 @@ def step_esphome_to_sonoff(ctx: Context) -> dict[str, Any]:
     signal = read_signal(ctx, "ESPHome")
     handover.consent_to_leave(ctx, "ESPHome")
     kind = kinds.of_run(ctx.state)
-    stock, version = images.stock_rbl(kind)
-    if ctx.dry_run:
-        return {"dry_run": True, "version": version}
+    stock, version = images.stock_rbl(kind, ctx)
     data = uf2.write(stock, name="sonoff-stock", version=version)
     seconds = handover.send_as_esphome_update(ctx, data, f"Sonoff's firmware {version}", port=ESPHOME_OTA_PORT)
     return {"seconds": seconds, "version": version, "signal_dbm": signal}
@@ -226,12 +255,10 @@ def step_esphome_to_sonoff(ctx: Context) -> dict[str, Any]:
 
 def step_esphome_update(ctx: Context) -> dict[str, Any]:
     """U1 - this release's ESPHome, sent to the earlier release as an update
-    the same way; the plug's own store, with its Wi-Fi and calibration, is
+    the same way; the device's own store, with its Wi-Fi and calibration, is
     left as it is, so the new one reads them as the old one did."""
     kind = kinds.of_run(ctx.state)
     image, version = images.image(ctx, "esphome")
-    if ctx.dry_run:
-        return {"dry_run": True, "version": version}
     data = uf2.write(image, name=f"esphome-{kind.key}", version=version)
     seconds = handover.send_as_esphome_update(ctx, data, f"ESPHome {version}", port=ESPHOME_OTA_PORT)
     return {"seconds": seconds, "version": version}
@@ -242,43 +269,7 @@ def step_openbeken_update(ctx: Context) -> dict[str, Any]:
     download slot as O1 has it fetch ESPHome: its settings are kept, and its
     driver, finding the Wi-Fi set, imports nothing from the store again."""
     image, version = images.image(ctx, "openbeken")
-    if ctx.dry_run:
-        return {"dry_run": True, "version": version}
-    host = ctx.state.input("plug_ip")
-    seconds = serve_to_plug(ctx, images.as_sent(ctx, "U3", image), f"OpenBeken {version}",
+    host = ctx.state.input("device_ip")
+    seconds = serve_to_device(ctx, images.as_sent(ctx, "U3", image), f"OpenBeken {version}",
                             lambda url: openbeken.ota_http(host, url), unstick=lambda: openbeken.restart(host))
     return {"seconds": seconds, "version": version}
-
-
-# How long a plug just switched on may take to answer, before its record is judged.
-ANSWER_WAIT = 60.0
-
-
-def still_installed(ctx: Context, wait: float = ANSWER_WAIT) -> tuple[bool, str]:
-    """Whether an onward step recorded done still holds: not where the plug
-    answers as the firmware it was leaving. A plug not answering yet, or
-    answering as the new one, leaves the record be."""
-    deadline = time.monotonic() + wait
-    while True:
-        installed, message = evidence_installed(ctx)
-        if installed is not None or time.monotonic() >= deadline:
-            return installed is not False, message[0].lower() + message[1:].rstrip(".")
-        time.sleep(5)
-
-
-def evidence_installed(ctx: Context) -> tuple[bool | None, str]:
-    """Whether a step cut off got its image onto the plug: the plug answers as
-    the firmware the run installs, or still as the one it left - the interim
-    firmware, on a run from Sonoff's that has one (J2)."""
-    host = ctx.state.input("plug_ip")
-    firmware, source = runs.run_firmware(ctx.state), runs.run_source(ctx.state)
-    if source == "sonoff" and firmware in images.INTERIM:
-        source = "interim"
-    leaving = detect.NAMES.get(source, source)
-    running = detect.identify(host, timeout=3.0) if host else None
-    if running == firmware or (firmware == "sonoff" and running is None and not detect.answers_as_tasmota(host)):
-        return (True, f"The device answers as {detect.NAMES[firmware]}." if running == firmware
-                else "The device answers as neither OpenBeken nor ESPHome: Sonoff's firmware is back.")
-    if running == source:
-        return False, f"The device still answers as {leaving}: the image was not applied."
-    return None, "The device does not answer as the new firmware yet - it may still be installing it."

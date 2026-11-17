@@ -1,26 +1,26 @@
-"""Plans: what the plug is to write, for the plan phase to carry out.
+"""Plans: what the device is to write, for the plan phase to carry out.
 
 The Tasmota route has a hand-written Berry program per phase. Every other
-change of firmware is a few of the same moves - check the plug is laid out as
+change of firmware is a few of the same moves - check the device is laid out as
 expected, write some bytes and read them back, clear a region, restart - so
 each is a plan, run by one Berry program (tools/espressif/safeboot/repartition/berry/plan.be.tmpl):
 
-- the plug checks its partition table and which slot it runs from first;
+- the device checks its partition table and which slot it runs from first;
 - a streamed write fetches one 4 KiB block at a time from this computer,
   writes it (skipping a block already right, so a resumed plan rewrites
   nothing it finished), reads it back, and sends what it read back here to be
   compared byte for byte;
 - a whole write (the bootloader, a partition table, the boot selection) is
   fetched and checked in full before its first byte is written, so nothing
-  waits on the network while the plug cannot start, and the old bytes are
+  waits on the network while the device cannot start, and the old bytes are
   put back if a sector does not read back right;
 - an erase clears a region and checks it is clear;
-- a copy moves bytes already on the plug from one place to another, each
+- a copy moves bytes already on the device from one place to another, each
   sector read back, then the whole compared with where it came from - for
-  what this computer does not have (the plug's settings, say).
+  what this computer does not have (the device's settings, say).
 
 Each plan's data travels to the phase server on standard input, never as a
-file: some holds the Wi-Fi password (an imprinted image) or the plug's own
+file: some holds the Wi-Fi password (an imprinted image) or the device's own
 secrets (a Sonoff backup).
 """
 
@@ -32,20 +32,22 @@ import json
 import struct
 from dataclasses import dataclass, field
 
+try:
+    from tools.espressif.layouts import MOVER_AT, SONOFF_DUAL_OTA, TEMPORARY_OTADATA, Layout
+except ModuleNotFoundError:  # run as a script from tools/
+    from layouts import MOVER_AT, SONOFF_DUAL_OTA, TEMPORARY_OTADATA, Layout  # type: ignore[no-redef]
+
 SECTOR = 0x1000
 # The layouts: Sonoff's, which the ESPHome route keeps, and Tasmota's.
 SONOFF_TABLE_SHA256 = "f63f66bbf23b9e291c7eb5dcf24be820190dacf4bf52af515d9664526a4f4daf"
 TASMOTA_TABLE_SHA256 = None  # set below from safeboot_migration, the one place it is pinned
 TABLE_ADDRESS = 0x8000
 SONOFF_OTA = (0x20000, 0x210000)
-SONOFF_SLOT_SIZE = 0x1F0000
 SONOFF_OTADATA = 0x1D000
-SONOFF_NVS = 0x9000             # nvs, then Sonoff's "reserve", up to the boot selection
 SONOFF_NVS_END = SONOFF_OTADATA
-SONOFF_PHY = 0x1F000
 OTADATA_SIZE = 0x2000
 TASMOTA_APP0 = 0xE0000
-# Whole writes are held in the plug's memory while they are written.
+# Whole writes are held in the device's memory while they are written.
 WHOLE_LIMIT = 0x10000
 # A real S60TPG wrote 810 KiB, reading every block back to this computer, in
 # 36 s, and stops answering after 70-90 s busy; a plan keeps well inside that.
@@ -54,12 +56,12 @@ BUSY_LIMIT = 55.0
 
 try:
     from tools.espressif.safeboot.safeboot_migration import TARGET_TABLE_SHA256 as TASMOTA_TABLE_SHA256
-    from tools.espressif.safeboot.safeboot_migration import (INTERIM_TABLE_SHA256, LOW_REGIONS_OFFSET,
-                                          LOW_REGIONS_SIZE, MOVED_LOW_OFFSET)
+    from tools.espressif.safeboot.safeboot_migration import TASMOTA_TABLES
+    from tools.espressif.sonoff_identity import SECTOR_AT as IDENTITY_AT
 except ModuleNotFoundError:  # run as a script from tools/
     from safeboot_migration import TARGET_TABLE_SHA256 as TASMOTA_TABLE_SHA256
-    from safeboot_migration import (INTERIM_TABLE_SHA256, LOW_REGIONS_OFFSET,
-                                    LOW_REGIONS_SIZE, MOVED_LOW_OFFSET)
+    from safeboot_migration import TASMOTA_TABLES
+    from sonoff_identity import SECTOR_AT as IDENTITY_AT  # type: ignore[no-redef]
 
 
 class PlanError(ValueError):
@@ -84,7 +86,7 @@ class Erase:
 
 @dataclass(frozen=True)
 class Copy:
-    """`length` bytes already on the plug, from `source` to `address`."""
+    """`length` bytes already on the device, from `source` to `address`."""
     source: int
     address: int
     length: int
@@ -106,7 +108,7 @@ def padded(data: bytes) -> bytes:
 class Plan:
     name: str                         # its step's report: plan-<name>-report.json
     title: str                        # what the progress line says it copies
-    table_sha256: str                 # the layout the plug must have
+    table_sha256: str                 # the layout the device must have
     running: int | None               # flash.current_ota() it must report
     steps: list = field(default_factory=list)
     blobs: dict[str, bytes] = field(default_factory=dict)
@@ -169,7 +171,7 @@ class Plan:
         return self
 
     def final_table_sha256(self) -> str:
-        """The partition table the plug has once the plan is done."""
+        """The partition table the device has once the plan is done."""
         for step in self.steps:
             if isinstance(step, Write) and step.address == TABLE_ADDRESS:
                 start, length = self.span(step)
@@ -186,9 +188,9 @@ class Plan:
         return sum(len(padded(b"\0" * self.span(step)[1])) // SECTOR
                    for step in self.steps if isinstance(step, Write))
 
-    # ------------------------------------------------- what the plug reports
+    # ------------------------------------------------- what the device reports
     def expected(self) -> dict[str, str]:
-        """What the plug's report must say for each step, besides PASS."""
+        """What the device's report must say for each step, besides PASS."""
         found = {}
         for index, step in enumerate(self.steps):
             if isinstance(step, Write):
@@ -276,68 +278,129 @@ class Plan:
 
 
 def bootloader(bootloader_image: bytes, *, table_sha256: str = SONOFF_TABLE_SHA256,
-               running: int | None = 1) -> Plan:
-    """ESPHome's bootloader in place of whatever the plug has, and nothing else."""
+               running: int | None = 1, address: int = 0) -> Plan:
+    """ESPHome's bootloader in place of whatever the device has, and nothing else:
+    at `address`, where the device's chip looks for it (chips.Chip.bootloader_at)."""
     return Plan(
         name="bootloader", title="the bootloader", table_sha256=table_sha256, running=running,
-        steps=[Write("bootloader", 0, whole=True)], blobs={"bootloader": bootloader_image},
+        steps=[Write("bootloader", address, whole=True)], blobs={"bootloader": bootloader_image},
         restart=False,
     ).check()
 
 
-def esphome(image: bytes) -> Plan:
+def esphome(image: bytes, layout: Layout = SONOFF_DUAL_OTA) -> Plan:
     """ESPHome into ota_0 beside the Tasmota in ota_1; then the boot selection
-    cleared, so the plug starts ota_0, and a restart.  Until that clearing it
+    cleared, so the device starts ota_0, and a restart.  Until that clearing it
     still starts Tasmota."""
     return Plan(
-        name="esphome", title="ESPHome", table_sha256=SONOFF_TABLE_SHA256, running=1,
-        steps=[Write("esphome", SONOFF_OTA[0]), Erase(SONOFF_OTADATA, OTADATA_SIZE)],
+        name="esphome", title="ESPHome", table_sha256=layout.table_sha256, running=1,
+        steps=[Write("esphome", layout.ota[0]), Erase(layout.otadata, OTADATA_SIZE)],
         blobs={"esphome": image},
     ).check()
 
 
-def leave_tasmota(mover: bytes, sonoff_table: bytes, bootloader_image: bytes) -> Plan:
-    """From official Tasmota on Tasmota's layout to the mover on Sonoff's.
+def keep_identity(sector: bytes, layout: Layout = SONOFF_DUAL_OTA) -> Plan:
+    """The sector that keeps the device's Sonoff identity, at the top of the flash
+    (tools/espressif/sonoff_identity.py), written from the hub before the commit
+    takes Sonoff's settings: on Sonoff's layout it is the end of ota_1, past the
+    Berry Tasmota running there, or no partition's at all."""
+    if len(sector) != SECTOR:
+        raise PlanError("the identity is not one sector")
+    return Plan(
+        name="keep_identity", title="the device's Sonoff identity", table_sha256=layout.table_sha256,
+        running=1, steps=[Write("identity", IDENTITY_AT, whole=True)], blobs={"identity": sector},
+        restart=False,
+    ).check()
+
+
+def leave_tasmota(mover: bytes, table: bytes, layout: Layout = SONOFF_DUAL_OTA, *,
+                  tasmota_table: str | None = None, settings: bytes | None = None) -> Plan:
+    """From official Tasmota on Tasmota's layout to the mover on Sonoff's, or on
+    the temporary table of a layout that needs one (Layout.temporary_table).
+
+    The bootloader stays as it is: it may be a build of Tasmota's own, which
+    starts the mover as well, and the full Tasmota has too little memory left
+    to hold ESPHome's while it writes it. The hub writes it (D5), on a Tasmota
+    that has room, and a route without the hub is only for a device that has it.
 
     Tasmota runs from app0 at 0xE0000, across both of Sonoff's app slots, but
     the mover fits in front of it, at 0x20000: Sonoff's ota_0.  With the
     region Sonoff's layout keeps its settings and boot selection in cleared,
-    and Sonoff's partition table written last, the plug starts the mover from
-    ota_0.  The table is the one moment a power cut leaves a plug that cannot
+    and Sonoff's partition table written last, the device starts the mover from
+    ota_0.  The table is the one moment a power cut leaves a device that cannot
     start; it is one sector, written in a few milliseconds.
+
+    `tasmota_table` is the table the device has: the one a conversion writes,
+    or Tasmota's own on a device converted before the identity was kept.
+    `settings`, an NVS holding the device's Sonoff identity, goes where Sonoff's
+    layout keeps its settings, so that the next firmware has it as Sonoff's
+    firmware kept it; the rest of that region is cleared.
     """
-    if SONOFF_OTA[0] + len(padded(mover)) > TASMOTA_APP0:
+    if MOVER_AT + len(padded(mover)) > TASMOTA_APP0:
         raise PlanError("the mover does not fit in front of Tasmota")
-    if sha256(sonoff_table) != SONOFF_TABLE_SHA256:
+    if sha256(table) != layout.leaving_sha256:
         raise PlanError("that is not Sonoff's partition table")
+    tasmota_table = tasmota_table or TASMOTA_TABLE_SHA256
+    if tasmota_table not in TASMOTA_TABLES:
+        raise PlanError("that is not a Tasmota layout this tool converts to")
+    blobs = {"mover": mover, "table": table}
+    clear: list = [Erase(layout.nvs, MOVER_AT - layout.nvs)]
+    if settings:
+        written = len(padded(settings))
+        if layout.nvs + written > (TEMPORARY_OTADATA if layout.needs_temporary else layout.otadata):
+            raise PlanError("the settings do not fit where the next layout keeps them")
+        blobs["settings"] = settings
+        clear = [Write("settings", layout.nvs), Erase(layout.nvs + written, MOVER_AT - layout.nvs - written)]
     return Plan(
-        name="leave_tasmota", title="the mover", table_sha256=TASMOTA_TABLE_SHA256, running=0,
-        steps=[
-            Write("bootloader", 0, whole=True),
-            Write("mover", SONOFF_OTA[0]),
-            Erase(SONOFF_NVS, SONOFF_OTA[0] - SONOFF_NVS),
-            Write("table", TABLE_ADDRESS, whole=True),
-        ],
-        blobs={"bootloader": bootloader_image, "mover": mover, "table": sonoff_table},
+        name="leave_tasmota", title="the mover", table_sha256=tasmota_table, running=0,
+        steps=[Write("mover", MOVER_AT), *clear, Write("table", TABLE_ADDRESS, whole=True)],
+        blobs=blobs,
     ).check()
 
 
-def sonoff_layout_back(sonoff_table: bytes) -> Plan:
+def own_table_from_temporary(sonoff_table: bytes, layout: Layout) -> Plan:
+    """From the temporary table to the device's own, the Berry Tasmota running from
+    ota_1, which both have in the same place.
+
+    The settings Tasmota has stay where they are, the start of the larger NVS. The
+    rest of that is cleared, or NVS would find the temporary ota_0 and boot
+    selection there. The boot selection for ota_1 goes in first. The temporary
+    one goes last of all but the table, after what it could start: a power cut
+    between the two finds no selection and no ota_0, and the bootloader starts
+    ota_1, the next valid slot. The table is written last, as ever.
+    """
+    if sha256(sonoff_table) != layout.table_sha256:
+        raise PlanError("that is not Sonoff's partition table")
+    return Plan(
+        name="own_table", title="the device's own memory layout", table_sha256=layout.temporary_sha256, running=1,
+        steps=[
+            Write("otadata", layout.otadata, whole=True),
+            Erase(MOVER_AT, layout.otadata - MOVER_AT),
+            # Its phy data, and the start of its ota_0, which would look like an app.
+            Erase(layout.phy, layout.ota[0] + SECTOR - layout.phy),
+            Erase(TEMPORARY_OTADATA, MOVER_AT - TEMPORARY_OTADATA),
+            Write("table", TABLE_ADDRESS, whole=True),
+        ],
+        blobs={"otadata": otadata_selecting(1), "table": sonoff_table},
+    ).check()
+
+
+def sonoff_layout_back(sonoff_table: bytes, layout: Layout = SONOFF_DUAL_OTA) -> Plan:
     """From the interim layout a commit stopped part way leaves, back to Sonoff's.
 
     The commit moved Sonoff's settings, reserve, boot selection and PHY data to
     the end of ota_0 and pointed an interim table at them (safeboot_migration
     says why); Tasmota has run on them there since.  Copied back, and Sonoff's
-    table written last, the plug is as it was before the commit - with
+    table written last, the device is as it was before the commit - with
     whatever Tasmota saved meanwhile - and the restart starts the same Tasmota
     from it.  A power cut before the table leaves the interim layout, as good
     as before; the table is the one sector a cut leaves unable to start.
     """
-    if sha256(sonoff_table) != SONOFF_TABLE_SHA256:
+    if sha256(sonoff_table) != layout.table_sha256:
         raise PlanError("that is not Sonoff's partition table")
     return Plan(
-        name="sonoff_layout", title="Sonoff's layout", table_sha256=INTERIM_TABLE_SHA256, running=1,
-        steps=[Copy(MOVED_LOW_OFFSET, LOW_REGIONS_OFFSET, LOW_REGIONS_SIZE),
+        name="sonoff_layout", title="Sonoff's layout", table_sha256=layout.interim_sha256, running=1,
+        steps=[Copy(layout.moved_low, layout.nvs, layout.low_size),
                Write("table", TABLE_ADDRESS, whole=True)],
         blobs={"table": sonoff_table},
     ).check()
@@ -351,10 +414,10 @@ def otadata_selecting(slot: int) -> bytes:
     return padded(entry) + b"\xff" * SECTOR
 
 
-def stock_slot(backup: bytes) -> int:
+def stock_slot(backup: bytes, layout: Layout = SONOFF_DUAL_OTA) -> int:
     """Which of the backup's app slots holds Sonoff's own firmware."""
     # The project name in the app's description, 80 bytes into the image.
-    found = [index for index, address in enumerate(SONOFF_OTA)
+    found = [index for index, address in enumerate(layout.ota)
              if backup[address + 80:address + 112].split(b"\0")[0] == b"esp32_fw"]
     if len(found) != 1:
         raise PlanError("the backup does not hold exactly one Sonoff firmware")
@@ -367,40 +430,40 @@ def app_length(image: bytes) -> int:
     return parse_esp_image(image)["parsed_image_size"]
 
 
-def back_to_sonoff(backup: bytes, running: int) -> list[Plan]:
-    """The plug's own Sonoff firmware and settings, from its backup, beside the
+def back_to_sonoff(backup: bytes, running: int, layout: Layout = SONOFF_DUAL_OTA) -> list[Plan]:
+    """The device's own Sonoff firmware and settings, from its backup, beside the
     Berry Tasmota it runs; then the boot selection set to it, and a restart.
 
     Sonoff's app is more than one phase may write, so it is split across two;
     nothing the first writes is used until the second sets the boot selection.
     The bootloader stays ESPHome's: Sonoff's firmware starts under it.
     """
-    if len(backup) != 0x400000 or sha256(backup[TABLE_ADDRESS:TABLE_ADDRESS + SECTOR]) != SONOFF_TABLE_SHA256:
+    if len(backup) != 0x400000 or sha256(backup[TABLE_ADDRESS:TABLE_ADDRESS + SECTOR]) != layout.table_sha256:
         raise PlanError("that is not a backup of a device on Sonoff's layout")
-    slot = stock_slot(backup)
+    slot = stock_slot(backup, layout)
     if slot == running:
         raise PlanError("Sonoff's firmware belongs in the slot the device is running from")
-    address = SONOFF_OTA[slot]
-    app = backup[address:address + app_length(backup[address:address + SONOFF_SLOT_SIZE])]
+    address = layout.ota[slot]
+    app = backup[address:address + app_length(backup[address:address + layout.slot_size])]
     half = len(padded(app[:len(app) // 2]))
-    settings = backup[SONOFF_NVS:SONOFF_NVS_END]
-    phy = backup[SONOFF_PHY:SONOFF_PHY + SECTOR]
+    settings = backup[layout.nvs:layout.otadata]
+    phy = backup[layout.phy:layout.phy + SECTOR]
     blobs = {"sonoff": app, "settings": settings, "phy": phy}
     if slot == 0:
-        select = Erase(SONOFF_OTADATA, OTADATA_SIZE)
+        select = Erase(layout.otadata, OTADATA_SIZE)
     else:
         blobs["otadata"] = otadata_selecting(slot)
-        select = Write("otadata", SONOFF_OTADATA, whole=True)
+        select = Write("otadata", layout.otadata, whole=True)
     first = Plan(
-        name="sonoff_app", title="Sonoff's firmware", table_sha256=SONOFF_TABLE_SHA256,
+        name="sonoff_app", title="Sonoff's firmware", table_sha256=layout.table_sha256,
         running=running, steps=[Write("sonoff", address, 0, half)], blobs={"sonoff": app},
         restart=False,
     ).check()
     second = Plan(
-        name="sonoff_rest", title="Sonoff's firmware and settings", table_sha256=SONOFF_TABLE_SHA256,
+        name="sonoff_rest", title="Sonoff's firmware and settings", table_sha256=layout.table_sha256,
         running=running,
         steps=[Write("sonoff", address + half, half, len(app) - half),
-               Write("settings", SONOFF_NVS), Write("phy", SONOFF_PHY, whole=True), select],
+               Write("settings", layout.nvs), Write("phy", layout.phy, whole=True), select],
         blobs=blobs,
     ).check()
     return [first, second]
@@ -428,7 +491,7 @@ def supla(image: bytes, bootloader_image: bytes, table: bytes, otadata: bytes) -
     table, the table last, and a restart.
 
     The app goes in at 0x10000, Sonoff's ota_0 first and its first 64 KiB
-    last: until those overwrite Sonoff's boot selection the plug starts
+    last: until those overwrite Sonoff's boot selection the device starts
     Tasmota as it did.  After, with no boot selection, the bootloader tries
     each slot: ota_0 then holds no app (the image is checked for that), so it
     starts the Tasmota in ota_1 - with its settings, which share those 64

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Send a non-flashing OTA URL probe to one owned plug via eWeLink."""
+"""Send a non-flashing OTA URL probe to one owned device via eWeLink."""
 
 from __future__ import annotations
 
@@ -121,7 +121,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--listen-ip", required=True, help="this computer's private LAN IPv4 address")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--email")
+    parser.add_argument("--email", help="the eWeLink account: its email, or its phone number "
+                        "with the country code")
     parser.add_argument("--country-code", default="+44")
     parser.add_argument("--region", choices=sorted(API), default="eu")
     parser.add_argument("--mdns-capture", type=Path, default=Path("captures/mdns-1.1.1.json"))
@@ -143,7 +144,7 @@ def main() -> int:
         print("--listen-ip must be a private IPv4 LAN address", file=sys.stderr)
         return 2
 
-    email = args.email or input("eWeLink email: ").strip()
+    email = args.email or input("eWeLink email or phone number: ").strip()
     password = ask_secret("eWeLink password (not stored): ")
     server = CaptureServer((args.listen_ip, args.port))
     thread = threading.Thread(target=server.serve_forever, daemon=True)

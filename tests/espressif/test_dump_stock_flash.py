@@ -74,6 +74,16 @@ class DumpStockFlashTests(unittest.TestCase):
         # Sequence 6 is the newer record: (6 - 1) % 2 selects ota_1.
         self.assertEqual(report["otadata_selects"], "ota_1")
 
+    def test_a_table_built_to_be_at_0xc000_is_checked_there(self):
+        # The BASICR4's firmware and bootloader read it there; 0x8000 is blank.
+        image = flash()
+        image[0xC000:0xD000], image[0x8000:0x9000] = image[0x8000:0x9000], b"\xff" * 0x1000
+        report = dump_stock_flash.check(bytes(image))
+        self.assertEqual(report["partition_table_at"], "0xc000")
+        self.assertTrue(report["partition_table_md5_valid"])
+        self.assertEqual(report["otadata_selects"], "ota_1")
+        self.assertIn("partition table at 0xc000, MD5: valid", dump_stock_flash.summary(report))
+
     def test_a_damaged_partition_table_is_reported(self):
         report = dump_stock_flash.check(bytes(flash(table_md5=False)))
         self.assertFalse(report["partition_table_md5_valid"])
@@ -95,19 +105,37 @@ class DumpStockFlashTests(unittest.TestCase):
         self.assertEqual(dump_stock_flash.check(bytes(flash(seqs=(1, None))))["otadata_selects"], "ota_0")
 
     def test_real_otadata_crc(self):
-        # A record read from a plug: sequence 20 with its stored CRC.
+        # A record read from a device: sequence 20 with its stored CRC.
         record = struct.pack("<I", 20) + b"\xff" * 24 + struct.pack("<I", 0x20843F37)
         self.assertEqual(dump_stock_flash.selected_ota_slot(record + b"\xff" * 0x1FE0, 2), 1)
 
 
-if __name__ == "__main__":
-    unittest.main()
+class ReadInfoTests(unittest.TestCase):
+    """A bridge with no /info must never stop a run: only the log loses it."""
+
+    def answers(self, effect):
+        from unittest import mock
+        with mock.patch.object(dump_stock_flash, "fetch", side_effect=effect):
+            return dump_stock_flash.read_info("192.0.2.51")
+
+    def test_a_bridge_with_it(self):
+        body = b"bridge 4.4.5\nchip: esp32\n"
+        self.assertEqual(self.answers([(body, {})]), body)
+
+    def test_anything_else_is_nothing(self):
+        import http.client
+        import urllib.error
+        for effect in (urllib.error.HTTPError("http://192.0.2.51/info", 404, "Not Found", {}, None),
+                       urllib.error.URLError("no route"), TimeoutError(), ConnectionResetError(),
+                       http.client.BadStatusLine("x"), http.client.IncompleteRead(b""),
+                       [(b"<html>a device's page</html>", {})]):
+            self.assertIsNone(self.answers(effect), effect)
 
 
-class PlugHashTests(unittest.TestCase):
-    """A backup is checked byte for byte against the plug's own hash of its flash."""
+class DeviceHashTests(unittest.TestCase):
+    """A backup is checked byte for byte against the device's own hash of its flash."""
 
-    def read(self, on_plug):
+    def read(self, on_device):
         import hashlib
         import urllib.error
         from unittest import mock
@@ -120,23 +148,27 @@ class PlugHashTests(unittest.TestCase):
 
         def fetch(host, path, timeout=60.0):
             if path == "/flash-sha256":
-                if on_plug is None:
+                if on_device is None:
                     raise urllib.error.HTTPError(path, 404, "Not Found", {}, None)
-                return (on_plug(hashlib.sha256(image).hexdigest()) + "\n").encode(), {}
+                return (on_device(hashlib.sha256(image).hexdigest()) + "\n").encode(), {}
             return answers[path]
 
         with mock.patch.object(dump_stock_flash, "fetch", side_effect=fetch):
             return dump_stock_flash.read_dump("bridge")
 
-    def test_a_backup_that_matches_the_plug_says_so(self):
+    def test_a_backup_that_matches_the_device_says_so(self):
         _, _, report = self.read(lambda digest: digest.upper())
-        self.assertIs(report["matches_plug"], True)
+        self.assertIs(report["matches_device"], True)
 
-    def test_a_backup_that_differs_from_the_plug_is_refused(self):
+    def test_a_backup_that_differs_from_the_device_is_refused(self):
         from tools.espressif.dump_stock_flash import IncompleteDump
         with self.assertRaises(IncompleteDump):
             self.read(lambda digest: "0" * 64)
 
     def test_an_older_bridge_leaves_it_unchecked(self):
         _, _, report = self.read(None)
-        self.assertIsNone(report["matches_plug"])
+        self.assertIsNone(report["matches_device"])
+
+
+if __name__ == "__main__":
+    unittest.main()

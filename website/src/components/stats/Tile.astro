@@ -1,0 +1,11 @@
+---
+// A stat tile: a label, a value, and a line under it. `value` null is a
+// figure for fewer than the smallest the figures show.
+const { label, value, unit = "", note = "", hero = false } = Astro.props;
+const shown = value === null || value === undefined ? "Not yet" : `${Number(value).toLocaleString("en")}${unit}`;
+---
+<div class:list={["tile", { hero }]}>
+  <div class="tile-label">{label}</div>
+  <div class:list={["tile-value", { quiet: value === null || value === undefined }]}>{shown}</div>
+  {note && <div class="tile-note">{note}</div>}
+</div>

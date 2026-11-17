@@ -1,0 +1,28 @@
+#!/bin/bash
+# Stand-in for NetworkManager's nmcli on a computer beside the emulated Beken
+# device (beken-emu.sh computer), just enough for the conversion tool's Wi-Fi
+# scan (`nmcli -t -f SSID device wifi list`): the home network while its
+# access point is on, and the device's own network while it is on the air
+# (device.py writes both to its state's air/). As a real computer's list does,
+# a network seen in the last minute is still listed after it goes: put another
+# number of seconds in $AUTOFLASH_WIFI_RUN/scan-cache to remember them for.
+set -euo pipefail
+case " $* " in
+*" wifi list"*) ;;
+*) echo "nmcli (Autoflash emulator stand-in): only 'device wifi list' is supported" >&2; exit 2 ;;
+esac
+AIR=${AUTOFLASH_EMULATOR_AIR:-/device/air}
+RUN=${AUTOFLASH_WIFI_RUN:-/tmp/autoflash-wifi}
+mkdir -p "$RUN"
+keep=$(cat "$RUN/scan-cache" 2>/dev/null || echo 60)
+now=$(date +%s)
+on_air=$(for name in home network; do if [ -s "$AIR/$name" ]; then head -1 "$AIR/$name"; fi; done)
+{
+    cat "$RUN/seen" 2>/dev/null || true
+    printf '%s\n' "$on_air" | sed "/^$/d; s/^/$now /"
+} | awk -v now="$now" -v keep="$keep" -v on_air="$on_air" '
+    BEGIN { n = split(on_air, names, "\n"); for (i = 1; i <= n; i++) here[names[i]] = 1 }
+    { stamp = $1; $1 = ""; name = substr($0, 2); if (stamp > last[name]) last[name] = stamp }
+    END { for (name in last) if (name in here || now - last[name] < keep) print last[name], name }' > "$RUN/seen.new"
+mv "$RUN/seen.new" "$RUN/seen"
+sort -rn "$RUN/seen" | cut -d' ' -f2-

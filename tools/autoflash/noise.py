@@ -330,6 +330,6 @@ def handshake_reply(handshake: Handshake, payload: bytes) -> None:
     try:
         handshake.read_message(payload[1:])
     except NoiseError:
-        # The plug's own refusal is the usual way to say so; this is the
+        # The device's own refusal is the usual way to say so; this is the
         # same, said by the reply not checking out.
         raise NoiseError(WRONG_KEY_REASON) from None

@@ -1,0 +1,41 @@
+// admin.firmwareliberator.com: the maintainer's view of what the API holds
+// (index.js), behind Cloudflare Access, which tools/repo/cloudflare_settings.py
+// makes: GitHub sign-in, the maintainer alone. A Worker of its own, apart
+// from the API's and the website's. The website workflow deploys it.
+//
+// Its secret, ANALYTICS_TOKEN, a token that can only read the account's
+// analytics, is made and set by tools/repo/cloudflare_tokens.py, and kept
+// nowhere else; without it the view leaves out the month's use.
+{
+  "name": "firmware-liberator-admin",
+  "main": "index.js",
+  "compatibility_date": "2026-11-01",
+  "routes": [
+    { "pattern": "admin.firmwareliberator.com", "custom_domain": true }
+  ],
+  "workers_dev": false,
+  "preview_urls": false,
+  // Workers Logs and traces, as the API's (../api/wrangler.jsonc), so a
+  // failure of the view can be looked into.
+  "observability": { "enabled": true, "head_sampling_rate": 1, "logs": { "enabled": true, "invocation_logs": true }, "traces": { "enabled": true, "head_sampling_rate": 1 } },
+  // The API's database (../api/database.js), read live, and changed only by a
+  // held report released or deleted. The same id as ../api/wrangler.jsonc's.
+  "d1_databases": [
+    { "binding": "DB", "database_name": "firmware-liberator-api",
+      "database_id": "8a286f99-a420-4a72-a2b6-97c623aac2ec" }
+  ],
+  "vars": {
+    // Access's team (its <team>.cloudflareaccess.com) and this application's
+    // audience tag: cloudflare_settings.py apply writes both here once it has
+    // made the application, and commits them. Until then nothing is let in.
+    "ACCESS_TEAM": "wonkatron",
+    "ACCESS_AUD": "0663f8dc5f5893585dd2c976eb19a099069d907182f658044bc94a2fb995555d",
+    // The audience tag of the second application, over /v1/emulator
+    // alone, which lets in the suites' service token and no one else
+    // (emulator.js): cloudflare_settings.py apply writes it here once made.
+    // Until then no run is taken.
+    "ACCESS_UPLOAD_AUD": "f0f5c0d8602d9843d428e0da3f17fe59f847c18a4a35b0fc186c2d2a2473571b",
+    // The account the month's use is read for: not secret.
+    "ACCOUNT_ID": "892b5bf1152b74ea3fe2aecf9e566a21"
+  }
+}

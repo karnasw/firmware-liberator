@@ -1,7 +1,7 @@
 #!/bin/sh
 # Start Autoflash, the conversion tool, on macOS or Linux:
 #
-#   sh start.sh                 convert a plug (the same as: sh start.sh run)
+#   sh start.sh                 convert a device (the same as: sh start.sh run)
 #   sh start.sh run --verbose   any of the tool's own commands and options
 #
 # Which Python it runs on, in order:
@@ -202,7 +202,8 @@ fi
 # Ctrl-C (which the tool handles itself).
 trap ':' INT
 status=0
-"$python" "$here/tools/autoflash/cli.py" "$@" || status=$?
+# How it was started, for the run's report (report_data.LAUNCHERS).
+AUTOFLASH_LAUNCHER=start.sh "$python" "$here/tools/autoflash/cli.py" "$@" || status=$?
 trap - INT
 offer_removal
 exit "$status"

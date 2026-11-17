@@ -90,7 +90,7 @@ def step_supla_install(ctx: Context) -> dict[str, Any]:
     finds its table written already if it got that far."""
     build = checked_build(ctx)
     image, name = build.app, build.name
-    signal = join.note_signal(ctx, join.plug_signal(ctx.device), [
+    signal = join.note_signal(ctx, join.device_signal(ctx.device), [
         "Once Supla is written, it starts with its own network for you to",
         "set it up through; a weak signal makes joining your Wi-Fi after that less certain."])
     try:
@@ -137,10 +137,10 @@ def step_supla_check(ctx: Context, wait: float = 240.0) -> dict[str, Any]:
         "",
         f"Open {OWN_PAGE} in a browser and give it:",
         "    - your Wi-Fi's name and password",
-        "    - your Supla server and the email of your Supla account (cloud.supla.org's,",
-        "      or your own server's)",
-        "Save; the device restarts and joins your Wi-Fi. Then put this computer back",
-        "on your Wi-Fi.",
+        "    - your Supla server and the email of your Supla account",
+        "      (cloud.supla.org's, or your own server's)",
+        "Save; the device restarts and joins your Wi-Fi. Then put this computer",
+        "back on your Wi-Fi.",
     ])
     prompts.wait_for_key("Press any key once that is done, or q to quit...")
     try:
@@ -158,19 +158,19 @@ def step_supla_check(ctx: Context, wait: float = 240.0) -> dict[str, Any]:
         output.tell(f"was not set up, its own network ({OWN_NETWORK_PREFIX}...) is still there to set it up through;")
         output.tell("your router's list of devices gives its address once it has joined.")
         return {"network": network, "seen": False}
-    host = ctx.state.input("plug_ip")
+    host = ctx.state.input("device_ip")
     output.say(f"    Supla answered at {host}.")
     return {"network": network, "seen": bool(found)}
 
 
 def evidence_supla_installed(ctx: Context) -> tuple[bool | None, str]:
-    """S1, cut off: the temporary Tasmota answering means the plug did not
+    """S1, cut off: the temporary Tasmota answering means the device did not
     switch; Supla's network or page means it did."""
-    host = ctx.state.input("plug_ip")
+    host = ctx.state.input("device_ip")
     if host and supla_answers(host):
         return True, "The device is running Supla, so the install did finish."
     if host and ctx.device.reachable() and ctx.device.current_ota() == 1:
-        return False, ("The plug is still running the temporary Tasmota, so it did not switch;\n"
+        return False, ("The device is still running the temporary Tasmota, so it did not switch;\n"
                        "  it is safe to do this step again.")
     network = prompts.find_ssid(OWN_NETWORK_PREFIX)
     if network:

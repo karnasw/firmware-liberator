@@ -32,7 +32,7 @@ path. The eWeLink-provisioned/bound state that gates the cloud task (`ais_link_t
 not locatable by static xref (the firmware loads it `adr`-relative). See the main
 doc's "eWeLink BLE provisioning protocol" section.
 
-  $(tools/beken/emulator/bk-emu.sh python) archive/s61-research/ble_provision.py
+  $(tools/beken/emulator/beken-emu.sh python) archive/s61-research/ble_provision.py
   SEQ=devinfo,auth,wifi,server SSID=MyNet PASS=mypass python3 ble_provision.py
 """
 import os
@@ -65,7 +65,7 @@ from unicorn.arm_const import (  # noqa: E402
     UC_ARM_REG_R9,
     UC_ARM_REG_SP)
 
-DUMP = os.environ.get("S61_DUMP", str(ROOT/"firmwares/Sonoff_S61s_EUPlug_WBBK_01P_V1.3.bin"))
+DUMP = os.environ.get("AUTOFLASH_BEKEN_EMU_DUMP", str(ROOT/"firmwares/Sonoff_S61s_EUPlug_WBBK_01P_V1.3.bin"))
 SECS = float(os.environ.get("SECS", "55")); FIRE_AT = float(os.environ.get("FIRE_AT", "9")); GAP = float(os.environ.get("GAP", "5"))
 SSID = os.environ.get("SSID", "AutoflashNet").encode(); PW = os.environ.get("PASS", "autoflash1234").encode()
 SERVER = os.environ.get("SERVER", "iot.autoflash.test").encode()

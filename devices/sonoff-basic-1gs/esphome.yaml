@@ -1,0 +1,233 @@
+# ESPHome for the Sonoff Basic Gen5, BASIC-1GS (BK7238), on LibreTiny.
+#
+# The conversion tool installs this pre-built, as an rt_ota update (.rbl) the
+# device's stock bootloader applies from its download slot. No Wi-Fi and no
+# passwords are in it: at boot the device reads its own Wi-Fi from where the
+# stock firmware left it, the EasyFlash store at 0x3e2000 that no conversion
+# touches, and joins. Kept in this one file, so that Home Assistant can adopt
+# it (dashboard_import) and build it there.
+#
+# devices/sonoff-s61/esphome.yaml is the model, less its meter.
+
+esphome:
+  # Named as every firmware the conversion installs is: the firmware and the
+  # last three bytes of its MAC (esphome-abcdef). The comment says what device
+  # it is, which the tool tells it by.
+  name: esphome
+  friendly_name: esphome
+  comment: Sonoff-BASIC-1GS
+  name_add_mac_suffix: true
+  project:
+    name: liberator.sonoff-basic-1gs
+    version: "2026.10.0-2"
+  # System headers only: adoption takes this one file
+  includes:
+    - <libretiny.h>
+  # The 4 MB table its stock firmware says it is on (tools/beken/layouts.py),
+  # as the S61's: LibreTiny's generic BK7238 board is the SDK's 2 MB layout. The
+  # download slot is where the stock bootloader applies an update from.
+  # ESPHome's preferences take the 32 KB at 0x3ee000; LittleFS (unused) the
+  # sector at 0x3e1000, where the interim firmware left its settings.
+  platformio_options:
+    board_build.bkrbl_size_app: "0x250000"
+    board_flash.bootloader: "0x000000+0x11000"
+    board_flash.app: "0x011000+0x275000"
+    board_flash.download: "0x286000+0x15A000"
+    board_flash.calibration: "0x3E0000+0x1000"
+    board_flash.userdata: "0x3E1000+0x1000"
+    board_flash.kvs: "0x3EE000+0x8000"
+  on_boot:
+    # Before Wi-Fi starts (its priority is 250): the network to join, from the
+    # stock firmware's own store, and its own network's name. Wi-Fi details
+    # saved later (from Home Assistant, say) take their place as Wi-Fi starts.
+    - priority: 1000
+      then:
+        - lambda: |-
+            // The stock EasyFlash V4 store, read raw. One node: "KV40", len u32,
+            // crc32 u32, name_len u8 + 0xff*3, value_len u32, name, value; the
+            // crc (zlib's) covers the name_len field through the end of the
+            // value. A key is rewritten by appending, so the last valid node
+            // wins. Scanned in 4 KB windows that overlap by more than a node.
+            struct Ef40 {
+              static uint32_t crc32(const uint8_t *p, size_t n) {
+                uint32_t crc = 0xffffffff;
+                for (size_t i = 0; i < n; i++) {
+                  crc ^= p[i];
+                  for (int b = 0; b < 8; b++) crc = (crc & 1) ? (crc >> 1) ^ 0xEDB88320 : (crc >> 1);
+                }
+                return ~crc;
+              }
+              static bool read(const char *key, std::string &out) {
+                const uint32_t start = 0x3e0000, end = 0x3ec000, window = 4096, overlap = 128;
+                const size_t key_len = strlen(key);
+                std::vector<uint8_t> win(window);
+                bool found = false;
+                for (uint32_t addr = start; addr < end; addr += window - overlap) {
+                  uint32_t want = std::min<uint32_t>(window, end - addr);
+                  if (lt_flash_read(addr, win.data(), want) != want) continue;
+                  for (uint32_t i = 0; i + 20 <= want; i++) {
+                    if (memcmp(win.data() + i, "KV40", 4) != 0) continue;
+                    uint32_t name_len = win[i + 12], value_len, stored;
+                    memcpy(&value_len, win.data() + i + 16, 4);
+                    memcpy(&stored, win.data() + i + 8, 4);
+                    if (name_len != key_len || value_len == 0 || value_len >= 128) continue;
+                    uint32_t name_at = i + 20, value_at = name_at + name_len;
+                    if (value_at + value_len > want) continue;  // straddles: the next window has it
+                    if (memcmp(win.data() + name_at, key, key_len) != 0) continue;
+                    if (crc32(win.data() + i + 12, value_at + value_len - (i + 12)) != stored) continue;
+                    out.assign((const char *) win.data() + value_at, value_len);
+                    found = true;
+                  }
+                }
+                return found;
+              }
+            };
+            std::string ssid, password;
+            if (Ef40::read("wifi-ssid", ssid)) {
+              Ef40::read("wifi-pass", password);  // none: an open network
+              id(stock_ssid) = ssid;
+              id(stock_password) = password;
+              wifi::WiFiAP sta;
+              sta.set_ssid(ssid);
+              sta.set_password(password);
+              wifi::global_wifi_component->set_sta(sta);
+            }
+            // Its own network has its name (esphome-abcdef), open, as
+            // Tasmota's has its own.
+            wifi::WiFiAP ap;
+            ap.set_ssid(App.get_name());
+            wifi::global_wifi_component->set_ap(ap);
+    # After Wi-Fi is set up: on the stock store's details (nothing saved
+    # before), saved, so they stay. Not wifi.configure, which - when its first
+    # try takes over 30 s, a router restarting, say - puts back what was there
+    # before (nothing, on a first boot) and saves that.
+    - priority: -100
+      then:
+        - lambda: |-
+            if (!id(stock_ssid).empty() && wifi::global_wifi_component->get_sta().get_ssid() == id(stock_ssid)) {
+              wifi::global_wifi_component->save_wifi_sta(id(stock_ssid), id(stock_password));
+            }
+            // Saved, too, where a build of this config with no network at
+            // start-up looks for them - one Home Assistant's ESPHome builder
+            // makes, say. ESPHome keys saved details by the whole config and
+            // its version when a build has a network at start-up, and by one
+            // fixed key when it has none: without this, that build finds none,
+            // and raises its own network. Kept to the network in use, written
+            // only when changed.
+            const auto &sta = wifi::global_wifi_component->get_sta();
+            if (!sta.get_ssid().empty()) {
+              auto fixed = global_preferences->make_preference<wifi::SavedWifiSettings>(88491487UL, true);
+              wifi::SavedWifiSettings saved{};
+              if (!fixed.load(&saved) || sta.get_ssid() != saved.ssid || sta.get_password() != saved.password) {
+                wifi::SavedWifiSettings save{};
+                strncpy(save.ssid, sta.get_ssid().c_str(), sizeof(save.ssid) - 1);
+                strncpy(save.password, sta.get_password().c_str(), sizeof(save.password) - 1);
+                fixed.save(&save);
+                global_preferences->sync();
+              }
+            }
+
+# Adopting it in Home Assistant's ESPHome builder takes this config as a
+# package. It names the release this image came out in, which cannot change.
+# update_firmware.py writes the release.
+dashboard_import:
+  package_import_url: github://adamsthws/firmware-liberator/devices/sonoff-basic-1gs/esphome.yaml@v3.0.0
+  import_full_config: false
+
+globals:
+  # The Wi-Fi the stock firmware was on, read at boot from its store
+  - id: stock_ssid
+    type: std::string
+  - id: stock_password
+    type: std::string
+
+bk72xx:
+  board: generic-bk7238
+  framework:
+    version: recommended
+
+# avoid frequent flash writes
+preferences:
+  flash_write_interval: 60s
+
+logger:
+
+api:
+  # Not restarting when Home Assistant is away: a device without it would cut
+  # the power to what it runs every 15 minutes (the default).
+  reboot_timeout: 0s
+  actions:
+    # The Wi-Fi the device is on, name and password, for the conversion tool to
+    # hand to the next firmware when the device leaves ESPHome: ESPHome says
+    # neither otherwise. Anything that can use this API can ask - anything on
+    # the network, while the API has no encryption key. Give the API a key to
+    # close it; the tool then asks for the details instead.
+    - action: autoflash_wifi
+      supports_response: only
+      then:
+        - api.respond:
+            data: !lambda |-
+              root["ssid"] = wifi::global_wifi_component->get_sta().get_ssid();
+              root["password"] = wifi::global_wifi_component->get_sta().get_password();
+
+ota:
+  - platform: esphome
+
+web_server:
+  version: 3
+  # The page's code from the device itself, so it works where it has no internet.
+  local: true
+
+wifi:
+  reboot_timeout: 0s
+  ap: {}
+
+captive_portal:
+
+# The Wi-Fi LED, lit high
+status_led:
+  pin:
+    number: P8
+
+switch:
+  - id: relay
+    platform: gpio
+    name: "Relay"
+    pin: P26
+    restore_mode: RESTORE_DEFAULT_ON  # as it was before a power cut; on if never set
+
+# From the OpenBeken device database's entry: P6 as its Btn, P1 as its Btn_n,
+# each pulled up, the second reading high when pressed.
+binary_sensor:
+  - platform: gpio
+    id: button_1
+    internal: true
+    pin:
+      number: P6
+      mode: INPUT_PULLUP
+      inverted: true
+    on_press:
+      - switch.toggle: relay
+    filters:
+      - delayed_on: 10ms
+      - delayed_off: 10ms
+  - platform: gpio
+    id: button_2
+    internal: true
+    pin:
+      number: P1
+      mode: INPUT_PULLUP
+    on_press:
+      - switch.toggle: relay
+    filters:
+      - delayed_on: 10ms
+      - delayed_off: 10ms
+
+sensor:
+  # The Wi-Fi signal where it is, in dBm. The conversion tool reads it
+  # (/sensor/WiFi Signal) before it changes the firmware, to suggest moving a
+  # device whose signal is weak; keep its name for that.
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    entity_category: diagnostic
+    update_interval: 60s

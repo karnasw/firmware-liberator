@@ -1,0 +1,40 @@
+---
+// /notify: an email address alone, sent to the API's /v1/notify as the
+// tool sends one (public/assets/notify.mjs), which emails a link to confirm
+// it and keeps nothing until it is followed. The page's script does the work
+// the API asks, so the form needs JavaScript.
+import Page from "../layouts/Page.astro";
+
+const DESCRIPTION = "Get an email when more Sonoff devices can be converted to Tasmota, ESPHome or OpenBeken.";
+---
+<Page title="Get an email as more devices are supported" description={DESCRIPTION}>
+  <h1>Get an email as more devices are supported</h1>
+  <p>Leave your address, and you are emailed when the tool converts more devices.</p>
+  <form id="notify">
+    <p>
+      <label for="email">Email address</label><br>
+      <input id="email" name="email" type="email" autocomplete="email" required maxlength="254">
+    </p>
+    <p><button type="submit">Notify me</button></p>
+    <p id="said" role="status" aria-live="polite"></p>
+  </form>
+  <noscript><p>This form needs JavaScript.</p></noscript>
+  <p>You are sent an email to confirm your address, and nothing is kept until you do. <a
+    href="/docs/what-the-tool-sends#your-email-address">How your address is kept</a> ·
+    <a href="/docs/privacy">Privacy</a>.</p>
+</Page>
+
+<script is:inline type="module" src="/assets/notify.mjs"></script>
+
+<style>
+  input, button { font: inherit; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px;
+                  background: var(--bg); color: var(--fg); }
+  input { width: 100%; max-width: 360px; box-sizing: border-box; }
+  button { cursor: pointer; }
+  /* While the page's script works (notify.mjs), a turning ring beside what it says. */
+  .working #said::before { content: ""; display: inline-block; width: 0.8em; height: 0.8em; margin-right: 0.5em;
+                           vertical-align: -0.1em; border: 2px solid var(--line); border-top-color: var(--fg);
+                           border-radius: 50%; animation: turn 0.8s linear infinite; }
+  @keyframes turn { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .working #said::before { animation-duration: 3s; } }
+</style>

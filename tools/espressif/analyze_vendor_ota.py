@@ -154,7 +154,7 @@ def validation_checks(result: dict[str, Any]) -> list[tuple[str, bool]]:
         ("Payload CRC-32", wrapper["payload_crc32_valid"]),
         ("Metadata CRC-32", wrapper["record_crc32_valid"]),
         ("Metadata reserved bytes", wrapper["record_reserved_zero"]),
-        ("ESP32-C3 target", esp["chip_is_esp32_c3"]),
+        ("ESP32 or ESP32-C3 target", esp["chip_id"] in (0, ESP32_C3_CHIP_ID)),
         ("ESP image checksum", esp["checksum_valid"]),
         ("ESP image SHA-256", esp["sha256_valid"] is not False),
         ("No trailing payload bytes", esp["trailing_bytes"] == 0),

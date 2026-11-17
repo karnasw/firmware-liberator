@@ -1,10 +1,11 @@
 #!/bin/bash
 # This computer's Wi-Fi, emulated. Stands in for your desktop's Wi-Fi menu.
-#   wifi                 what we are joined to, and what we can see
-#   wifi join NAME       join a network (the home one, or the plug's own)
+#   wifi                 the network this computer is on, and those it can see
+#   wifi join [NAME]     join a network (the home one, or the device's own -
+#                        the one on the air, without NAME)
 #   wifi home            back to the home network
 set -euo pipefail
-RUN=/run/autoflash-emu
+RUN=${AUTOFLASH_EMU_RUN:-/run/autoflash-emu}
 HOME_SSID=PICSimLabWifi
 
 case "${1:-status}" in
@@ -17,7 +18,12 @@ home)
     exec "$0" join "$HOME_SSID"
     ;;
 join)
-    name=${2:?usage: wifi join NAME}
+    name=${2:-$(cat "$RUN/softap" 2>/dev/null || true)}
+    if [ -z "$name" ]; then
+        echo "No network of the device's own is on the air. Visible now:" >&2
+        nmcli -t -f SSID device wifi list | sed 's/^/    /' >&2
+        exit 1
+    fi
     if [ "$name" = "$HOME_SSID" ]; then
         sudo /opt/autoflash-emu/bin/wifi-root home
         echo "Joined $HOME_SSID (this computer is 192.168.60.1)."
@@ -32,14 +38,14 @@ join)
     fi
     echo "Joining $name..."
     if sudo /opt/autoflash-emu/bin/wifi-root join "$name"; then
-        echo "Joined $name; the plug is at $(cat "$RUN/gateway"). Back home: wifi home"
+        echo "Joined $name; the device is at $(cat "$RUN/gateway"). Back home: wifi home"
     else
         echo "Could not get an address from $name. Back home: wifi home" >&2
         exit 1
     fi
     ;;
 *)
-    sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,/^set /s/^# \{0,1\}//p' "$0"
     exit 2
     ;;
 esac

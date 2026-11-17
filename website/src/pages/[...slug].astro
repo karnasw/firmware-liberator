@@ -1,9 +1,10 @@
 ---
 // Each page: a Markdown file of the repository, at the address src/site.mjs
-// makes from its path, titled by its first heading.
+// makes from its path, titled by its first heading and described by its first
+// paragraph. The front page keeps the layout's own title and description.
 import { getCollection, render } from "astro:content";
 import Page from "../layouts/Page.astro";
-import { slug } from "../site.mjs";
+import { description, retired, slug } from "../site.mjs";
 
 export async function getStaticPaths() {
   const entries = await getCollection("pages");
@@ -14,6 +15,10 @@ const { entry } = Astro.props;
 const { Content, headings } = await render(entry);
 const title = headings.find((heading) => heading.depth === 1)?.text;
 ---
-<Page title={entry.id === "README.md" ? undefined : title}>
+<Page
+  title={entry.id === "README.md" ? undefined : title}
+  description={entry.id === "README.md" ? undefined : description(entry.body)}
+  noindex={retired(slug(entry.id))}
+>
   <Content />
 </Page>

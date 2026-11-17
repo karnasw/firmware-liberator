@@ -1,4 +1,4 @@
-"""What the plug's networks are called, firmware by firmware: the interim
+"""What the device's networks are called, firmware by firmware: the interim
 names the tool's own firmware goes by, the final ones, and the names older
 releases used.  docs/device-names.md says why each is as it is.
 """
@@ -12,14 +12,14 @@ from tools.autoflash import hostsys, kinds
 if TYPE_CHECKING:
     from tools.autoflash.context import Context
 
-# Every firmware a plug runs part way through a conversion - the installer,
+# Every firmware a device runs part way through a conversion - the installer,
 # the mover, the startup firmware, a Tasmota not yet set up - goes by this and
-# the last two bytes of the plug's Wi-Fi MAC (autoflash-recovery-CDEF): on the
+# the last two bytes of the device's Wi-Fi MAC (autoflash-recovery-CDEF): on the
 # home network, and for the open network the installer and the mover raise
 # when they cannot join that (the others, given the Wi-Fi, only retry it).
 SETUP_SSID_PREFIX = "autoflash-recovery-"
 # The networks of the same firmware before 4.4.4 (the installer) and 1.1.0
-# (the mover), for a plug a run of an older checkout left on one; and the
+# (the mover), for a device a run of an older checkout left on one; and the
 # installer's before 4.4.3, with a fixed password.
 LEGACY_SETUP_PREFIX = "Sonoff-Setup-"
 LEGACY_BRIDGE_PREFIX = "S60-OTA-Bridge"
@@ -38,72 +38,78 @@ def _mac_tail(mac: str, add: int = 0) -> str:
 
 def final_name(ctx: "Context", firmware: str) -> str | None:
     """The name official Tasmota or ESPHome has once converted, for every kind
-    of plug: the firmware's and the last three bytes of the plug's MAC
+    of device: the firmware's and the last three bytes of the device's MAC
     (tasmota-abcdef, esphome-abcdef) - its own network's too.  None when the
     MAC is not known."""
-    mac = ctx.state.input("plug_mac")
+    mac = ctx.state.input("device_mac")
     return f"{firmware}-{_mac_tail(mac).lower()}" if mac else None
 
 
 def setup_networks(ctx: "Context") -> tuple[str, ...]:
-    """What a Tasmota's own setup network on this plug can be called, to look for.
+    """What a Tasmota's own setup network on this device can be called, to look for.
 
     Tasmota raises one only without Wi-Fi details, named after itself:
     tasmota-abcdef once set up (F4 names it), tasmota-ABCDEF-1234 when it
-    started from its defaults - Tasmota's own name, from the plug's MAC.  One
+    started from its defaults - Tasmota's own name, from the device's MAC.  One
     the run named autoflash-recovery-CDEF has the details, and only retries
     them - and that name is the installer's network's, not looked for here:
     still up for a moment as the installer restarts into Tasmota, it was
     taken for Tasmota's (seen in the fault suite).  Tasmota has also been seen
-    broadcasting ESP-IDF's default name instead: ESP_ and the MAC of its
-    hotspot, one more than the plug's (ESP_ABCDF0).  Knowing the MAC, only
-    this plug's are matched, never a neighbour's Tasmota; without it, any
-    Tasmota's.
+    broadcasting ESP-IDF's default name instead (_default_network).  Knowing
+    the MAC, only this device's are matched, never a neighbour's Tasmota;
+    without it, any Tasmota's.
     """
-    mac = ctx.state.input("plug_mac")
+    mac = ctx.state.input("device_mac")
     if not mac:
         return (TASMOTA_AP_PREFIX,)
-    return (final_name(ctx, "tasmota"), f"{TASMOTA_AP_PREFIX}{_mac_tail(mac)}-", f"ESP_{_mac_tail(mac, 1)}")
+    return (final_name(ctx, "tasmota"), f"{TASMOTA_AP_PREFIX}{_mac_tail(mac)}-", _default_network(ctx, mac))
+
+
+def _default_network(ctx: "Context", mac: str) -> str:
+    """ESP-IDF's default name for the device's network: ESP_ and the MAC of its
+    hotspot, one more than the device's (ESP_ABCDF0), on an ESP32-C3; ESP_ and
+    the device's own MAC (ESP_ABCDEF) on a classic ESP32."""
+    return f"ESP_{_mac_tail(mac, kinds.of_run(ctx.state).chip != 'esp32')}"
 
 
 def setup_network_hint(ctx: "Context") -> str:
     """The setup network's name as a person should look for it in a list."""
-    mac = ctx.state.input("plug_mac")
+    mac = ctx.state.input("device_mac")
     if not mac:
         return "tasmota-xxxxxx or tasmota-XXXXXX-NNNN"
-    return f"{final_name(ctx, 'tasmota')}, tasmota-{_mac_tail(mac)}-NNNN, or ESP_{_mac_tail(mac, 1)}"
+    return f"{final_name(ctx, 'tasmota')}, tasmota-{_mac_tail(mac)}-NNNN, or {_default_network(ctx, mac)}"
 
 
 def note_setup_network(ctx: "Context", network: str) -> None:
-    """Keep the plug's name, from its setup network - only when that is
+    """Keep the device's name, from its setup network - only when that is
     Tasmota's own name for it, which its router shows too, not ESP-IDF's."""
     if network.startswith(TASMOTA_AP_PREFIX):
         ctx.state.set_input("device_name", network)
 
 
 def named(ctx: "Context", prefix: str) -> str:
-    """`prefix` and the last two bytes of the plug's Wi-Fi MAC, as this
+    """`prefix` and the last two bytes of the device's Wi-Fi MAC, as this
     project's firmware names itself (XXXX when the MAC is not known)."""
-    mac = ctx.state.input("plug_mac")
+    mac = ctx.state.input("device_mac")
     return f"{prefix}{_mac_tail(mac)[-4:]}" if mac else f"{prefix}XXXX"
 
 
 def our_setup_network(ctx: "Context") -> str:
-    """This plug's name, and its network's, while it runs firmware of this
+    """This device's name, and its network's, while it runs firmware of this
     project part way through a conversion (autoflash-recovery-CDEF)."""
     return named(ctx, SETUP_SSID_PREFIX)
 
 
 def our_setup_networks(ctx: "Context", *legacy: str) -> tuple[str, ...]:
-    """To look for: this plug's network (any plug's, its MAC not known), or
+    """To look for: this device's network (any device's, its MAC not known), or
     those of `legacy`, what the same firmware raised before."""
-    mac = ctx.state.input("plug_mac")
+    mac = ctx.state.input("device_mac")
     return (our_setup_network(ctx) if mac else SETUP_SSID_PREFIX, *legacy)
 
 
 def legacy_setup_network(ctx: "Context") -> str:
     """What the installer and the mover raised before 4.4.4 and 1.1.0."""
-    return named(ctx, LEGACY_SETUP_PREFIX) if ctx.state.input("plug_mac") else LEGACY_SETUP_PREFIX
+    return named(ctx, LEGACY_SETUP_PREFIX) if ctx.state.input("device_mac") else LEGACY_SETUP_PREFIX
 
 
 def bridge_networks(ctx: "Context") -> tuple[str, ...]:
@@ -118,12 +124,16 @@ def mover_networks(ctx: "Context") -> tuple[str, ...]:
 
 def esphome_networks(ctx: "Context") -> tuple[str, ...]:
     """ESPHome's own network, once installed - its name (esphome-abcdef) -
-    and the names an earlier build of this kind of plug's gave it."""
+    and the names an earlier build of this kind of device's gave it.  A kind
+    with no earlier build has none: an empty prefix would match every network."""
     kind = kinds.of_run(ctx.state)
-    mac = ctx.state.input("plug_mac")
-    return (final_name(ctx, "esphome") or ESPHOME_PREFIX,
-            named(ctx, kind.esphome_legacy_setup_prefix) if mac else kind.esphome_legacy_setup_prefix,
-            kind.esphome_legacy_prefix)
+    mac = ctx.state.input("device_mac")
+    legacy = ()
+    if kind.esphome_legacy_setup_prefix:
+        legacy += (named(ctx, kind.esphome_legacy_setup_prefix) if mac else kind.esphome_legacy_setup_prefix,)
+    if kind.esphome_legacy_prefix:
+        legacy += (kind.esphome_legacy_prefix,)
+    return (final_name(ctx, "esphome") or ESPHOME_PREFIX, *legacy)
 
 
 def mover_network_hint(ctx: "Context") -> str:

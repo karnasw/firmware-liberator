@@ -1,11 +1,11 @@
-// The conversion tool's OpenBeken driver, for an eWeLink plug on a Beken chip
+// The conversion tool's OpenBeken driver, for an eWeLink device on a Beken chip
 // that keeps its stock rt_ota bootloader.
 //
-// When such a plug is converted to OpenBeken over the air, its Wi-Fi SSID and
+// When such a device is converted to OpenBeken over the air, its Wi-Fi SSID and
 // password are still sitting in the stock EasyFlash V4 (EF40) key-value store,
 // which the conversion does not touch (it lives well above the app partition
 // the OTA replaces). This module reads them on first boot and hands them to
-// OpenBeken's own config, so the converted plug rejoins the user's network
+// OpenBeken's own config, so the converted device rejoins the user's network
 // with no typing and no second device.
 //
 // It deliberately goes through CFG_SetWiFiSSID() / CFG_SetWiFiPass() rather than
@@ -18,10 +18,10 @@
 // Reversible by design: it reads the stock store, never writes it.
 //
 // The EF40 reader (the KV40 node format, its CRC, the windowed scan, the
-// wifi-ssid/wifi-pass keys) is eWeLink's on any Beken plug, from the same
-// firmware tree; the rest is the tool's. What is one plug's own - where its
+// wifi-ssid/wifi-pass keys) is eWeLink's on any Beken device, from the same
+// firmware tree; the rest is the tool's. What is one device's own - where its
 // store and download slot sit, its wiring, its meter's calibration, its kind -
-// is in its table (drv_autoflash.h), in devices/<plug>/, built in beside this.
+// is in its table (drv_autoflash.h), in devices/<device>/, built in beside this.
 //
 // Started once from platform init: Autoflash_Init().
 
@@ -41,12 +41,12 @@ extern int beken_hal_flash_read(const unsigned int addr, void *dst, const unsign
 extern int hal_flash_lock(void);
 extern int hal_flash_unlock(void);
 
-// The plug this build is for (drv_autoflash.h).
-static const autoflash_device_t *const plug = &autoflash_device;
+// The device this build is for (drv_autoflash.h).
+static const autoflash_device_t *const device = &autoflash_device;
 
 // EF40 "app" key-value store: scanned between the table's store_start and
 // store_end for the keys we want. Values are stored verbatim (plaintext) on a
-// provisioned plug; tools/beken/ef40.py reads the same format.
+// provisioned device; tools/beken/ef40.py reads the same format.
 #define EF40_SCAN_CHUNK     0x1000      // 4 KiB read window
 #define EF40_SCAN_OVERLAP   0x80        // keep a node from straddling two windows
 #define EF40_MAX_VALUE      128
@@ -117,10 +117,10 @@ static int ef40_read_key(const char *key, char *out, int outMax) {
 	static uint8_t win[EF40_SCAN_CHUNK];
 	int best = -1;
 	char tmp[EF40_MAX_VALUE];
-	for (uint32_t addr = plug->store_start; addr < plug->store_end;
+	for (uint32_t addr = device->store_start; addr < device->store_end;
 		 addr += EF40_SCAN_CHUNK - EF40_SCAN_OVERLAP) {
 		uint32_t want = EF40_SCAN_CHUNK;
-		if (addr + want > plug->store_end) want = plug->store_end - addr;
+		if (addr + want > device->store_end) want = device->store_end - addr;
 		if (beken_hal_flash_read(addr, win, want) != 0)
 			continue;
 		int n = ef40_find_in_window(win, (int)want, key, tmp, sizeof(tmp));
@@ -165,10 +165,10 @@ int Autoflash_ReadStockBlob(const char *key, uint8_t *out, int outMax) {
 	char tmp[EF40_MAX_VALUE];
 	int best = -1;
 	int keyLen = (int)strlen(key);
-	for (uint32_t addr = plug->store_start; addr < plug->store_end;
+	for (uint32_t addr = device->store_start; addr < device->store_end;
 		 addr += EF40_SCAN_CHUNK - EF40_SCAN_OVERLAP) {
 		uint32_t want = EF40_SCAN_CHUNK;
-		if (addr + want > plug->store_end) want = plug->store_end - addr;
+		if (addr + want > device->store_end) want = device->store_end - addr;
 		if (beken_hal_flash_read(addr, win, want) != 0)
 			continue;
 		// inline scan that keeps the raw value length (ef40_find_in_window
@@ -201,7 +201,7 @@ int Autoflash_ReadStockBlob(const char *key, uint8_t *out, int outMax) {
 	return best;
 }
 
-// The plug's name, short and full: as every firmware the conversion installs
+// The device's name, short and full: as every firmware the conversion installs
 // for good names it, the firmware and the last three bytes of its MAC, in lower
 // case as ESPHome has to be (openbeken-abcdef) - or, as the interim firmware,
 // as the tool's other interim firmwares are named, the last two in upper case
@@ -223,29 +223,29 @@ static void autoflash_set_names(int interim) {
 	CFG_SetDeviceName(name);
 }
 
-// The plug's wiring, from its table. Applied on first boot so the converted
-// plug switches, meters and lights up straight away; the relay remembers its
-// last state across power loss, as the tool sets on every plug.
+// The device's wiring, from its table. Applied on first boot so the converted
+// device switches, meters and lights up straight away; the relay remembers its
+// last state across power loss, as the tool sets on every device.
 static void Autoflash_ApplyPinTemplate(void) {
-	for (int i = 0; i < plug->pin_count; i++) {
-		const autoflash_pin_t *pin = &plug->pins[i];
+	for (int i = 0; i < device->pin_count; i++) {
+		const autoflash_pin_t *pin = &device->pins[i];
 		PIN_SetPinRoleForPinIndex(pin->pin, pin->role);
 		if (pin->channel)
 			PIN_SetPinChannelForPinIndex(pin->pin, pin->channel);
 	}
-	CFG_SetChannelStartupValue(plug->relay_channel, -1);   // -1: restore the last relay state
+	CFG_SetChannelStartupValue(device->relay_channel, -1);   // -1: restore the last relay state
 	autoflash_set_names(0);
 	ADDLOG_INFO(LOG_FEATURE_CFG, "AutoflashImport: applied the %s pin template (%s); relay restores its last state",
-				plug->name, plug->pins_described);
+				device->name, device->pins_described);
 }
 
 // First boot after conversion: creds, then - only when they were just imported,
 // so a user's later changes are never overwritten - the meter calibration and
-// the plug's wiring.
+// the device's wiring.
 static int Autoflash_FirstBoot(void) {
 	int imported = Autoflash_ImportStockWiFi();
 	if (imported > 0) {
-		plug->apply_calibration();
+		device->apply_calibration();
 		Autoflash_ApplyPinTemplate();
 	}
 	return imported;
@@ -257,7 +257,7 @@ static commandResult_t Cmd_AutoflashImport(const void *context, const char *cmd,
 }
 
 // Revert to stock: stage a stock-app rt_ota RBL where the STOCK bootloader looks
-// for an update, then let it apply on reboot. On a converted plug the stock
+// for an update, then let it apply on reboot. On a converted device the stock
 // bootloader is still in place and reads the table's download slot. The SDK
 // picks its partition table from the flash size at runtime; on a 4 MB chip
 // that is the 4M table, whose OTA partition is the stock download slot - the
@@ -265,7 +265,7 @@ static commandResult_t Cmd_AutoflashImport(const void *context, const char *cmd,
 // OTA download lands in the right slot. We check that before writing anything:
 // on a 2 MB table the slot would be 0x132000, inside the app, and the stock
 // bootloader would never see it. The stock EasyFlash store is untouched
-// throughout, so the plug comes back with its own Wi-Fi, calibration and
+// throughout, so the device comes back with its own Wi-Fi, calibration and
 // identity.
 //     AutoflashRevertToStock http://<tool>/stock_app.rbl
 static commandResult_t Cmd_AutoflashRevertToStock(const void *context, const char *cmd,
@@ -280,12 +280,12 @@ static commandResult_t Cmd_AutoflashRevertToStock(const void *context, const cha
 	// OTA downloader actually writes to (hal_ota.h; the stock build says
 	// 0x132000 for BK7238). A build with either wrong would put the stock image
 	// where the stock bootloader never looks, so refuse rather than guess.
-	if (pt == NULL || pt->partition_start_addr != plug->download_slot
-		|| START_ADR_OF_BK_PARTITION_OTA != plug->download_slot) {
+	if (pt == NULL || pt->partition_start_addr != device->download_slot
+		|| START_ADR_OF_BK_PARTITION_OTA != device->download_slot) {
 		ADDLOG_ERROR(LOG_FEATURE_CFG, "AutoflashRevert: OTA slot is 0x%x (table) / 0x%x (downloader), not the stock "
 					 "download slot 0x%x - refusing",
 					 pt ? (unsigned)pt->partition_start_addr : 0u, (unsigned)START_ADR_OF_BK_PARTITION_OTA,
-					 (unsigned)plug->download_slot);
+					 (unsigned)device->download_slot);
 		return CMD_RES_ERROR;
 	}
 	ADDLOG_INFO(LOG_FEATURE_CFG, "AutoflashRevert: staging stock firmware from %s into 0x%x (%u bytes free); "
@@ -295,7 +295,7 @@ static commandResult_t Cmd_AutoflashRevertToStock(const void *context, const cha
 	return CMD_RES_OK;
 }
 
-// What kind of plug this OpenBeken is on, for the conversion tool, which
+// What kind of device this OpenBeken is on, for the conversion tool, which
 // cannot tell by its name (every firmware it installs is named the same
 // way, and a user may rename it): OK for the table's kind, an error for
 // any other. An OpenBeken the tool did not install does not know the
@@ -306,11 +306,35 @@ static commandResult_t Cmd_AutoflashKind(const void *context, const char *cmd,
 	if (args == NULL || args[0] == 0) {
 		return CMD_RES_NOT_ENOUGH_ARGUMENTS;
 	}
-	return strcmp(args, plug->kind) == 0 ? CMD_RES_OK : CMD_RES_BAD_ARGUMENT;
+	return strcmp(args, device->kind) == 0 ? CMD_RES_OK : CMD_RES_BAD_ARGUMENT;
+}
+
+// Where the meter's calibration came from, for the conversion tool, which
+// says in its report whether the factory one was kept: OK for `stock` when
+// OpenBeken's calibration is the one the first boot takes from the stock
+// store, for `missing` when the store has none, an error otherwise - and for
+// either on a device with no meter. Read afresh each time, so it holds after a
+// restart, and says so once the device's owner calibrates it themselves.
+// Changes nothing.
+//     AutoflashCalibration stock
+//     AutoflashCalibration missing
+static commandResult_t Cmd_AutoflashCalibration(const void *context, const char *cmd,
+												const char *args, int cmdFlags) {
+	if (args == NULL || args[0] == 0) {
+		return CMD_RES_NOT_ENOUGH_ARGUMENTS;
+	}
+	int wanted = strcmp(args, "stock") == 0 ? 1 : strcmp(args, "missing") == 0 ? -1 : 0;
+	if (!wanted) {
+		return CMD_RES_BAD_ARGUMENT;
+	}
+	if (device->calibration_is_stock == NULL) {
+		return CMD_RES_ERROR;
+	}
+	return device->calibration_is_stock() == wanted ? CMD_RES_OK : CMD_RES_ERROR;
 }
 
 // The interim firmware. A run of the conversion tool to ESPHome installs this
-// OpenBeken first, to back the plug up through its flash reads, then has it
+// OpenBeken first, to back the device up through its flash reads, then has it
 // fetch ESPHome; a run to OpenBeken installs the same image to keep. The tool
 // tells the two apart by a marker sector it sends after the image, in the same
 // update (tools/beken/interim_marker.py has the format): the stock updater
@@ -319,12 +343,12 @@ static commandResult_t Cmd_AutoflashKind(const void *context, const char *cmd,
 // is still there on the first boot. The marker names the app its image
 // installs (its size and FNV-1a hash, from the image's RBL header), and only a
 // marker for the app running counts: one left by anything else, or for
-// another image, never makes a plug the interim firmware, and is erased.
-// Found, it names the plug as the interim firmware, autoflash-recovery-CDEF -
+// another image, never makes a device the interim firmware, and is erased.
+// Found, it names the device as the interim firmware, autoflash-recovery-CDEF -
 // and that name is the record: no
 // field of OpenBeken's config is the module's to keep a flag in (its flags and
 // unused bytes are upstream's to give a meaning), and a name set through the
-// setters, as the Wi-Fi is, survives any change of config layout. A plug
+// setters, as the Wi-Fi is, survives any change of config layout. A device
 // renamed is the user's own, and no longer the interim firmware.
 #define AUTOFLASH_SECTOR          0x1000
 #define AUTOFLASH_MARKER_MAGIC    "AFINTERM"
@@ -347,7 +371,7 @@ int Autoflash_IsInterim(void) {
 // slot is elsewhere, where there is no marker to look for.
 static bk_logic_partition_t *autoflash_slot(void) {
 	bk_logic_partition_t *pt = bk_flash_get_info(BK_PARTITION_OTA);
-	return pt && pt->partition_start_addr == plug->download_slot ? pt : 0;
+	return pt && pt->partition_start_addr == device->download_slot ? pt : 0;
 }
 
 // Whether the sector at `offset` in the slot is a marker: its magic, version
@@ -424,7 +448,7 @@ static int autoflash_erase_markers(const bk_logic_partition_t *slot, uint32_t fr
 // The first boot after an install the tool sent with a marker: named as the
 // interim firmware, the names saved, and only then the marker erased, so a
 // power cut in between leaves it to be found again. Before Wi-Fi starts, so
-// the plug asks for its address under that name from the first. A marker for
+// the device asks for its address under that name from the first. A marker for
 // another app is erased: the bootloader installs an image before any app
 // starts, so one whose app is not running now never will be.
 static void Autoflash_TakeInterimMarker(void) {
@@ -492,7 +516,7 @@ static int autoflash_slot_holds_image(const bk_logic_partition_t *slot, uint32_t
 // variables and any marker are erased, so the firmware it fetched - ESPHome,
 // or the stock one - starts with nothing of it, and a later OpenBeken starts
 // afresh, named by its first boot's import. Only once the whole image is in
-// the slot: a download cut off leaves the plug the interim firmware still, to
+// the slot: a download cut off leaves the device the interim firmware still, to
 // be sent it again, and a power cut after this still applies the image. Any
 // other OpenBeken - a user's own, updating itself - is left as it is.
 void HAL_OTA_BeforeReboot(int ok) {
@@ -506,10 +530,10 @@ void HAL_OTA_BeforeReboot(int ok) {
 					"stays");
 		return;
 	}
-	if (config == 0 || config->partition_start_addr != plug->settings_sector
+	if (config == 0 || config->partition_start_addr != device->settings_sector
 		|| config->partition_length != AUTOFLASH_SECTOR) {
 		ADDLOG_ERROR(LOG_FEATURE_CFG, "AutoflashImport: OpenBeken's settings are not at 0x%x; left as they are",
-					 (unsigned)plug->settings_sector);
+					 (unsigned)device->settings_sector);
 		return;
 	}
 	int markers = autoflash_erase_markers(slot, (end + AUTOFLASH_SECTOR - 1) / AUTOFLASH_SECTOR * AUTOFLASH_SECTOR);
@@ -521,7 +545,7 @@ void HAL_OTA_BeforeReboot(int ok) {
 }
 
 // Whether this OpenBeken is the interim firmware, for the conversion tool:
-// OK when it is, an error when not. `off` makes it this plug's OpenBeken for
+// OK when it is, an error when not. `off` makes it this device's OpenBeken for
 // good - named openbeken-abcdef - for a run that finds it and is to end on
 // OpenBeken; `on` makes it the interim firmware, for the run that sent it as
 // one when its marker did not arrive (its update cut off in its last few
@@ -560,11 +584,15 @@ void Autoflash_Init(void) {
 	//cmddetail:"fn":"Cmd_AutoflashRevertToStock","file":"driver/drv_autoflash.c","requires":""}
 	CMD_RegisterCommand("AutoflashRevertToStock", Cmd_AutoflashRevertToStock, NULL);
 	//cmddetail:{"name":"AutoflashKind","args":"[kind]",
-	//cmddetail:"descr":"OK when this OpenBeken is on the given kind of plug, for the conversion tool.",
+	//cmddetail:"descr":"OK when this OpenBeken is on the given kind of device, for the conversion tool.",
 	//cmddetail:"fn":"Cmd_AutoflashKind","file":"driver/drv_autoflash.c","requires":""}
 	CMD_RegisterCommand("AutoflashKind", Cmd_AutoflashKind, NULL);
+	//cmddetail:{"name":"AutoflashCalibration","args":"[stock|missing]",
+	//cmddetail:"descr":"OK when the meter's calibration is the stock store's (stock), or the store has none (missing), for the conversion tool.",
+	//cmddetail:"fn":"Cmd_AutoflashCalibration","file":"driver/drv_autoflash.c","requires":""}
+	CMD_RegisterCommand("AutoflashCalibration", Cmd_AutoflashCalibration, NULL);
 	//cmddetail:{"name":"AutoflashInterim","args":"[on|off]",
-	//cmddetail:"descr":"OK when this OpenBeken is the conversion tool's interim firmware; off makes it the plug's own, on the interim firmware.",
+	//cmddetail:"descr":"OK when this OpenBeken is the conversion tool's interim firmware; off makes it the device's own, on the interim firmware.",
 	//cmddetail:"fn":"Cmd_AutoflashInterim","file":"driver/drv_autoflash.c","requires":""}
 	CMD_RegisterCommand("AutoflashInterim", Cmd_AutoflashInterim, NULL);
 	Autoflash_FirstBoot();

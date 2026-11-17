@@ -10,20 +10,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 ADDRESS = re.compile(r"(?<![0-9.])192\.168\.(\d+)\.\d+")
 SUBNETS = {
-    "4",    # the setup networks plugs really make
-    "60",   # the S60 emulator's network
+    "4",    # the setup networks devices really make
+    "60",   # the Espressif emulator's network
     "99",   # examples people read
     "122",  # libvirt's bridge, which discovery leaves out
 }
-# Where the Beken emulator's built-in network, which its plug really joins, is used or described.
+# Where the Beken emulator's built-in network, which its device really joins, is used or described.
 BEKEN_EMULATOR_SUBNET = "1"
 BEKEN_EMULATOR_FILES = {
-    "devices/sonoff-s61/openbeken.md",
-    "docs/beken-s61-emulation.md",
+    "devices/sonoff-s61/research.md",
+    "docs/beken-research.md",
     "tools/beken/README.md",
-    "tools/beken/cloud_dial.py",
-    "tools/beken/emulator/patches/0005-emulator-bridge-the-Wi-Fi-peer-to-a-host-TAP-device-.patch",
-    "tools/beken/seed_join.py",
+    "tools/beken/emulator/cloud_dial.py",
+    "tools/beken/emulator/patches/0005-wifi-peer-bridged-to-host-tap.patch",
+    "tools/beken/emulator/seed_join.py",
 }
 
 
@@ -48,5 +48,5 @@ class ExampleAddressTests(unittest.TestCase):
         home = "192.168."
         self.assertEqual(strays("tests/x.py", f"{home}0.50 {home}1.1 {home}2.7"), [f"{home}0.50", f"{home}1.1", f"{home}2.7"])
         self.assertEqual(strays("docs/x.md", f"{home}99.50 {home}4.1 {home}60.1 {home}122.1 192.0.2.50"), [])
-        self.assertEqual(strays("tools/beken/cloud_dial.py", f"{home}1.1"), [])
-        self.assertEqual(strays("tools/beken/cloud_dial.py", f"{home}0.1"), [f"{home}0.1"])
+        self.assertEqual(strays("tools/beken/emulator/cloud_dial.py", f"{home}1.1"), [])
+        self.assertEqual(strays("tools/beken/emulator/cloud_dial.py", f"{home}0.1"), [f"{home}0.1"])

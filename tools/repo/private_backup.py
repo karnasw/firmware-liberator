@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """The maintainer's Sonoff backup, sealed, kept off this computer and private.
 
-The emulator boots one real plug's Sonoff backup - firmware that is Sonoff's,
-with that plug's eWeLink keys and the Wi-Fi it was set up on - of which there
+The emulator boots one real device's Sonoff backup - firmware that is Sonoff's,
+with that device's eWeLink keys and the Wi-Fi it was set up on - of which there
 is no other copy to be had. This seals it (compressed, then encrypted with a
 key only its owner has) and keeps the sealed file in a private package on
 GitHub's container registry, beside the public repository but never in it:
-not in its history, not in a clone, not in a release (docs/private-backup.md).
+not in its history, not in a clone, not in a release (.github/private-firmware-backup.md).
 
     python3 tools/repo/private_backup.py key
         a new key, written into .env as AUTOFLASH_BACKUP_KEY - never shown
@@ -17,7 +17,7 @@ not in its history, not in a clone, not in a release (docs/private-backup.md).
     python3 tools/repo/private_backup.py unseal SEALED OUT_DIR
         the backup again, into a new directory, every file checked
     python3 tools/repo/private_backup.py restore
-        fetched and unsealed into captures/plugs/<MAC>/, where the emulator
+        fetched and unsealed into captures/devices/<MAC>/, where the emulator
         looks - unless it is there already, as it was sealed
     python3 tools/repo/private_backup.py upload SEALED
         into the private package, then shown to be private
@@ -56,9 +56,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from tools.autoflash import credentials, plugs  # noqa: E402
+from tools.autoflash import credentials, records  # noqa: E402
 
 KEY_NAME = "AUTOFLASH_BACKUP_KEY"
+# A private package of the maintainer's account, not linked to the
+# repository: a package's visibility is its own, and one made public cannot
+# be made private again, so its settings are never changed.
 OWNER, PACKAGE, TAG = "adamsthws", "autoflash-private", "sonoff-backup"
 REFERENCE = f"ghcr.io/{OWNER}/{PACKAGE}:{TAG}"
 REPOSITORY = "adamsthws/firmware-liberator"
@@ -73,13 +76,16 @@ PUBLIC_CONTROL = ("oras-project/oras", "v1.2.3")
 
 # The sealed file: this line, a 12-byte nonce, then the xz-compressed tar of
 # the backup encrypted with AES-256-GCM under the key, this line its
-# associated data - so any AES-GCM implementation can open it.
+# associated data - so any AES-GCM implementation can open it, and a change
+# to any byte is found. Compressed first, as encrypted data does not compress
+# (4.2 MB to 1.0 MB: a flash is mostly empty). The tar holds a manifest of
+# each file's size and SHA-256, which opening checks every file against.
 MAGIC = b"AUTOFLASH-SEALED-BACKUP 1\n"
 NONCE_SIZE, KEY_SIZE = 12, 32
 MANIFEST = "MANIFEST.json"
-# The plug's own record, beside its backup directory (its eWeLink device and
+# The device's own record, beside its backup directory (its eWeLink device and
 # model, which the emulator's cloud stub gives as eWeLink would): sealed with it.
-PLUG_RECORD = "plug.json"
+DEVICE_RECORD = "device.json"
 
 
 class SealError(RuntimeError):
@@ -126,26 +132,26 @@ def command_key(_args: argparse.Namespace) -> int:
 # -- sealing -----------------------------------------------------------------
 
 def backup_files(directory: Path) -> dict[str, bytes]:
-    """A backup directory's files, and its plug's record beside it."""
+    """A backup directory's files, and its device's record beside it."""
     files = {path.name: path.read_bytes() for path in sorted(directory.iterdir()) if path.is_file()}
     if "flash.bin" not in files or "efuse.bin" not in files:
         raise SealError(f"{directory} is not a Sonoff backup: no flash.bin and efuse.bin")
-    if PLUG_RECORD in files:
-        raise SealError(f"{directory} holds a {PLUG_RECORD} of its own")
-    record = directory.parent / PLUG_RECORD
+    if DEVICE_RECORD in files:
+        raise SealError(f"{directory} holds a {DEVICE_RECORD} of its own")
+    record = directory.parent / DEVICE_RECORD
     if record.is_file():
-        files[PLUG_RECORD] = record.read_bytes()
+        files[DEVICE_RECORD] = record.read_bytes()
     return files
 
 
 def write_backup(files: dict[str, bytes], directory: Path) -> None:
     """Into a new directory, each file read-only as a backup is kept; the
-    plug's record beside it."""
+    device's record beside it."""
     directory.mkdir(parents=True, mode=0o700)
     for name, data in files.items():
-        path = directory.parent / name if name == PLUG_RECORD else directory / name
+        path = directory.parent / name if name == DEVICE_RECORD else directory / name
         path.write_bytes(data)
-        path.chmod(0o600 if name == PLUG_RECORD else 0o400)
+        path.chmod(0o600 if name == DEVICE_RECORD else 0o400)
 
 
 def packed(files: dict[str, bytes]) -> bytes:
@@ -229,7 +235,7 @@ def command_unseal(args: argparse.Namespace) -> int:
     if args.out.exists():
         raise SealError(f"{args.out} is there already: unsealing never writes over anything")
     files = opened(args.sealed.read_bytes(), key())
-    files.pop(PLUG_RECORD, None)  # a backup directory of its own: not beside anything
+    files.pop(DEVICE_RECORD, None)  # a backup directory of its own: not beside anything
     args.out.mkdir(parents=True, mode=0o700)
     for name, data in files.items():
         path = args.out / name
@@ -294,15 +300,15 @@ def fetched() -> bytes:
 
 
 def restore() -> str:
-    """The sealed backup, fetched and unsealed into captures/plugs/<MAC>/, unless
+    """The sealed backup, fetched and unsealed into captures/devices/<MAC>/, unless
     it is there already exactly as sealed; never written over. Its MAC."""
     files = opened(fetched(), key())
-    mac = plugs.mac_from_efuse(files["efuse.bin"])
-    directory = plugs.PLUGS / plugs.folder_name(mac) / "sonoff-backup"
+    mac = records.mac_from_efuse(files["efuse.bin"])
+    directory = records.DEVICES / records.folder_name(mac) / "sonoff-backup"
     if directory.exists():
         here = backup_files(directory)
-        if {name: data for name, data in here.items() if name != PLUG_RECORD} != \
-                {name: data for name, data in files.items() if name != PLUG_RECORD}:
+        if {name: data for name, data in here.items() if name != DEVICE_RECORD} != \
+                {name: data for name, data in files.items() if name != DEVICE_RECORD}:
             raise SealError(f"{directory} is there and is not the sealed backup: left as it is")
         return mac
     write_backup(files, directory)
@@ -311,7 +317,7 @@ def restore() -> str:
 
 def command_restore(_args: argparse.Namespace) -> int:
     mac = restore()
-    print(f"The sealed backup of {mac} is in {plugs.PLUGS / plugs.folder_name(mac)}, as it was sealed.")
+    print(f"The sealed backup of {mac} is in {records.DEVICES / records.folder_name(mac)}, as it was sealed.")
     return 0
 
 
@@ -336,6 +342,11 @@ def anonymous_manifest(repository: str, tag: str) -> int:
 
 
 def command_check_private(_args: argparse.Namespace) -> int:
+    """Private only if all three say so: the registry, asked as nobody, does
+    not hand the package over - having handed over a public one (ORAS's own)
+    first, so the check is shown to tell the two apart; GitHub's own setting
+    for it, read as its owner, is private; and it is there under its tag, so
+    the refusal means "not for you", not "no such thing"."""
     problems = []
     control = anonymous_manifest(*PUBLIC_CONTROL)
     print(f"  a public package, asked for as nobody: HTTP {control} (200: the check can tell)")
@@ -389,6 +400,10 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("check-private").set_defaults(run=command_check_private)
     commands.add_parser("secret").set_defaults(run=command_secret)
     args = parser.parse_args(argv)
+    try:
+        records.take_over_earlier_names()
+    except records.EarlierNames as error:
+        sys.exit(str(error))
     try:
         return args.run(args)
     except SealError as exc:

@@ -1,0 +1,69 @@
+From ad490b17bd000e6260a784129814f42463e652ce Mon Sep 17 00:00:00 2001
+From: Adam Matthews <52178922+adamsthws@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 14:43:21 +0000
+Subject: [PATCH] esp32 uart: count the RX timeout in REF_TICK's unit when it
+ runs from REF_TICK
+
+The classic ESP32's RX timeout threshold (CONF1's TOUT_THRD) was always taken
+as a count of 8 bit times. That is its unit only while the UART runs from the
+APB clock. Running from REF_TICK, ESP-IDF's uart_ll_set_rx_tout() writes the
+threshold multiplied by 8 (UART_LL_TOUT_REF_FACTOR_DEFAULT), not divided by
+it, so the same register value stands for 64 times less time.
+
+Arduino-ESP32 runs every UART up to 250000 baud from REF_TICK, so firmware
+built with it, Tasmota among them, had its received bytes held for 64 times
+the timeout it set: at 38400 baud 8E1, a one-symbol timeout (TOUT_THRD 88)
+became 18 ms instead of 0.29 ms, and a driver that waits a few milliseconds
+for an answer never saw one.
+
+The threshold is now converted by the clock source CONF0 names when CONF1 is
+written, as ESP-IDF writes it. The ESP32-C3's and ESP32-S3's UARTs write
+CONF1 through their own classes and are unchanged.
+---
+ hw/char/esp32_uart.c | 23 +++++++++++++++++++----
+ 1 file changed, 19 insertions(+), 4 deletions(-)
+
+diff --git a/hw/char/esp32_uart.c b/hw/char/esp32_uart.c
+index 5373907..c34b496 100644
+--- a/hw/char/esp32_uart.c
++++ b/hw/char/esp32_uart.c
+@@ -152,6 +152,24 @@ static unsigned int uart_calc_baud(ESP32UARTState *s)
+ }
+ 
+ 
++/* The RX timeout threshold in bit times, by the clock source CONF0 names
++ * when CONF1 is written. On the ESP32 TOUT_THRD counts 8 bit times when
++ * the UART runs from the APB clock, but an eighth of a bit time when it
++ * runs from REF_TICK: ESP-IDF's uart_ll_set_rx_tout() writes the bit
++ * times divided by 8 for the first and multiplied by 8
++ * (UART_LL_TOUT_REF_FACTOR_DEFAULT) for the second, and Arduino-ESP32
++ * runs every UART up to 250000 baud from REF_TICK. Note this is
++ * different on later chips, which write CONF1 through their own class.
++ */
++static uint32_t uart_rx_tout_bits(ESP32UARTState *s)
++{
++    uint32_t thrd = FIELD_EX32(s->reg[R_UART_CONF1], UART_CONF1, TOUT_THRD);
++    if (FIELD_EX32(s->reg[R_UART_CONF0], UART_CONF0, TICK_REF_ALWAYS_ON)) {
++        return 8 * thrd;
++    }
++    return DIV_ROUND_UP(thrd, 8);
++}
++
+ static void uart_write(void *opaque, hwaddr addr,
+                        uint64_t value, unsigned int size)
+ {
+@@ -208,10 +226,7 @@ static void uart_write(void *opaque, hwaddr addr,
+         s->reg[addr / 4] = value;
+         s->tx_empty_threshold = FIELD_EX32(s->reg[R_UART_CONF1], UART_CONF1, TXFIFO_EMPTY_THRD);
+         s->rx_full_threshold = FIELD_EX32(s->reg[R_UART_CONF1], UART_CONF1, RXFIFO_FULL_THRD);
+-        /* On the ESP32, rx_tout_thres is in units of (bit_time * 8).
+-         * Note this is different on later chips.
+-         */
+-        s->rx_tout_thres = 8 * FIELD_EX32(s->reg[R_UART_CONF1], UART_CONF1, TOUT_THRD);
++        s->rx_tout_thres = uart_rx_tout_bits(s);
+         s->rx_tout_ena = FIELD_EX32(s->reg[R_UART_CONF1], UART_CONF1, TOUT_EN) != 0;
+         esp32_uart_set_rx_timeout(s);
+         esp32_uart_update_irq(s);
+-- 
+2.43.0
+

@@ -1,7 +1,7 @@
 """Drive the reviewed migration phase servers without console pasting.
 
 This starts tools/espressif/safeboot/serve_safeboot_migration.py exactly as the runbook does,
-reads the URL and arm token it prints, and delivers the loader to the plug over
+reads the URL and arm token it prints, and delivers the loader to the device over
 Tasmota's ordinary command endpoint.  It changes the transport only: the Berry
 that executes on the device is byte-for-byte the reviewed template the server
 renders, and the host server remains the sole judge of PASS.
@@ -42,6 +42,20 @@ MANUAL_INSTRUCTION_RE = re.compile(
 ARM_RE = re.compile(r"(?P<name>autoflash_(?:commit|restore))\(\"(?P<token>[^\"]+)\"\)")
 
 
+def keep_earlier_try(log_path: Path) -> None:
+    """An earlier try's server log moved aside, numbered from the first
+    (commit-server.1.log), so the log at `log_path` is the latest try's alone -
+    what the evidence of a step reads (evidence.table_fetched) - and a
+    try that failed keeps its own.  Seen on the emulator: K1 failed, tried
+    again and passed, and the failed try's log, written over, could not say why."""
+    if not log_path.exists():
+        return
+    number = 1
+    while (earlier := log_path.with_name(f"{log_path.stem}.{number}{log_path.suffix}")).exists():
+        number += 1
+    log_path.rename(earlier)
+
+
 class PhaseError(RuntimeError):
     pass
 
@@ -51,10 +65,10 @@ SECTOR = 4096
 # Lines from the server worth showing as they are; everything else is folded
 # into a progress line and kept, in full, in the phase's log file.
 SHOWN_RE = re.compile(r"RESULT:|(PLUG|DEVICE) SAYS|REFUS|TIMEOUT|ERROR|Traceback|Stopped", re.IGNORECASE)
-# The plug's own console lines worth showing when a phase fails: its Berry
+# The device's own console lines worth showing when a phase fails: its Berry
 # prints and errors, which say why when it could not tell this computer.
-PLUG_CONSOLE_RE = re.compile(r'AUTOFLASH |migration_refused|BRY:|"Br":"\[')
-PLUG_SAYS_RE = re.compile(r"THE (PLUG|DEVICE) SAYS: (?P<reason>.+)")
+DEVICE_CONSOLE_RE = re.compile(r'AUTOFLASH |migration_refused|BRY:|"Br":"\[')
+DEVICE_SAYS_RE = re.compile(r"THE (PLUG|DEVICE) SAYS: (?P<reason>.+)")
 # A Berry error as Tasmota logs a console command's result:
 #   RSL: RESULT = {"Br":"[migration_refused] POST /capture/staged/22 returned HTTP -1 ..."}
 BERRY_ERROR_RE = re.compile(r'"Br":"\[(?P<kind>[^\]]+)\] (?P<message>.*)"\}')
@@ -82,7 +96,7 @@ def phase_failed(phase: str, code: int, captured: str) -> Abort:
 def failure_reason(captured: str) -> str | None:
     """Why a phase did not pass, in the server's words, if it said."""
     for line in reversed(captured.splitlines()):
-        found = PLUG_SAYS_RE.search(line)
+        found = DEVICE_SAYS_RE.search(line)
         if found:
             return "the device says: " + found.group("reason").strip()
         found = TIMEOUT_RE.search(line)
@@ -142,30 +156,30 @@ class PhaseDisplay:
             self.progress = False
 
 
-class PlugNeverConnected(PhaseError):
-    """The plug did not fetch its instructions - nearly always a firewall."""
+class DeviceNeverConnected(PhaseError):
+    """The device did not fetch its instructions - nearly always a firewall."""
 
 
-# The server logs each request; the plug fetching its program is the first.
+# The server logs each request; the device fetching its program is the first.
 FETCH_RE = re.compile(r'"GET /berry/')
-# While a phase runs, the plug answers nothing else: Berry holds it.  So once
+# While a phase runs, the device answers nothing else: Berry holds it.  So once
 # it has been this quiet, an answer from its web page means it has stopped -
 # with nothing more to send.  Without that, only the server's own two-minute
 # silence limit ends the wait.
 SILENCE_CHECK = 20.0
 # How many times the command that starts a phase is sent, when it does not
-# reach the plug at all.
+# reach the device at all.
 START_TRIES = 3
-# A backstop only: a phase keeps the plug busy for about a minute at most,
+# A backstop only: a phase keeps the device busy for about a minute at most,
 # retrying included; the server's silence limit is two minutes.
 EXEC_TIMEOUT = 300.0
-# Long enough for a slow plug, short enough not to look hung.
+# Long enough for a slow device, short enough not to look hung.
 FETCH_DEADLINE = 30.0
 # What a phase that is not armed is loaded as, for a short command to start.
 # Run from the loader's own, longer, command, the phase kept that command
 # line's stack all through: the plan ran so near loopTask's limit that 40
 # characters more overflowed it ("A stack overflow in task loopTask") and
-# restarted the plug part way.
+# restarted the device part way.
 START_NAME = "autoflash_run"
 
 
@@ -178,7 +192,7 @@ def short_loader(url: str, assign_to: str | None = None) -> str:
 
     It tries the fetch up to ten times: under packet loss Tasmota's webclient
     gave up connecting after 2 s ("HTP: Connection timeout"), and a single
-    try left the plug running nothing (seen in the fault suite's lossy-phase
+    try left the device running nothing (seen in the fault suite's lossy-phase
     scenarios). Ten ride out 20 s, inside the FETCH_DEADLINE the tool waits.
 
     An armed phase's program, run, gives the closure to arm, kept as
@@ -194,21 +208,21 @@ def short_loader(url: str, assign_to: str | None = None) -> str:
 class PhaseRunner:
     _started_at: float | None = None
     _resending = False  # the start, not delivered, waiting to go again
-    _start_code: str | None = None
+    _start_code: tuple[str, ...] = ()  # what goes again if the start does not reach the device
     _starts = 0  # how many starts have been sent, to tell the last one's reply
     _unanswered = False  # the last start sent, its reply not yet come or given up
     _reply_lost = False  # the last start's request cut off: no reply will come
 
     def _require_fetch(self, process, captured: list[str], reader, phase: str) -> None:
-        """Stop within seconds, not half an hour, when the plug cannot reach us.
+        """Stop within seconds, not half an hour, when the device cannot reach us.
 
-        Not while a start that never reached the plug waits to go again, and
-        each time it goes the plug has the deadline anew.  Seen in the fault
+        Not while a start that never reached the device waits to go again, and
+        each time it goes the device has the deadline anew.  Seen in the fault
         suite: L1's start sent as a Wi-Fi blip began, lost in it, and the
-        step failed as a firewall 30 s on - the plug answering, never having
-        run it.  As _wait does, a start with no reply to a plug that answers
+        step failed as a firewall 30 s on - the device answering, never having
+        run it.  As _wait does, a start with no reply to a device that answers
         is sent again - or one whose request was cut off, taken for sent.  A
-        plug that cannot reach this computer runs its start, and answers it."""
+        device that cannot reach this computer runs its start, and answers it."""
         waited = 0.0
         sent_again = 0
         started = self._started_at
@@ -219,11 +233,11 @@ class PhaseRunner:
                 started, waited = self._started_at, 0.0
             if waited >= FETCH_DEADLINE and not self._resending:
                 lost = self._unanswered or self._reply_lost
-                if not (lost and sent_again < START_TRIES - 1 and self._plug_answers()):
+                if not (lost and sent_again < START_TRIES - 1 and self._device_answers()):
                     break
                 sent_again += 1
                 self.log("    The start did not reach the device; sending it again.")
-                self._start(self._start_code)
+                self._start(*self._start_code)
                 started, waited = self._started_at, 0.0
             reader.join(0.5)
             waited += 0.5
@@ -231,7 +245,7 @@ class PhaseRunner:
             return
         process.terminate()
         reader.join(5.0)
-        raise PlugNeverConnected(
+        raise DeviceNeverConnected(
             f"the device did not fetch the {phase} instructions from this computer "
             f"within {FETCH_DEADLINE:.0f}s; nothing was written"
         )
@@ -246,7 +260,9 @@ class PhaseRunner:
         listen_port: int = 8089,
         log: Callable[[str], None] = print,
         recovery: bytes | None = None,
+        layout: str | None = None,
     ) -> None:
+        self.layout = layout
         self.repo_root = repo_root
         self.manifest = manifest
         self.evidence_dir = evidence_dir
@@ -256,7 +272,7 @@ class PhaseRunner:
         self.log = log
         # The credential-carrying recovery image: piped to the server, never a file.
         self.recovery = recovery
-        # How long the last phase kept the plug busy: from telling it to start
+        # How long the last phase kept the device busy: from telling it to start
         # to its last request.  Busy for 70-90s, a real S60TPG stops answering.
         self.busy_seconds: float | None = None
 
@@ -286,6 +302,7 @@ class PhaseRunner:
         return hostsys.python_script(
             self.repo_root / "tools" / "espressif" / "safeboot" / "serve_safeboot_migration.py",
             phase,
+            *(["--layout", self.layout] if self.layout else []),
             "--manifest",
             str(self.manifest),
             "--evidence-dir",
@@ -339,10 +356,11 @@ class PhaseRunner:
         captured: list[str] = []
         url: str | None = None
         arm: tuple[str, str] | None = None
-        heard = [time.monotonic()]  # the server's last line: the plug's last request
-        requested: list[float | None] = [None]  # the plug's last request, exactly
+        heard = [time.monotonic()]  # the server's last line: the device's last request
+        requested: list[float | None] = [None]  # the device's last request, exactly
         self.evidence_dir.mkdir(parents=True, exist_ok=True)
         log_path = self.evidence_dir / (f"plan-{plan.name}-server.log" if plan else f"{phase}-server.log")
+        keep_earlier_try(log_path)
         log_file = log_path.open("w", encoding="utf-8")
         display = PhaseDisplay(
             phase, self._blocks(phase, plan), title=plan.title if plan else None,
@@ -378,9 +396,9 @@ class PhaseRunner:
             code = self._drive(phase, process, captured, reader, confirm, exec_timeout,
                                lambda: url, lambda: arm, lambda: heard[0], lambda: requested[0])
         except PhaseError as exc:
-            if isinstance(exc, PlugNeverConnected):  # it never started: nothing to say
+            if isinstance(exc, DeviceNeverConnected):  # it never started: nothing to say
                 raise
-            said = self._show_plug_console()
+            said = self._show_device_console()
             self._advise_if_stuck()
             if said:
                 raise PhaseError(f"{exc}; its console says: {said}") from exc
@@ -395,15 +413,15 @@ class PhaseRunner:
                     and requested[0] >= self._started_at):
                 self.busy_seconds = round(requested[0] - self._started_at, 1)
         if code != 0:
-            said = self._show_plug_console()
+            said = self._show_device_console()
             self._advise_if_stuck()
-            if said and not any(PLUG_SAYS_RE.search(line) for line in captured):
+            if said and not any(DEVICE_SAYS_RE.search(line) for line in captured):
                 captured.append(f"THE DEVICE SAYS: {said}")  # what failure_reason() reports
             self.log(f"    The server's full output is in {log_path}")
         return code, "\n".join(captured)
 
     def _advise_if_stuck(self) -> None:
-        """Say what to do when the plug does not answer at all after a phase.
+        """Say what to do when the device does not answer at all after a phase.
 
         Tasmota can be left waiting for ever on a download this computer
         stopped sending part way (HTTPClientLight reads a body with no
@@ -412,7 +430,7 @@ class PhaseRunner:
         writes only the spare slot, the commit downloads before it writes and
         reports after, and the restore carries on where it stopped.
         """
-        if self._plug_answers():
+        if self._device_answers():
             return
         # Said before this run decides whether to try the step again, so it
         # must hold either way: nothing here about running the tool again.
@@ -420,20 +438,20 @@ class PhaseRunner:
         self.log("    for this computer. If its web page still does not answer in a few minutes,")
         self.log("    switch it off and on: at this stage that is safe.")
 
-    def _show_plug_console(self) -> str | None:
-        """Show the plug's own last words on the phase, from its console, and
+    def _show_device_console(self) -> str | None:
+        """Show the device's own last words on the phase, from its console, and
         return its error if that is the last of them.
 
-        When the plug could not reach this computer, its console is the only
+        When the device could not reach this computer, its console is the only
         place that says why; read it now rather than ask the owner to.  An
-        error followed by more from the plug is an earlier attempt's, not why
+        error followed by more from the device is an earlier attempt's, not why
         this one stopped.
         """
         try:
             lines = self.device.console_log(timeout=5.0)
-        except Exception:  # noqa: BLE001 - a plug that cannot answer adds nothing here
+        except Exception:  # noqa: BLE001 - a device that cannot answer adds nothing here
             return None
-        relevant = [line for line in lines if PLUG_CONSOLE_RE.search(line)][-8:]
+        relevant = [line for line in lines if DEVICE_CONSOLE_RE.search(line)][-8:]
         for line in relevant:
             self.log(f"    The device's console: {line}")
         error = BERRY_ERROR_RE.search(relevant[-1]) if relevant else None
@@ -442,15 +460,26 @@ class PhaseRunner:
         kind, message = error.group("kind"), error.group("message")
         return message if kind == "migration_refused" else f"{kind}: {message}"
 
-    def _start(self, code: str) -> None:
-        """Send the command that starts the phase, without waiting on its reply.
+    def _start(self, *commands: str, again: tuple[str, ...] = ()) -> None:
+        """Send the commands that start the phase, one after another, without
+        waiting on the last one's reply.
 
         The phase reports to the server, which is what is waited on; the reply
         can come only when the phase ends - or never, when it ends by
-        restarting the plug, as the commit does.
+        restarting the device, as the commit does.
+
+        `again`: what to send if they do not reach the device, when that is more
+        - the instructions fetched again, then the start, for a start that
+        runs what an earlier command fetched.  A device that restarted in
+        between has lost them: seen in the fault suite, K1's device switched off
+        just after its fetch answered every start sent again with
+        "'autoflash_run' undeclared", and the step failed.  Two commands, as
+        the first time, never one: a device that fetched, compiled and ran a
+        plan in one command ran out of stack as the plan ended (K1 again, in
+        the fault suite), and restarted.
         """
         self._started_at = time.monotonic()
-        self._start_code = code
+        self._start_code = again or commands
         self._starts += 1
         mine = self._starts
         self._unanswered = True
@@ -468,29 +497,32 @@ class PhaseRunner:
                 self._reply_lost = True
 
         def send() -> None:
+            sending = commands
             for attempt in range(1, START_TRIES + 1):
                 try:
-                    self.device.berry(code, timeout=60.0)
+                    for command in sending:
+                        self.device.berry(command, timeout=60.0)
                     return
                 except urllib.error.HTTPError:
                     return  # it answered: the server's evidence decides
                 except urllib.error.URLError as exc:
                     # Not connected, or the request not sent (device._exchange):
-                    # it never reached the plug, so sending it again cannot
+                    # it never reached the device, so sending it again cannot
                     # start the phase twice. Seen in the fault suite: a Wi-Fi
-                    # blip as it went, and the plug never started.
+                    # blip as it went, and the device never started.
                     if attempt == START_TRIES:
                         self.log(f"    Starting it on the device: {exc}")
                         lost()
                         return
                     self._resending = True
                     try:
-                        if not self._plug_back(30.0):
+                        if not self._device_back(30.0):
                             lost()
                             return
                     finally:
                         self._resending = False
                     self._started_at = time.monotonic()
+                    sending = self._start_code  # back, perhaps restarted: from the fetch again
                 except (TimeoutError, ConnectionError, http.client.HTTPException):
                     lost()
                     return  # sent, its reply lost or still to come: the server's evidence decides
@@ -499,16 +531,16 @@ class PhaseRunner:
                     return
         threading.Thread(target=fire, daemon=True).start()
 
-    def _plug_back(self, seconds: float) -> bool:
-        """Whether the plug answers within `seconds`."""
+    def _device_back(self, seconds: float) -> bool:
+        """Whether the device answers within `seconds`."""
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
-            if self._plug_answers():
+            if self._device_answers():
                 return True
             time.sleep(1.0)
         return False
 
-    def _plug_answers(self) -> bool:
+    def _device_answers(self) -> bool:
         try:
             return self.device.answers(timeout=3.0)
         except Exception:  # noqa: BLE001 - not answering, however it fails
@@ -526,30 +558,30 @@ class PhaseRunner:
             now = time.monotonic()
             if now - started > exec_timeout:
                 raise PhaseError(f"{phase} did not complete within {exec_timeout / 60:.0f} minutes")
-            # Quiet since the plug last reached this computer, or since the
-            # start last went - not while a start that never reached the plug
+            # Quiet since the device last reached this computer, or since the
+            # start last went - not while a start that never reached the device
             # waits to go again: seen in the fault suite, a blip took the
-            # plug off its Wi-Fi for 18 s, and this check failed the step
+            # device off its Wi-Fi for 18 s, and this check failed the step
             # just before the start went again.
             quiet_since = max(get_heard(), self._started_at or 0.0)
             if (not self._resending and now - quiet_since >= SILENCE_CHECK
                     and now - checked >= SILENCE_CHECK):
                 checked = now
-                if self._plug_answers() and process.poll() is None:
+                if self._device_answers() and process.poll() is None:
                     lost = self._unanswered
                     if get_requested is not None:
                         asked = get_requested()
                         lost = lost or asked is None or asked < (self._started_at or 0.0)
                     if lost and sent_again < START_TRIES - 1:
                         # Answering, so not running it, while the start has
-                        # had no reply, or the plug has asked this computer
+                        # had no reply, or the device has asked this computer
                         # for nothing since it went - as every phase does:
                         # it never got there. Seen in the fault suite: sent
                         # as a Wi-Fi blip began, and lost in it - its request
                         # cut off, so taken for sent.
                         sent_again += 1
                         self.log("    The start did not reach the device; sending it again.")
-                        self._start(self._start_code)
+                        self._start(*self._start_code)
                         continue
                     raise PhaseError(
                         f"the device stopped the {phase} without reaching this computer"
@@ -578,8 +610,8 @@ class PhaseRunner:
 
             closure = CLOSURE_NAME[phase]
             self.log("Sending the instructions to the device. This writes nothing yet.")
-            # As a start is sent: again if it never reached the plug (seen: a
-            # Wi-Fi blip as it went, and the plug never fetched them).
+            # As a start is sent: again if it never reached the device (seen: a
+            # Wi-Fi blip as it went, and the device never fetched them).
             self._start(short_loader(url, assign_to=closure))
             self._require_fetch(process, captured, reader, phase)
 
@@ -588,11 +620,12 @@ class PhaseRunner:
 
             name, token = arm
             self.log("Telling the device to start. Leave it powered and connected.")
-            self._start(f'{name}("{token}")')
+            start = f'{name}("{token}")'
+            self._start(start, again=(short_loader(url, assign_to=closure), start))
         else:
             self.log("Sending the instructions to the device and starting.")
             self._start(short_loader(url))
             self._require_fetch(process, captured, reader, phase)
-            self._start(f"{START_NAME}()")
+            self._start(f"{START_NAME}()", again=(short_loader(url), f"{START_NAME}()"))
 
         return self._wait(phase, process, exec_timeout, get_heard, get_requested)

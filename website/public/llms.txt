@@ -1,0 +1,40 @@
+# FirmwareLiberator
+
+> Converts Sonoff smart devices from their stock eWeLink firmware to Tasmota, ESPHome, OpenBeken or Supla over Wi-Fi: no soldering and no opening the device. Free and open source, it runs on Linux, macOS and Windows, walks you through every step, and can put Sonoff's own firmware back.
+
+You start it by pasting one line into a terminal; the front page has the line for each system. Each device's status says how far it is proven. Supported: a real one has been converted and reported. Testers wanted: it converts in the emulator, or was added from its official update file and a published pin map, but no real one has been reported yet. Readout wanted: the tool does not convert it yet, but can read it out in full, which the emulator shows leaves it on its Sonoff firmware. Not supported yet: the tool neither converts it nor reads more of it than Sonoff's firmware and eWeLink report.
+
+## Devices
+
+- [Sonoff S60](https://firmwareliberator.com/devices/sonoff-s60): Supported. Converts to Tasmota or ESPHome or Supla. A smart plug with a power meter: models S60TPG (UK) and S60TPF (EU).
+- [Sonoff S61](https://firmwareliberator.com/devices/sonoff-s61): Testers wanted. Converts to OpenBeken or ESPHome. A smart plug with a power meter (iPlug Gen2): model S61STPF (EU).
+- [Sonoff POW Elite 16A](https://firmwareliberator.com/devices/sonoff-pow-elite): Testers wanted. Converts to Tasmota or ESPHome. A DIN-rail power meter and switch with a display: model POWR316D, not the 20 A POWR320D.
+- [Sonoff POW Ring](https://firmwareliberator.com/devices/sonoff-powct): Testers wanted. Converts to Tasmota or ESPHome. A clamp-on energy meter and switch with a display: model POWCT.
+- [Sonoff TH Elite 20A](https://firmwareliberator.com/devices/sonoff-th-elite): Testers wanted. Converts to Tasmota or ESPHome. A thermostat switch with a sensor socket and a display: model THR320D, not the THR316D.
+- [Sonoff Dual R3](https://firmwareliberator.com/devices/sonoff-dualr3): Testers wanted. Converts to Tasmota or ESPHome. A two-channel inline switch with a power meter: models DUALR3 and DUALR3 Lite.
+- [Sonoff Basic Gen5](https://firmwareliberator.com/devices/sonoff-basic-1gs): Testers wanted. Converts to OpenBeken or ESPHome. An inline switch: model BASIC-1GS, not the DIN-rail BASIC-1GSP.
+- [Sonoff NSPanel](https://firmwareliberator.com/devices/sonoff-nspanel): Not supported yet. A wall panel with a touch screen and two relays.
+- [Sonoff BASICR4](https://firmwareliberator.com/devices/sonoff-basicr4): Readout wanted. An inline switch: model BASICR4.
+- [Sonoff MINI Extreme](https://firmwareliberator.com/devices/sonoff-minir4): Readout wanted. An inline switch: model MINIR4, not the Matter MINIR4M, which cannot be converted.
+- [Sonoff M5 1-gang](https://firmwareliberator.com/devices/sonoff-m5-1c): Not supported yet. A wall switch: model M5-1C, not the Matter version, whose part number ends in W.
+- [Sonoff M5 2-gang](https://firmwareliberator.com/devices/sonoff-m5-2c): Not supported yet. A wall switch: model M5-2C, not the Matter version, whose part number ends in W.
+- [Sonoff M5 3-gang](https://firmwareliberator.com/devices/sonoff-m5-3c): Not supported yet. A wall switch: model M5-3C, not the Matter version, whose part number ends in W.
+
+## Start here
+
+- [Front page](https://firmwareliberator.com/): what the tool does, what you need, and the one line that starts it
+- [What happens](https://firmwareliberator.com/docs/what-happens): each stage of a conversion, for someone deciding whether to run one
+- [Troubleshooting](https://firmwareliberator.com/docs/troubleshooting): problems met in practice, and their fixes
+- [Stats](https://firmwareliberator.com/stats): how many conversions people have run, how they went, and the devices most wanted, rebuilt daily
+
+## After converting
+
+- [Home Assistant adoption](https://firmwareliberator.com/docs/home-assistant-adoption): adding a device converted to ESPHome to Home Assistant
+- [Updating firmware](https://firmwareliberator.com/docs/updating-firmware): keeping a converted device's firmware up to date
+
+## Optional
+
+- [Technical details](https://firmwareliberator.com/docs/technical-details): how the conversion works
+- [Legal](https://firmwareliberator.com/docs/legal): backing up and replacing the firmware of a device you own
+- [Changelog](https://firmwareliberator.com/CHANGELOG): the tool's versions
+- [Source code and releases](https://github.com/adamsthws/firmware-liberator): the repository on GitHub

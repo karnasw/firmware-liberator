@@ -241,7 +241,7 @@ def local_ipv4(interface: str | None = None) -> str | None:
 
 
 def local_ipv4s(interface: str | None = None) -> list[str]:
-    """Every address of this computer's a plug could be reached from:
+    """Every address of this computer's a device could be reached from:
     ``interface`` if given, else the one local_ipv4() finds, then the other
     private ones.  Windows sends multicast out of the adapter that has the
     default route, whatever the metrics - a VPN, a virtual machine's network -

@@ -2,9 +2,9 @@
 
 One Ctrl-C by mistake should not stop a conversion part way: the first only
 asks, at the next safe point - the end of the stage under way, where every
-step is recorded and the plug is idle - with a countdown that carries on by
+step is recorded and the device is idle - with a countdown that carries on by
 itself. A second within GRACE seconds stops at once, as Ctrl-C always did:
-every step is made to be stopped there, and checks the plug again next time.
+every step is made to be stopped there, and checks the device again next time.
 
 At a question, or while waiting on the person (joining a network, say),
 nothing is in flight, so Ctrl-C stops at once there, as before.
@@ -16,7 +16,7 @@ soon as that is done.
 The window being closed is taken as stopping at once, and remembered, so the
 next run can say why the last one stopped.
 
-The helpers a run starts (the servers the plug fetches from) get no Ctrl-C of
+The helpers a run starts (the servers the device fetches from) get no Ctrl-C of
 their own: they are started in their own process group (`child_group`), so a
 first Ctrl-C leaves them working, and the run stops them itself when it stops.
 """
@@ -38,8 +38,9 @@ GRACE = 10.0
 CARRY_ON_AFTER = 30.0
 
 _lock = threading.Lock()
-_state: dict[str, Any] = {"first": None, "asking": 0, "closed": False, "installed": False,
-                         "deferring": 0, "deferred": False, "shown_by": None, "logged_by": None}
+_state: dict[str, Any] = {"first": None, "asking": 0, "closed": False,
+                         "deferring": 0, "deferred": False, "shown_by": None, "logged_by": None,
+                         "carried_on": 0}
 NOTICE_TITLE = "! Are you sure?"
 
 
@@ -50,7 +51,6 @@ def install() -> None:
     signal.signal(signal.SIGINT, _on_interrupt)
     if hasattr(signal, "SIGHUP"):
         signal.signal(signal.SIGHUP, _on_closed)
-    _state["installed"] = True
 
 
 def _say(text: str) -> None:
@@ -126,6 +126,19 @@ def pending() -> bool:
 
 def clear() -> None:
     _state["first"] = None
+
+
+def note_carried_on() -> None:
+    """A Ctrl-C asked about, and the run carried on: counted for its report."""
+    _state["carried_on"] += 1
+
+
+def carried_on() -> int:
+    return _state["carried_on"]
+
+
+def reset_carried_on() -> None:
+    _state["carried_on"] = 0
 
 
 @contextmanager

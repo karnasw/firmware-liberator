@@ -1,7 +1,7 @@
 """Simulate the S61's physical button (press & hold 5 s -> pairing) in the
 BekenEmulator fork, driving the firmware's own key-handling stack.
 
-Background (see ../beken-s61-emulation.md "The button press CAN be simulated"):
+Background (see docs/beken-research.md "The button press"):
 the button is a GPIO 0-5 capture interrupt on the BK7238 PWM/timer block at
 0x802B00 (ICU IRQ 9, ISR 0x1bfd8 -> key handler 0x4203c). The key/button driver
 is not initialised during the emulator's boot-to-idle (its app main-init parks on
@@ -16,7 +16,7 @@ The long-press *action* (enter pairing mode) is consumed in the app layer, which
 stays parked, so this reaches "long-press timer armed", not pairing mode. It is a
 research/validation tool, not a converter. Drives the fork, not this repo's code.
 
-  $(tools/beken/emulator/bk-emu.sh python) archive/s61-research/button_sim.py [pin]   # default pin 3
+  $(tools/beken/emulator/beken-emu.sh python) archive/s61-research/button_sim.py [pin]   # default pin 3
 """
 import sys
 import os
@@ -47,7 +47,7 @@ from unicorn.arm_const import (  # noqa: E402
     UC_ARM_REG_R9,
     UC_ARM_REG_SP)
 
-DUMP = os.environ.get("S61_DUMP", str(ROOT/"firmwares/Sonoff_S61s_EUPlug_WBBK_01P_V1.3.bin"))
+DUMP = os.environ.get("AUTOFLASH_BEKEN_EMU_DUMP", str(ROOT/"firmwares/Sonoff_S61s_EUPlug_WBBK_01P_V1.3.bin"))
 PIN = int(sys.argv[1]) if len(sys.argv) > 1 else 3      # button GPIO (0-5)
 GROUP, CH = PIN // 2, PIN & 1
 STATBIT = 2 * GROUP + CH                                # bit in state.pwmn_stat

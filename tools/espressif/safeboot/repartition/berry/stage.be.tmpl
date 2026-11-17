@@ -12,7 +12,7 @@ var expected_safeboot = bytes("@SAFEBOOT_SHA256@")
 var staging_pad_hash = bytes("@STAGING_PAD_SHA256@")
 var safeboot_length = @SAFEBOOT_LENGTH@
 var staging_pad_length = @STAGING_PAD_LENGTH@
-var stage_address = 0x20000
+var stage_address = @STAGE_ADDRESS@
 
 def guard(ok, message)
   if !ok
@@ -40,7 +40,7 @@ def report_failure(exception, message)
       client.POST(format("session=%s\nreason=%s\n", session, reason.asstring()))
       client.close()
     else
-      print("AUTOFLASH report not sent: the plug's Wi-Fi is down")
+      print("AUTOFLASH report not sent: the device's Wi-Fi is down")
     end
   except .. as report_exception, report_message
     print("AUTOFLASH failure report not sent:", report_exception, report_message)
@@ -77,11 +77,11 @@ def pause(ms)
 end
 
 # How long failed requests are worth trying again: 20 seconds in all, for the
-# whole phase.  While a phase runs the plug does nothing else - not even read
+# whole phase.  While a phase runs the device does nothing else - not even read
 # its energy meter, whose readings then pile up until its web server stops
 # answering for good, after 70-90 seconds busy (a real S60TPG).  A phase takes
 # under a minute, so retrying stops well short of that.  A router restart takes
-# longer: this computer runs the step again once the plug is back.
+# longer: this computer runs the step again once the device is back.
 var retry_spent = 0   # ms spent retrying in this phase, all failures together
 class retry_window
   var since
@@ -96,7 +96,7 @@ end
 
 # webclient's get_string() waits for ever on a reply that stops part way with
 # the connection still open - a router restarting mid-block, say - and the
-# plug then answers nothing until it is switched off and on (Tasmota reads a
+# device then answers nothing until it is switched off and on (Tasmota reads a
 # body with no time limit: arendst/Tasmota#25139).  So replies are read here
 # by hand, and one silent for five seconds is given up, to be asked for again.
 # This computer's replies always say how long they are.
@@ -169,7 +169,7 @@ def post_text(path, body)
   window.done()
   # Given up with the Wi-Fi still down: that is the reason, whatever was tried first.
   guard(attempt > 0 && (status >= 0 || tasmota.wifi("up")),
-        "the plug's Wi-Fi went down and was not back within 20 seconds")
+        "the device's Wi-Fi went down and was not back within 20 seconds")
   guard(status == 200, format("POST %s returned HTTP %i after %i attempts", path, status, attempt))
 end
 
@@ -215,19 +215,19 @@ def fetch_chunk(index, expected_length)
   window.done()
   # Given up with the Wi-Fi still down: that is the reason, whatever was tried first.
   guard(attempt > 0 && (reply[0] >= 0 || tasmota.wifi("up")),
-        "the plug's Wi-Fi went down and was not back within 20 seconds")
+        "the device's Wi-Fi went down and was not back within 20 seconds")
   guard(reply[0] == 200, format("GET %s returned HTTP %i after %i attempts", path, reply[0], attempt))
   guard(data != nil, format("Safeboot chunk %i came damaged %i times in %i attempts", index, damaged, attempt))
   return data
 end
 
 def run_stage()
-  guard(tasmota.arch() == "esp32c3", "device is not ESP32-C3")
+  guard(tasmota.arch() == "@ARCH@", "device is not @ARCH@")
   guard(flash.size() == 0x400000, "flash is not exactly 4 MiB")
   guard(flash.current_ota() == 1, "refusing to overwrite the running old ota_0")
   guard(sha_region(0x8000, 0x1000) == expected_table, "source table changed")
   guard(sha_region(0x9000, 0x5000) == expected_nvs, "NVS changed since preflight")
-  guard(stage_address + safeboot_length <= 0x210000, "Safeboot exceeds inactive slot")
+  guard(stage_address + safeboot_length <= @STAGE_LIMIT@, "Safeboot exceeds inactive slot")
 
   var offset = 0
   var index = 0

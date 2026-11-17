@@ -6,12 +6,12 @@ from tools.espressif.analyze_vendor_ota import analyze, validation_checks
 from tools.espressif.build_vendor_ota import build_wrapper
 
 
-def make_esp_image() -> bytes:
+def make_esp_image(chip_id: int = 5) -> bytes:
     header = bytearray(24)
     header[0] = 0xE9
     header[1] = 1
     struct.pack_into("<I", header, 4, 0x40380000)
-    struct.pack_into("<H", header, 12, 5)
+    struct.pack_into("<H", header, 12, chip_id)
     header[23] = 1
     segment = bytes(range(32))
     body = bytes(header) + struct.pack("<II", 0x3C000020, len(segment)) + segment
@@ -82,10 +82,6 @@ class VendorOtaAnalysisTests(unittest.TestCase):
         self.assertEqual(ANNOUNCED_VERSION, fota_wrap.ANNOUNCED_VERSION)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class WrapperVersionTests(unittest.TestCase):
     def image_with_version(self, version: bytes) -> bytes:
         # Only the app description after the two headers matters here.
@@ -105,3 +101,13 @@ class WrapperVersionTests(unittest.TestCase):
         self.assertEqual(wrapper_version(image, "1.2.1"), "1.2.1")
         with self.assertRaises(ValueError):
             wrapper_version(image, None)
+
+    def test_a_model_filling_its_field_is_kept_whole(self):
+        # The NSPanel's is 32 characters, with no room for a NUL after it.
+        model = "FWPNL-E32NSP-NSPANEL-ESP32D0WDV3"
+        wrapped = build_wrapper(make_esp_image(chip_id=0), version="9.9.9", model=model)
+        self.assertEqual(analyze(wrapped)["wrapper"]["model"], model)
+
+
+if __name__ == "__main__":
+    unittest.main()

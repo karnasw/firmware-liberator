@@ -42,6 +42,17 @@ class SettingsRecordTests(unittest.TestCase):
             body[index] ^= (ts.CONFIG_FILE_XOR + index) & 0xFF
         self.assertEqual(ts.decode_backup(bytes(body)), record)
 
+    def test_a_backup_is_obscured_as_tasmota_does_it(self):
+        # settings.ino: every byte from the third XORed with 0x5A plus its offset.
+        self.assertEqual(ts.encode_backup(bytes(ts.SIZE))[:4], bytes([0, 0, 0x5C, 0x5D]))
+
+    def test_only_a_whole_record_is_encoded_or_checksummed(self):
+        for size in (ts.SIZE - 1, ts.SIZE + 1):
+            with self.assertRaises(ts.SettingsError):
+                ts.encode_backup(bytes(size))
+            with self.assertRaises(ts.SettingsError):
+                ts.with_crc(bytes(size))
+
     def test_a_template_has_no_network_in_it(self):
         configured = ts.fill(ts.make_template(default_record()), "Home", "secret password")
         template = ts.make_template(configured)
@@ -72,6 +83,18 @@ class SettingsRecordTests(unittest.TestCase):
         record = ts.fill(named, "Home", "pw")
         self.assertEqual(ts.text(record, ts.SET_HOSTNAME), "autoflash-recovery-CDEF")
 
+    def test_a_wifi_name_and_password_fit_tasmotas_fields(self):
+        template = ts.make_template(default_record())
+        ts.fill(template, "A" * 32, "B" * 64)
+        for ssid, password in (("", "pw"), ("A" * 33, "pw"), ("Home", "B" * 65)):
+            with self.assertRaises(ts.SettingsError, msg=(ssid, password)):
+                ts.fill(template, ssid, password)
+
+    def test_a_name_is_one_to_32_bytes(self):
+        template = ts.make_template(default_record())
+        for name in ("a", "x" * 32):
+            self.assertEqual(ts.text(ts.named(template, name), ts.SET_HOSTNAME), name)
+
     def test_a_name_with_a_format_in_it_is_refused(self):
         # Tasmota would take it for its own default instead.
         template = ts.make_template(default_record())
@@ -89,9 +112,13 @@ class SettingsRecordTests(unittest.TestCase):
         record[ts.CONFIG_VERSION] = 1
         self.assertTrue(any("ESP32-C3" in p for p in ts.problems(bytes(record))))
         self.assertTrue(any("checksum" in p for p in ts.problems(bytes(record))))
+        record = bytearray(default_record())
+        record[ts.TEXT_POOL : ts.TEXT_POOL + ts.TEXT_POOL_SIZE] = b"x" * ts.TEXT_POOL_SIZE  # no entry ends
+        self.assertIn("its text settings are not in Tasmota's format", ts.problems(ts.with_crc(bytes(record))))
 
     def test_the_version_reads_as_tasmota_writes_it(self):
         self.assertEqual(ts.version_text(ts.version(default_record())), "15.1.0.0")
+        self.assertEqual(ts.version_text(0x0F060001), "15.6.0.1")
 
 
 class PinnedReleaseTests(unittest.TestCase):
@@ -102,7 +129,7 @@ class PinnedReleaseTests(unittest.TestCase):
            "tasmota_types.h (TSettings offsets), tasmota.h (SettingsTextIndex), "
            "settings_text_size, CFG_HOLDER and SettingsDelta between the template's "
            "release and the new firmware; then capture a new template with "
-           "tools/espressif/capture_tasmota_template.py from a plug running that release, test "
+           "tools/espressif/capture_tasmota_template.py from a device running that release, test "
            "it with --verify, and update artifacts/ and SHA256SUMS. Until then D1 gives "
            "Tasmota its Wi-Fi by hand. See archive/docs/reference/automatic-wifi.md.")
 
@@ -122,6 +149,27 @@ class PinnedReleaseTests(unittest.TestCase):
         self.assertIsNotNone(template, reason)
         name = ts.template_path(ROOT).name
         self.assertIn(name, (ROOT / "artifacts" / "SHA256SUMS").read_text())
+
+    def test_the_layout_fits_the_record_tasmota_wrote(self):
+        # The committed template was read off a device: Tasmota's own defaults
+        # where this module says its settings are, and no network to strip.
+        template = ts.template_path(ROOT).read_bytes()
+        self.assertEqual(ts.problems(template), [])
+        self.assertTrue(ts.text(template, 0).startswith("http://ota.tasmota.com/"))
+        self.assertEqual(ts.text(template, ts.SET_HOSTNAME), "%s-%04d")
+        self.assertEqual(ts.make_template(template), template)
+
+    def test_a_template_with_wifi_in_it_is_not_used(self):
+        from tools.espressif.safeboot.safeboot_migration import PINNED_ARTIFACTS
+        template = ts.template_path(ROOT).read_bytes()
+        for ssid, password in (("Home", ""), ("Home", "secret")):
+            with tempfile.TemporaryDirectory() as directory:
+                saved = ts.template_path(directory)
+                saved.parent.mkdir()
+                saved.write_bytes(ts.fill(template, ssid, password))
+                found, reason = ts.load_template(directory, PINNED_ARTIFACTS["bluetooth"]["sha256"])
+            self.assertIsNone(found)
+            self.assertIn("still has Wi-Fi details", reason)
 
 
 @unittest.skipUnless(shutil.which("cc"), "needs a C compiler")

@@ -1,11 +1,13 @@
-"""What a plug on the network is running, from what it answers."""
+"""What a device on the network is running, from what it answers."""
 import http.server
 import threading
 import unittest
 from unittest import mock
 
-from tests.autoflash.test_device_requests import LockedTasmota
-from tools.autoflash import detect
+from tests.autoflash.test_device import LockedTasmota
+from tests.autoflash.test_openbeken import FakeOpenBeken
+from tools.autoflash import detect, openbeken
+from tools.espressif import layouts
 
 TASMOTA_TABLE = "1" * 64
 
@@ -33,16 +35,19 @@ class FakeTasmota:
         return {"NAME": self.module}
 
     def sha_region(self, address, length, timeout=None):
-        return self.table
+        # The partition table's hash: what is at 0x8000, 4 KB, says the layout.
+        return self.table if (address, length) == (0x8000, 0x1000) else None
 
 
 class TasmotaTests(unittest.TestCase):
 
     def setUp(self):
         # No OpenBeken at these made-up addresses: asked, it is whatever is there on this network.
-        patch = mock.patch.object(detect, "openbeken_plug", return_value=None)
-        patch.start()
-        self.addCleanup(patch.stop)
+        for patch in (mock.patch.object(detect, "openbeken_device", return_value=None),
+                      mock.patch.object(detect.openbeken, "is_openbeken", return_value=False)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
     def kind(self, fake):
         with mock.patch.object(detect, "Device", fake):
             found = detect._tasmota("192.0.2.137", 2.0)
@@ -60,18 +65,19 @@ class TasmotaTests(unittest.TestCase):
         self.assertEqual(self.kind(fake), "hub")
 
     def found_busy(self, fake):
-        """What the search and identify make of `fake`, a plug this computer
+        """What the search and identify make of `fake`, a device this computer
         knows that answers as a Tasmota once its Berry is free."""
         neighbours = {"192.0.2.137": "12:34:56:ab:cd:ef"}
         with mock.patch.object(detect, "Device", fake), \
                 mock.patch.object(detect.hostsys, "sweep"), \
                 mock.patch.object(detect.hostsys, "neighbour_table", return_value=neighbours), \
                 mock.patch.object(detect, "_port_open", return_value=True), \
+                mock.patch.object(detect, "_is_mover", return_value=False), \
                 mock.patch.object(detect, "_is_installer", return_value=False), \
                 mock.patch.object(detect, "answers_as_tasmota", return_value=True), \
                 mock.patch.object(detect.esphome, "page", return_value="other"), \
                 mock.patch.object(detect.esphome_ota, "probe", return_value=None):
-            return (detect.converted_plugs("192.0.2.1", known_macs={"12:34:56:ab:cd:ef"}),
+            return (detect.converted_devices("192.0.2.1", known_macs={"12:34:56:ab:cd:ef"}),
                     detect.identify("192.0.2.137"))
 
     def test_a_tasmota_too_busy_to_answer_is_asked_again(self):
@@ -94,6 +100,12 @@ class TasmotaTests(unittest.TestCase):
                 return answers(command)
             fake.command = busy
             self.assertEqual(self.found_busy(fake), ([], None), failure)
+
+    def test_a_page_that_answers_the_command_but_not_as_tasmota_is_no_tasmota(self):
+        fake = FakeTasmota(version="15.6.0(release-tasmota32)", table=TASMOTA_TABLE)
+        answers = fake.command
+        fake.command = lambda command: {"Command": "Unknown"} if command.startswith("Status") else answers(command)
+        self.assertIsNone(self.kind(fake))
 
     def test_a_page_that_answers_no_to_the_command_is_no_tasmota(self):
         import io
@@ -122,6 +134,15 @@ class TasmotaTests(unittest.TestCase):
         fake = FakeTasmota(version="15.6.0(release-tasmota32)", table=detect.SONOFF_TABLE_SHA256)
         self.assertEqual(self.kind(fake), "tasmota")
 
+    def test_the_routes_own_tasmota_on_a_temporary_table_is_part_way(self):
+        # The hub, on the table a TH Elite leaves Tasmota through: D5 writes its own.
+        fake = FakeTasmota(version="15.6.0.1(f5b34a2-bluetooth)", table=layouts.SONOFF_TH_ELITE.temporary_sha256,
+                           module="Generic")
+        self.assertEqual(self.kind(fake), "hub")
+        # Official Tasmota there has only not restarted into the mover yet.
+        fake = FakeTasmota(version="15.6.0(release-tasmota32)", table=layouts.SONOFF_TH_ELITE.temporary_sha256)
+        self.assertEqual(self.kind(fake), "tasmota")
+
     def test_official_tasmota_counts_only_with_the_s60s_template(self):
         self.assertEqual(self.kind(FakeTasmota(version="15.6.0(release-tasmota32)", table=TASMOTA_TABLE)),
                          "tasmota")
@@ -146,7 +167,7 @@ class TasmotaTests(unittest.TestCase):
 
     def test_a_set_up_s60_that_will_not_say_its_template_is_not_taken_for_one_not_set_up(self):
         # Seen once in the emulator: Tasmota busy answering the network sweep
-        # did not say its template in time, the plug was taken for a Tasmota
+        # did not say its template in time, the device was taken for a Tasmota
         # not yet set up as an S60, and the run sent it the wrong way.
         fake = FakeTasmota(version="15.6.0(release-tasmota32)", table=TASMOTA_TABLE, module=0)
         answers = fake.command
@@ -161,9 +182,10 @@ class TasmotaTests(unittest.TestCase):
                 mock.patch.object(detect.hostsys, "sweep"), \
                 mock.patch.object(detect.hostsys, "neighbour_table", return_value=neighbours), \
                 mock.patch.object(detect, "_port_open", return_value=True), \
+                mock.patch.object(detect, "_is_mover", return_value=False), \
                 mock.patch.object(detect, "_is_installer", return_value=False), \
                 mock.patch.object(detect.esphome, "page", return_value="other"):
-            self.assertEqual(detect.converted_plugs("192.0.2.1", known_macs={"12:34:56:ab:cd:ef"}), [])
+            self.assertEqual(detect.converted_devices("192.0.2.1", known_macs={"12:34:56:ab:cd:ef"}), [])
             self.assertIsNone(detect.identify("192.0.2.137"))
 
     def test_a_safeboot_is_taken_only_with_a_mac_this_computer_knows(self):
@@ -177,8 +199,9 @@ class TasmotaTests(unittest.TestCase):
                 mock.patch.object(detect.hostsys, "neighbour_table", return_value=neighbours), \
                 mock.patch.object(detect, "_port_open", return_value=True), \
                 mock.patch.object(detect.esphome, "page", return_value="other"), \
+                mock.patch.object(detect, "_is_mover", return_value=False), \
                 mock.patch.object(detect, "_is_installer", return_value=False):  # nothing real asked
-            found = detect.converted_plugs("192.0.2.1", known_macs={"12:34:56:ab:cd:ef"})
+            found = detect.converted_devices("192.0.2.1", known_macs={"12:34:56:ab:cd:ef"})
         self.assertEqual([(f.host, f.firmware) for f in found], [("192.0.2.137", "midway")])
 
     def test_the_mover_is_taken_only_with_a_mac_this_computer_knows(self):
@@ -189,7 +212,7 @@ class TasmotaTests(unittest.TestCase):
                 mock.patch.object(detect.hostsys, "neighbour_table", return_value=neighbours), \
                 mock.patch.object(detect, "_port_open", return_value=False), \
                 mock.patch.object(detect.esphome_ota, "probe", return_value=object()):
-            found = detect.converted_plugs("192.0.2.1", known_macs={"12:34:56:ab:cd:ef"})
+            found = detect.converted_devices("192.0.2.1", known_macs={"12:34:56:ab:cd:ef"})
         self.assertEqual([(f.host, f.name) for f in found], [("192.0.2.137", "the mover")])
 
     def test_a_converted_tasmota_is_found_with_its_kind(self):
@@ -198,13 +221,22 @@ class TasmotaTests(unittest.TestCase):
                 mock.patch.object(detect.hostsys, "sweep"), \
                 mock.patch.object(detect.hostsys, "neighbour_table",
                                   return_value={"192.0.2.137": "12:34:56:ab:cd:ef"}), \
-                mock.patch.object(detect, "_port_open", return_value=True), \
+                mock.patch.object(detect, "_port_open", side_effect=lambda host, port, timeout: port == 80), \
                 mock.patch.object(detect.esphome, "page", return_value="other"), \
+                mock.patch.object(detect.esphome_ota, "probe", return_value=None), \
+                mock.patch.object(detect, "_is_mover", return_value=False), \
                 mock.patch.object(detect, "_is_installer", return_value=False):  # nothing real asked
-            found = detect.converted_plugs("192.0.2.1")
-        self.assertEqual([(f.host, f.firmware, f.kind) for f in found],
-                         [("192.0.2.137", "tasmota", "sonoff-s60")])
+            found = detect.converted_devices("192.0.2.1")
+            self.assertEqual(detect.identify("192.0.2.137"), "tasmota")   # its web page, on port 80
+        self.assertEqual([(f.host, f.firmware, f.name, f.kind) for f in found],
+                         [("192.0.2.137", "tasmota", "tasmota-ABCDEF-1234", "sonoff-s60")])
         self.assertTrue(found[0].describe().startswith("the device at 192.0.2.137"))
+
+    def test_sonoffs_firmware_is_known_by_its_lan_port(self):
+        with mock.patch.object(detect, "_port_open", side_effect=lambda host, port, timeout: port == 8081), \
+                mock.patch.object(detect.esphome, "page", return_value=None), \
+                mock.patch.object(detect.esphome_ota, "probe", return_value=None):
+            self.assertEqual(detect.identify("192.0.2.137"), "sonoff")
 
     def test_a_tasmota_not_yet_set_up_is_taken_only_with_a_mac_this_computer_knows(self):
         # Official Tasmota, put on by a run stopped before it gave it the S60's
@@ -216,8 +248,9 @@ class TasmotaTests(unittest.TestCase):
                 mock.patch.object(detect.hostsys, "neighbour_table", return_value=neighbours), \
                 mock.patch.object(detect, "_port_open", return_value=True), \
                 mock.patch.object(detect.esphome, "page", return_value="other"), \
+                mock.patch.object(detect, "_is_mover", return_value=False), \
                 mock.patch.object(detect, "_is_installer", return_value=False):  # nothing real asked
-            found = detect.converted_plugs("192.0.2.1", known_macs={"12:34:56:ab:cd:ef"})
+            found = detect.converted_devices("192.0.2.1", known_macs={"12:34:56:ab:cd:ef"})
         self.assertEqual([(f.host, f.firmware) for f in found], [("192.0.2.137", "untemplated")])
 
 
@@ -255,7 +288,7 @@ class WebPasswordTests(unittest.TestCase):
 
     def setUp(self):
         # No OpenBeken at these made-up addresses: asked, it is whatever is there on this network.
-        patch = mock.patch.object(detect, "openbeken_plug", return_value=None)
+        patch = mock.patch.object(detect, "openbeken_device", return_value=None)
         patch.start()
         self.addCleanup(patch.stop)
 
@@ -264,18 +297,18 @@ class WebPasswordTests(unittest.TestCase):
         return server
 
     def test_without_its_password_it_is_locked(self):
-        plug = self.started(LockedTasmota())
+        device = self.started(LockedTasmota())
         for password in (None, "not-it-9"):
             with self.assertRaises(detect.Locked):
-                detect._tasmota(plug.host, 2.0, password)
+                detect._tasmota(device.host, 2.0, password)
 
     def test_given_it_an_s60s_tasmota_is_found(self):
-        plug = self.started(LockedTasmota())
-        self.assertEqual(detect._tasmota(plug.host, 2.0, LockedTasmota.PASSWORD),
+        device = self.started(LockedTasmota())
+        self.assertEqual(detect._tasmota(device.host, 2.0, LockedTasmota.PASSWORD),
                          ("tasmota", "tasmota-ABCDEF-1234", "sonoff-s60"))
-        # Asked without it first: it went only once the plug had said it wanted one.
-        self.assertIsNone(plug.seen[0][1])
-        self.assertNotIn(LockedTasmota.PASSWORD, plug.seen[0][0])
+        # Asked without it first: it went only once the device had said it wanted one.
+        self.assertIsNone(device.seen[0][1])
+        self.assertNotIn(LockedTasmota.PASSWORD, device.seen[0][0])
 
     def test_nothing_else_on_the_network_is_sent_it(self):
         router = self.started(LoginPage())
@@ -289,11 +322,12 @@ class WebPasswordTests(unittest.TestCase):
         with mock.patch.object(detect, "_tasmota", side_effect=detect.Locked("192.0.2.42")), \
                 mock.patch.object(detect.esphome, "page", return_value="other"), \
                 mock.patch.object(detect, "_port_open", return_value=True), \
+                mock.patch.object(detect, "_is_mover", return_value=False), \
                 mock.patch.object(detect, "_is_installer", return_value=False), \
                 mock.patch.object(detect.hostsys, "sweep"), \
                 mock.patch.object(detect.hostsys, "neighbour_table", return_value=neighbours):
             self.assertEqual(detect.identify("192.0.2.42"), "locked")
-            found = detect.converted_plugs("192.0.2.1")
+            found = detect.converted_devices("192.0.2.1")
         self.assertEqual([(f.host, f.firmware) for f in found], [("192.0.2.42", "locked")])
         self.assertIn("web password", found[0].describe())
 
@@ -377,17 +411,17 @@ class EsphomeLoginTests(unittest.TestCase):
 
     def test_without_its_login_it_says_it_has_one(self):
         for digest in (False, True):
-            plug = self.started(LockedESPHome(digest=digest))
-            self.assertEqual(self.esphome(plug.host, None), "esphome-login")
-            self.assertEqual(self.esphome(plug.host, ("admin", "not-it-9")), "esphome-login")
+            device = self.started(LockedESPHome(digest=digest))
+            self.assertEqual(self.esphome(device.host, None), "esphome-login")
+            self.assertEqual(self.esphome(device.host, ("admin", "not-it-9")), "esphome-login")
 
     def test_given_it_an_s60s_esphome_is_found_basic_or_digest(self):
         for digest in (False, True):
-            plug = self.started(LockedESPHome(digest=digest))
-            self.assertEqual(self.esphome(plug.host, self.LOGIN), "esphome")
+            device = self.started(LockedESPHome(digest=digest))
+            self.assertEqual(self.esphome(device.host, self.LOGIN), "esphome")
             # Asked without it first: it went only once the page had asked for it.
-            self.assertIsNone(plug.seen[0][1])
-            self.assertTrue(any(authorization for _, authorization in plug.seen))
+            self.assertIsNone(device.seen[0][1])
+            self.assertTrue(any(authorization for _, authorization in device.seen))
 
     def test_a_page_asking_where_no_update_service_answers_is_not_sent_it(self):
         # Tasmota with a web password, or a router: not ESPHome's.
@@ -403,7 +437,7 @@ class EsphomeLoginTests(unittest.TestCase):
                 mock.patch.object(detect.hostsys, "sweep"), \
                 mock.patch.object(detect.hostsys, "neighbour_table", return_value=neighbours):
             self.assertEqual(detect.identify("192.0.2.42"), "esphome-login")
-            found = detect.converted_plugs("192.0.2.1")
+            found = detect.converted_devices("192.0.2.1")
         self.assertEqual([(f.host, f.firmware) for f in found], [("192.0.2.42", "esphome-login")])
         self.assertIn("web login", found[0].describe())
 
@@ -422,13 +456,14 @@ class InstallerTests(unittest.TestCase):
 
     def setUp(self):
         # No OpenBeken at these made-up addresses: asked, it is whatever is there on this network.
-        patch = mock.patch.object(detect, "openbeken_plug", return_value=None)
+        patch = mock.patch.object(detect, "openbeken_device", return_value=None)
         patch.start()
         self.addCleanup(patch.stop)
 
     def test_its_page_names_it(self):
         with mock.patch.object(detect.esphome, "page", return_value="other"), \
              mock.patch.object(detect, "_port_open", return_value=True), \
+             mock.patch.object(detect, "_is_mover", return_value=False), \
              mock.patch.object(detect, "_is_installer", return_value=True):
             self.assertEqual(detect.identify("192.0.2.137"), "installer")
 
@@ -438,10 +473,10 @@ class InstallerTests(unittest.TestCase):
              mock.patch.object(detect.hostsys, "neighbour_table", return_value=neighbours), \
              mock.patch.object(detect, "_port_open", return_value=True), \
              mock.patch.object(detect.esphome, "page", return_value="other"), \
+             mock.patch.object(detect, "_is_mover", return_value=False), \
              mock.patch.object(detect, "_is_installer", return_value=True):
-            found = detect.converted_plugs("192.0.2.1")
+            found = detect.converted_devices("192.0.2.1")
         self.assertEqual([(f.host, f.firmware) for f in found], [("192.0.2.137", "installer")])
-
 
 
 class RenamedRelayTests(unittest.TestCase):
@@ -451,7 +486,7 @@ class RenamedRelayTests(unittest.TestCase):
     def found(self, relay, comment):
         with mock.patch.object(detect.esphome, "page", return_value="esphome"), \
                 mock.patch.object(detect.esphome, "relay", return_value=relay), \
-                mock.patch.object(detect.esphome, "title", return_value=("my plug", comment)):
+                mock.patch.object(detect.esphome, "title", return_value=("my device", comment)):
             return detect._esphome("192.0.2.1", 1.0, None)
 
     def test_its_relay_renamed_it_is_known_by_its_comment(self):
@@ -466,15 +501,12 @@ class RenamedRelayTests(unittest.TestCase):
         self.assertEqual(self.found(None, "a lamp of my own"), "other")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class OtherNetworksTests(unittest.TestCase):
     """The network this computer's internet goes through is searched first; the
-    others only if no plug is there, then side by side with it again."""
+    others only if no device is there, then side by side with it again."""
 
-    def search(self, plugs_after_sweeps, others=(("192.168.60.10", 24), ("10.0.0.5", 24), ("10.0.0.7", 24),
+    def search(self, devices_after_sweeps, others=(("192.168.60.10", 24), ("10.0.0.5", 24), ("10.0.0.7", 24),
                                                  ("127.0.0.1", 8))):
         sweeps = []
         found = detect.Found("192.168.60.50", "tasmota", "12:34:56:ab:cd:ef")
@@ -484,39 +516,156 @@ class OtherNetworksTests(unittest.TestCase):
             return {}
 
         def ask(*_args):
-            return [found] if len(sweeps) >= plugs_after_sweeps else []
+            return [found] if len(sweeps) >= devices_after_sweeps else []
 
         lan = mock.Mock(return_value=dict(others))
         with mock.patch.object(detect.hostsys, "sweep", side_effect=sweep), \
                 mock.patch.object(detect, "_ask_neighbours", side_effect=ask):
-            result = detect.converted_plugs("10.0.0.2", others=lan)
+            result = detect.converted_devices("10.0.0.2", others=lan)
         return result, sweeps, lan
 
-    def test_a_plug_on_the_default_network_needs_no_other(self):
-        result, sweeps, lan = self.search(plugs_after_sweeps=1)
-        self.assertEqual([plug.host for plug in result], ["192.168.60.50"])
+    def test_a_device_on_the_default_network_needs_no_other(self):
+        result, sweeps, lan = self.search(devices_after_sweeps=1)
+        self.assertEqual([device.host for device in result], ["192.168.60.50"])
         self.assertEqual(sweeps, ["10.0.0.2"])
         lan.assert_not_called()
 
     def test_otherwise_every_network_is_swept_at_once_the_default_again(self):
-        result, sweeps, lan = self.search(plugs_after_sweeps=2)
-        self.assertEqual([plug.host for plug in result], ["192.168.60.50"])
+        result, sweeps, lan = self.search(devices_after_sweeps=2)
+        self.assertEqual([device.host for device in result], ["192.168.60.50"])
         # One sweep of every network side by side, each network once; not loopback.
         self.assertEqual(sweeps, ["10.0.0.2", ["10.0.0.2", "192.168.60.10"]])
 
     def test_with_no_other_network_there_is_no_second_sweep(self):
-        result, sweeps, _ = self.search(plugs_after_sweeps=9, others=(("10.0.0.9", 24), ("169.254.1.2", 16)))
+        result, sweeps, _ = self.search(devices_after_sweeps=9, others=(("10.0.0.9", 24), ("169.254.1.2", 16)))
         self.assertEqual((result, sweeps), ([], ["10.0.0.2"]))
 
     def test_a_wider_network_holding_the_default_one_is_no_other(self):
         # The default address on the computer's /22: one network, swept already.
-        result, sweeps, _ = self.search(plugs_after_sweeps=9, others=(("10.0.1.7", 22),))
+        result, sweeps, _ = self.search(devices_after_sweeps=9, others=(("10.0.1.7", 22),))
         self.assertEqual((result, sweeps), ([], ["10.0.0.2"]))
 
-    def test_a_plug_the_sweep_saw_is_asked_though_the_table_dropped_it(self):
+    def test_a_device_the_sweep_saw_is_asked_though_the_table_dropped_it(self):
         asked = []
         with mock.patch.object(detect.hostsys, "sweep", return_value={"10.0.0.37": "12:34:56:ab:cd:ef"}), \
                 mock.patch.object(detect.hostsys, "neighbour_table", return_value={}), \
                 mock.patch.object(detect, "_port_open", side_effect=lambda host, *_: asked.append(host) and False):
-            detect.converted_plugs("10.0.0.2")
+            detect.converted_devices("10.0.0.2")
         self.assertEqual(asked, ["10.0.0.37"])
+
+
+class OpenBekenTests(unittest.TestCase):
+    """An OpenBeken on the network: a device of this tool's, told by its kind."""
+
+    def test_openbeken_named_as_the_s61s_is_found_with_its_kind(self):
+        server = FakeOpenBeken()
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        found = detect.openbeken_device(server.host, 2.0)
+        self.assertEqual((found.firmware, found.name, found.kind), ("openbeken", "openbeken-abcdef", "sonoff-s61"))
+        # The interim firmware, as its module says: told apart, its name shown.
+        server.interim, server.short_name = True, "autoflash-recovery-CDEF"
+        found = detect.openbeken_device(server.host, 2.0)
+        self.assertEqual((found.firmware, found.name, found.kind), ("interim", "autoflash-recovery-CDEF", "sonoff-s61"))
+        self.assertEqual(found.describe(), f"the device at {server.host} (autoflash-recovery-CDEF), running the "
+                                           "interim firmware")
+        server.kind = None   # an OpenBeken the tool did not install: not a device of ours
+        self.assertIsNone(detect.openbeken_device(server.host, 2.0))
+
+    def test_the_readout_firmware_is_told_apart_from_an_openbeken_not_ours(self):
+        server = FakeOpenBeken()
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        server.kind = "readout"   # the readout build's driver: of no kind the tool converts
+        found = detect.openbeken_device(server.host, 2.0)
+        self.assertEqual((found.firmware, found.kind), ("readout", None))
+        self.assertIn("running the readout firmware, left by a readout stopped part way", found.describe())
+
+    def test_an_openbeken_answering_tasmotas_commands_is_not_tasmota(self):
+        # OpenBeken takes Tasmota's Status 0 too; the tool never puts Tasmota on a Beken device.
+        tasmota = mock.Mock(return_value=mock.Mock(command=mock.Mock(return_value={"Status": {}})))
+        with mock.patch.object(detect, "Device", tasmota), \
+                mock.patch.object(openbeken, "is_openbeken", return_value=True):
+            self.assertFalse(detect.answers_as_tasmota("192.0.2.60"))
+        with mock.patch.object(detect, "Device", tasmota), \
+                mock.patch.object(openbeken, "is_openbeken", return_value=False):
+            self.assertTrue(detect.answers_as_tasmota("192.0.2.60"))
+
+    def test_one_that_will_not_say_whether_it_is_the_interim_firmware_is_asked_again_later(self):
+        # Never taken for the device's own OpenBeken, and sent the wrong way.
+        server = FakeOpenBeken()
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        with mock.patch.object(openbeken, "is_interim", return_value=None):
+            self.assertIsNone(detect.openbeken_device(server.host, 2.0))
+
+
+class MoverPage(http.server.ThreadingHTTPServer):
+    """A mover from 1.2.0 (devices/mover_routes.h): GET /mover says what it
+    is; nothing else is on its web server."""
+
+    def __init__(self, says):
+        super().__init__(("127.0.0.1", 0), MoverHandler)
+        self.says = says
+
+    @property
+    def host(self):
+        return f"127.0.0.1:{self.server_address[1]}"
+
+
+class MoverHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *_):
+        pass
+
+    def do_GET(self):
+        body = self.server.says.encode() if self.path == "/mover" else b""
+        self.send_response(200 if body else 404)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class MoverTests(unittest.TestCase):
+    """The mover says what it is at /mover: known so while its update service
+    is busy or stuck, and found with its web server open."""
+
+    def serve(self, says):
+        server = MoverPage(says)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server
+
+    def test_each_chips_mover_says_so(self):
+        for says in ("liberator.mover 1.2.0", "liberator.mover-esp32 1.1.0"):
+            with self.subTest(says):
+                self.assertTrue(detect._is_mover(self.serve(says).host, 2.0))
+        self.assertFalse(detect._is_mover(self.serve("").host, 2.0))
+        self.assertFalse(detect._is_mover(self.serve("another project 1.0").host, 2.0))
+
+    def test_known_with_its_update_service_stuck(self):
+        with mock.patch.object(detect.esphome, "page", return_value=None), \
+                mock.patch.object(detect, "_port_open", return_value=True), \
+                mock.patch.object(detect, "_is_mover", return_value=True), \
+                mock.patch.object(detect.esphome_ota, "probe", return_value=None):
+            self.assertEqual(detect.identify("192.0.2.137"), "mover")
+
+    def test_found_on_the_network_with_its_web_server_open(self):
+        # Its restart route opens port 80, which only a mover before 1.2.0
+        # kept shut: it was looked for only there. It says what it is, so it
+        # needs no MAC this computer knows.
+        neighbours = {"192.0.2.137": "12:34:56:ab:cd:ef"}
+        with mock.patch.object(detect.hostsys, "sweep"), \
+                mock.patch.object(detect.hostsys, "neighbour_table", return_value=neighbours), \
+                mock.patch.object(detect, "_port_open", return_value=True), \
+                mock.patch.object(detect.esphome, "page", return_value=None), \
+                mock.patch.object(detect, "_is_mover", return_value=True):
+            found = detect.converted_devices("192.0.2.1")
+        self.assertEqual([(f.host, f.firmware, f.name) for f in found], [("192.0.2.137", "midway", "the mover")])
+
+
+if __name__ == "__main__":
+    unittest.main()

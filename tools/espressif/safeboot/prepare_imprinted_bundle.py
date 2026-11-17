@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Build the autoflash bundle from published files, with no flash dump.
 
-The older route froze a full 4 MiB dump of one plug into the bundle, but the
+The older route froze a full 4 MiB dump of one device into the bundle, but the
 migration never reads those frozen copies: preflight reads the partition table,
-NVS and otadata live off the plug and checks the table against the allow-listed
+NVS and otadata live off the device and checks the table against the allow-listed
 hash compiled into the tools. So the bundle needs only firmware:
 
   - the pinned Bluetooth Tasmota image from artifacts/
@@ -11,7 +11,7 @@ hash compiled into the tools. So the bundle needs only firmware:
   - the published imprintable recovery Safeboot, with your Wi-Fi written in
 
 The bundle can be built before the Wi-Fi is known: the autoflash run does that,
-and writes the Wi-Fi in at E1 with `pin_wifi`, once it has read it off the plug.
+and writes the Wi-Fi in at E1 with `pin_wifi`, once it has read it off the device.
 
 Every pinned-artifact, target-table and imprint-provenance check the migration
 server applies is run here too before the manifest is reported as good.
@@ -23,7 +23,6 @@ import argparse
 import datetime as dt
 import json
 import os
-import shutil
 import ssl
 import sys
 import tempfile
@@ -44,18 +43,19 @@ try:
         OFFICIAL_URLS,
         PUBLISHED_BLUETOOTH_FILE,
         PUBLISHED_RECOVERY_FILE,
-        PUBLISHED_RECOVERY_SHA256,
         RECOVERY_ARTIFACT,
         SAFEBOOT_OFFSET,
         SAFEBOOT_SIZE,
         TABLE_OFFSET,
         TABLE_SIZE,
         TARGET_PARTITIONS,
-        TARGET_TABLE_SHA256,
         artifact_bytes,
         is_imprinted_manifest,
         load_manifest,
+        manifest_chip,
         official_release,
+        published_recovery_file,
+        published_recovery_sha256,
         release_urls,
         provide_in_memory,
         parse_partition_sector,
@@ -63,6 +63,7 @@ try:
         require_pinned_artifacts,
         require_recovery_manifest,
         sha256_bytes,
+        target_table as target_table_of,
         validate_native_image,
         verify_manifest_files,
     )
@@ -79,18 +80,19 @@ except ModuleNotFoundError:  # running from inside tools/
         OFFICIAL_URLS,
         PUBLISHED_BLUETOOTH_FILE,
         PUBLISHED_RECOVERY_FILE,
-        PUBLISHED_RECOVERY_SHA256,
         RECOVERY_ARTIFACT,
         SAFEBOOT_OFFSET,
         SAFEBOOT_SIZE,
         TABLE_OFFSET,
         TABLE_SIZE,
         TARGET_PARTITIONS,
-        TARGET_TABLE_SHA256,
         artifact_bytes,
         is_imprinted_manifest,
         load_manifest,
+        manifest_chip,
         official_release,
+        published_recovery_file,
+        published_recovery_sha256,
         release_urls,
         provide_in_memory,
         parse_partition_sector,
@@ -98,13 +100,25 @@ except ModuleNotFoundError:  # running from inside tools/
         require_pinned_artifacts,
         require_recovery_manifest,
         sha256_bytes,
+        target_table as target_table_of,
         validate_native_image,
         verify_manifest_files,
     )
 
+try:
+    from tools.espressif import chips
+except ModuleNotFoundError:
+    import chips  # type: ignore[no-redef]
+
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_OUTPUT = ROOT / "captures" / "safeboot-recovery-migration"
+
+
 RECOVERY_FILE = "tasmota32c3-safeboot-recovery.bin"
+
+
+def recovery_file(chip: chips.Chip) -> str:
+    return f"{chip.tasmota_prefix}-safeboot-recovery.bin"
 
 
 def private_write(path: Path, data: bytes) -> None:
@@ -146,12 +160,13 @@ def build_bundle(
     safeboot: Path | None = None,
     app: Path | None = None,
     release: dict[str, Any] | None = None,
+    chip: chips.Chip = chips.ESP32C3,
 ) -> tuple[Path, bytes | None]:
     """Build and validate the bundle; return the manifest path and recovery image.
 
     The official files are those of the release pinned now, or of `release`,
     one pinned before (firmware.json's "earlier"): a run past F2 has its app
-    on the plug, and ends on it.
+    on the device, and ends on it.
 
     The recovery image carries the Wi-Fi password, so it is never written:
     the manifest pins its size and SHA-256, and the caller keeps the bytes in
@@ -161,11 +176,10 @@ def build_bundle(
     good, when any check fails.
     """
     try:
-        bluetooth = PUBLISHED_BLUETOOTH_FILE.read_bytes()
-        published = PUBLISHED_RECOVERY_FILE.read_bytes()
-    except OSError as exc:
+        published = published_recovery_file(chip).read_bytes()
+    except (OSError, ValueError) as exc:
         raise BundleError(str(exc)) from exc
-    if sha256_bytes(published) != PUBLISHED_RECOVERY_SHA256:
+    if sha256_bytes(published) != published_recovery_sha256(chip):
         raise BundleError("the published recovery image in this checkout has been altered")
     if ssid is not None:
         try:
@@ -180,13 +194,24 @@ def build_bundle(
     # A half-built bundle must never look valid: drop the old manifest first.
     manifest_path.unlink(missing_ok=True)
 
-    bluetooth_path = output / "tasmota32c3-bluetooth.bin"
-    shutil.copyfile(PUBLISHED_BLUETOOTH_FILE, bluetooth_path)
-    factory_path = output / "tasmota32c3.factory.bin"
-    safeboot_path = output / "tasmota32c3-safeboot.bin"
-    app_path = output / "tasmota32c3.bin"
-    urls = release_urls(release) if release else OFFICIAL_URLS
+    bluetooth_path = output / chip.interim_name
+    factory_path = output / f"{chip.tasmota_prefix}.factory.bin"
+    safeboot_path = output / f"{chip.tasmota_prefix}-safeboot.bin"
+    app_path = output / f"{chip.tasmota_prefix}.bin"
+    urls = release_urls(release or chip.pin("tasmota")) if release or chip is not chips.ESP32C3 else OFFICIAL_URLS
     try:
+        # The ESP32-C3's is published here, its source a moving branch; the
+        # other chips', a file of the official release, is fetched from it.
+        if chip is chips.ESP32C3:
+            bluetooth = PUBLISHED_BLUETOOTH_FILE.read_bytes()
+            bluetooth_path.write_bytes(bluetooth)
+            interim_source = str(PUBLISHED_BLUETOOTH_FILE)
+        else:
+            interim = chip.pin("interim")
+            interim_source = interim["url"]
+            bluetooth = obtain(None, interim_source, bluetooth_path)
+            if sha256_bytes(bluetooth) != interim["sha256"]:
+                raise BundleError(f"{interim_source} is not the file pinned")
         factory_bytes = obtain(factory, urls["factory"], factory_path)
         safeboot_bytes = obtain(safeboot, urls["safeboot"], safeboot_path)
         app_bytes = obtain(app, urls["app"], app_path)
@@ -197,9 +222,9 @@ def build_bundle(
         raise BundleError(f"could not download the official release files: {exc}") from exc
 
     try:
-        bluetooth_report = validate_native_image(bluetooth, 0x1F0000, "Bluetooth")
-        safeboot_report = validate_native_image(safeboot_bytes, SAFEBOOT_SIZE, "Safeboot")
-        app_report = validate_native_image(app_bytes, APP0_SIZE, "normal Tasmota")
+        bluetooth_report = validate_native_image(bluetooth, 0x1F0000, "Bluetooth", chip)
+        safeboot_report = validate_native_image(safeboot_bytes, SAFEBOOT_SIZE, "Safeboot", chip)
+        app_report = validate_native_image(app_bytes, APP0_SIZE, "normal Tasmota", chip)
     except ValueError as exc:
         raise BundleError(str(exc)) from exc
 
@@ -210,19 +235,22 @@ def build_bundle(
     if len(factory_bytes) != APP0_OFFSET + len(app_bytes):
         raise BundleError("factory image has unexpected bytes before/after app0")
 
-    target_table = factory_bytes[TABLE_OFFSET : TABLE_OFFSET + TABLE_SIZE]
+    # Tasmota's own table, with the entry for the sector that keeps the
+    # device's Sonoff identity (safeboot_migration.target_table).
+    try:
+        target_table = target_table_of(factory_bytes[TABLE_OFFSET : TABLE_OFFSET + TABLE_SIZE])
+    except ValueError as exc:
+        raise BundleError(f"the factory image's partition table: {exc}") from exc
     target_report = parse_partition_sector(target_table)
     require_exact_partitions(target_report, TARGET_PARTITIONS)
-    if target_report["sha256"] != TARGET_TABLE_SHA256:
-        raise BundleError("target table differs from the reviewed official table sector")
-    target_table_path = output / "target-official-partition-table.bin"
+    target_table_path = output / "target-partition-table.bin"
     target_table_path.write_bytes(target_table)
 
     # An image from before the password was kept only in memory.
-    (output / RECOVERY_FILE).unlink(missing_ok=True)
+    (output / recovery_file(chip)).unlink(missing_ok=True)
 
     artifacts: dict[str, Any] = {
-        "bluetooth": artifact_record(bluetooth_path.name, bluetooth, str(PUBLISHED_BLUETOOTH_FILE)),
+        "bluetooth": artifact_record(bluetooth_path.name, bluetooth, interim_source),
         "factory": artifact_record(factory_path.name, factory_bytes, str(factory.resolve()) if factory else urls["factory"]),
         "safeboot": artifact_record(safeboot_path.name, safeboot_bytes, str(safeboot.resolve()) if safeboot else urls["safeboot"]),
         "app": artifact_record(app_path.name, app_bytes, str(app.resolve()) if app else urls["app"]),
@@ -231,11 +259,12 @@ def build_bundle(
     manifest = {
         "schema": 1,
         "created_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "official_release": official_release(release),
+        "chip": chip.key,
+        "official_release": official_release(release, chip),
         "migration_mode": IMPRINTED_MODE,
         "imprinted_safeboot": {
             "artifact": RECOVERY_ARTIFACT,
-            "published_sha256": PUBLISHED_RECOVERY_SHA256,
+            "published_sha256": published_recovery_sha256(chip),
             "ssid": None,  # set by pin_wifi; not secret, the password is never recorded
         },
         "target_table": target_report,
@@ -275,13 +304,15 @@ def pin_wifi(manifest_path: Path, ssid: str, password: str) -> bytes:
     anything again.  On failure the manifest is left as it was.
     """
     manifest = load_manifest(manifest_path)
+    chip = manifest_chip(manifest)
+    published = published_recovery_file(chip)
     try:
-        image = imprint(PUBLISHED_RECOVERY_FILE.read_bytes(), ssid, password)
+        image = imprint(published.read_bytes(), ssid, password)
     except (OSError, ImprintError) as exc:
         raise BundleError(str(exc)) from exc
     previous = manifest_path.read_bytes()
     manifest["artifacts"][RECOVERY_ARTIFACT] = {
-        **artifact_record(RECOVERY_FILE, image, str(PUBLISHED_RECOVERY_FILE)),
+        **artifact_record(recovery_file(chip), image, str(published)),
         "memory_only": True,
     }
     manifest.setdefault("imprinted_safeboot", {})["ssid"] = ssid
@@ -305,7 +336,7 @@ def validate_bundle(manifest_path: Path, recovery: bytes | None = None,
     """
     manifest = load_manifest(manifest_path)
     if is_imprinted_manifest(manifest) and \
-            manifest.get("imprinted_safeboot", {}).get("published_sha256") != PUBLISHED_RECOVERY_SHA256:
+            manifest.get("imprinted_safeboot", {}).get("published_sha256") != published_recovery_sha256(manifest_chip(manifest)):
         raise ValueError("it was built from a different startup firmware than this checkout ships")
     if recovery is not None:
         provide_in_memory(RECOVERY_ARTIFACT, recovery)
@@ -338,14 +369,14 @@ def bundle_ssid(manifest_path: Path) -> str | None:
     return imprinted_ssid(image, PUBLISHED_RECOVERY_FILE.read_bytes())
 
 
-def startup_image(ssid: str, password: str) -> bytes:
+def startup_image(ssid: str, password: str, chip: chips.Chip = chips.ESP32C3) -> bytes:
     """The startup firmware with these Wi-Fi details written in, in memory only.
 
     Not checked against any bundle and pins nothing: for comparing with a
-    record of the image a plug was actually given.
+    record of the image a device was actually given.
     """
     try:
-        return imprint(PUBLISHED_RECOVERY_FILE.read_bytes(), ssid, password)
+        return imprint(published_recovery_file(chip).read_bytes(), ssid, password)
     except (OSError, ImprintError) as exc:
         raise BundleError(str(exc)) from exc
 
@@ -362,7 +393,7 @@ def recovery_image(manifest_path: Path, ssid: str, password: str) -> bytes:
     if record is None:
         raise BundleError("this bundle has no Wi-Fi details yet")
     try:
-        image = imprint(PUBLISHED_RECOVERY_FILE.read_bytes(), ssid, password)
+        image = imprint(published_recovery_file(manifest_chip(manifest)).read_bytes(), ssid, password)
     except (OSError, ImprintError) as exc:
         raise BundleError(str(exc)) from exc
     if sha256_bytes(image) != record["sha256"]:
@@ -381,14 +412,15 @@ def forget_stored_password(manifest_path: Path) -> bool:
     except ValueError:
         return False
     record = manifest.get("artifacts", {}).get(RECOVERY_ARTIFACT)
-    path = manifest_path.parent / RECOVERY_FILE
+    chip = manifest_chip(manifest)
+    path = manifest_path.parent / recovery_file(chip)
     if record is None or record.get("memory_only"):
         path.unlink(missing_ok=True)
         return False
     if path.exists():
         image = path.read_bytes()
         manifest.setdefault("imprinted_safeboot", {})["ssid"] = imprinted_ssid(
-            image, PUBLISHED_RECOVERY_FILE.read_bytes())
+            image, published_recovery_file(chip).read_bytes())
     record["memory_only"] = True
     private_write(manifest_path,
                   (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8"))
@@ -403,12 +435,16 @@ def ask_credentials() -> tuple[str, str]:
 
 
 def ask_password(ssid: str | None = None) -> str:
-    """A Wi-Fi password, typed twice and never stored."""
+    """A Wi-Fi password, typed twice and never stored.  Two that differ are
+    taken off the screen before it is asked again, only why left, as a wrong
+    answer to any question is: they piled up under each other."""
+    mark = output.mark()
     while True:
         password = ask_secret(f"Wi-Fi password for '{ssid}': " if ssid else "Wi-Fi password: ")
         if ask_secret("Same password again: ") == password:
             return password
-        output.show("The two passwords did not match - try again.")
+        output.rewind(mark)
+        output.show("    The two passwords did not match - try again.")
 
 
 def _credentials(args: argparse.Namespace) -> tuple[str, str]:

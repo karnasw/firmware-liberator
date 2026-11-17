@@ -41,7 +41,7 @@ Write-Host 'Run the conversion here, as a Windows user would:'
 Write-Host ''
 Write-Host '    .\start.ps1'
 Write-Host ''
-Write-Host 'Switch the plug off and on in the emulator, on the Linux side: plug restart'
+Write-Host 'Switch the device off and on in the emulator, on the Linux side: device restart'
 Write-Host 'Your home Wi-Fi there is PICSimLabWifi, with no password.'
 Write-Host ''
 "@

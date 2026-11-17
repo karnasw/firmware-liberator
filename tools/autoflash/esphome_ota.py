@@ -1,22 +1,22 @@
 """ESPHome's own update protocol (port 3232), as its espota2.py speaks it.
 
-Only what the run needs: an update, with the plug's update password if it
+Only what the run needs: an update, with the device's update password if it
 has one, of an app (written by ESPHome into its other app slot, which it then
 starts) or, from a firmware built with allow_partition_access (the mover), a
 partition table - which ESPHome checks, moving the running app into a slot of
 the new table first when it has to.
 
-The wire protocol: five magic bytes; the plug answers OK and its protocol
+The wire protocol: five magic bytes; the device answers OK and its protocol
 version; feature flags both ways; its password challenge, if it has one (a
 nonce, answered with ours and the hash of the password with both); the
 update type; the size, the MD5 of what follows, then the data in 8 KiB
 blocks, each acknowledged; then "received" and "update ended", after which
-the plug starts what it was sent.
+the device starts what it was sent.
 
 From ESPHome 2026.9, one with an API encryption key also takes the update
 encrypted (tools/autoflash/noise.py), keyed by it - and with `ota:
 encryption:`, only that way.  Given the key, the client says so in its
-feature flags; once the plug has said it can too, a Noise handshake follows,
+feature flags; once the device has said it can too, a Noise handshake follows,
 sealed to every byte both ends sent before it, and the rest of the session is
 the same, in encrypted frames.  ESPHome asks for no password then: the key is
 its proof.
@@ -67,16 +67,20 @@ SERVER_NOISE = 0x04
 NOISE_PROLOGUE = b"NoiseOTAInit"
 NOISE_MAX_PLAINTEXT = 1024
 
-# The plug's password challenge, by the answer that makes it: the hash, and
+# The device's password challenge, by the answer that makes it: the hash, and
 # the length of its nonce in hex.  SHA256 in current ESPHome, which takes no
 # other; MD5 in older ones.
 CHALLENGES = {REQUEST_SHA256_AUTH: (hashlib.sha256, 64), REQUEST_AUTH: (hashlib.md5, 32)}
 
 BLOCK = 8192
-# Longer than the plug's own data timeout (105 s), as espota2 has it.
+# How long ESPHome on the device waits for more of an update before it gives the
+# sender up: until then, one cut off part way - the computer crashed, say -
+# keeps its update service, which takes no other.
+DEVICE_DATA_TIMEOUT = 105.0
+# Longer than the device's own, as espota2 has it.
 DATA_TIMEOUT = 160.0
 
-# What the plug says when it refuses, in words for the run's log.
+# What the device says when it refuses, in words for the run's log.
 ERRORS = {
     0x80: "invalid magic bytes",
     0x81: "could not prepare the flash for the update",
@@ -97,11 +101,17 @@ ERRORS = {
 
 
 class OTAError(RuntimeError):
-    """The plug refused, or the update could not be completed."""
+    """The device refused, or the update could not be completed."""
+
+
+class Busy(OTAError):
+    """The device took the connection, but its update service did not answer
+    it: most likely still held by an update cut off part way, until
+    DEVICE_DATA_TIMEOUT has gone by."""
 
 
 class NeedsPassword(OTAError):
-    """ESPHome on the plug has an update password (set in Home Assistant, say),
+    """ESPHome on the device has an update password (set in Home Assistant, say),
     and none was given, or not the right one."""
 
     def __init__(self, given: bool) -> None:
@@ -111,7 +121,7 @@ class NeedsPassword(OTAError):
 
 
 class NeedsEncryption(OTAError):
-    """ESPHome on the plug takes only encrypted updates (`ota: encryption:`),
+    """ESPHome on the device takes only encrypted updates (`ota: encryption:`),
     made with its API encryption key, and none was given."""
 
     def __init__(self) -> None:
@@ -120,7 +130,7 @@ class NeedsEncryption(OTAError):
 
 
 class WrongKey(OTAError):
-    """The API encryption key given is not the one ESPHome on the plug has."""
+    """The API encryption key given is not the one ESPHome on the device has."""
 
     def __init__(self) -> None:
         super().__init__("the API encryption key given is not the one ESPHome on the device has")
@@ -134,7 +144,7 @@ class Offer:
     partition_access: bool
     encrypted_only: bool = False  # it refused to go on unencrypted
     encryption: bool = False  # it takes encrypted updates: it has an API encryption key
-    sent: int = 0  # the feature flags the client sent, and the plug's: both go
+    sent: int = 0  # the feature flags the client sent, and the device's: both go
     flags: int = 0  # into an encrypted session's prologue
 
 
@@ -186,7 +196,7 @@ def _handshake(sock: socket.socket, key: bytes | None = None) -> Offer:
 
 class _Encrypted:
     """The rest of a session, sealed.  Each sendall() goes in frames of its
-    own - the plug reads each answer, the size and the checksum as one frame -
+    own - the device reads each answer, the size and the checksum as one frame -
     with data split at NOISE_MAX_PLAINTEXT; recv() hands out what each frame
     decrypts to."""
 
@@ -219,7 +229,7 @@ class _Encrypted:
 def _encrypt(sock: socket.socket, offer: Offer, key: bytes) -> _Encrypted:
     """The session encrypted from here, after the handshake, which binds the
     greeting and both ends' feature flags (any of them changed on the way,
-    and it fails).  WrongKey when the plug has another key."""
+    and it fails).  WrongKey when the device has another key."""
     prologue = NOISE_PROLOGUE + MAGIC + bytes([OK, offer.version, offer.sent, FEATURE_FLAGS, offer.flags])
     handshake = noise.Handshake(key, prologue)
     sock.sendall(noise.frame(bytes([noise.HANDSHAKE_OK]) + handshake.write_message()))
@@ -234,7 +244,7 @@ def _encrypt(sock: socket.socket, offer: Offer, key: bytes) -> _Encrypted:
 
 
 def _open(sock: socket.socket, password: str | None, key: bytes | None) -> tuple[Offer, socket.socket]:
-    """The session through to where the plug is ready for an update: the
+    """The session through to where the device is ready for an update: the
     greeting, encrypted from there if both ends can, and its password."""
     offer = _handshake(sock, key)
     if offer.encrypted_only:
@@ -246,7 +256,7 @@ def _open(sock: socket.socket, password: str | None, key: bytes | None) -> tuple
 
 
 def _authenticate(sock: socket.socket, password: str | None) -> None:
-    """Through the plug's password challenge, if it makes one."""
+    """Through the device's password challenge, if it makes one."""
     asked = _recv(sock, 1, "authentication")[0]
     if asked == AUTH_OK:
         return
@@ -269,7 +279,7 @@ def _authenticate(sock: socket.socket, password: str | None) -> None:
 def probe(host: str, *, port: int = PORT, timeout: float = 4.0) -> Offer | None:
     """What ESPHome's update service at `host` offers, or None if none answers.
 
-    The plug drops a session left at this point by itself.
+    The device drops a session left at this point by itself.
     """
     try:
         with socket.create_connection((host, port), timeout=timeout) as sock:
@@ -279,7 +289,7 @@ def probe(host: str, *, port: int = PORT, timeout: float = 4.0) -> Offer | None:
         return None
 
 
-# What wants() says the plug wants, besides what it was given.
+# What wants() says the device wants, besides what it was given.
 NOTHING, PASSWORD, KEY = "", "password", "key"
 
 
@@ -291,9 +301,9 @@ def wants(host: str, password: str | None = None, key: bytes | None = None, *, p
     (it takes only encrypted updates and no key was given, or the key given
     is not its own); None when it does not answer.
 
-    Nothing is updated: the session ends where the plug is ready for one,
+    Nothing is updated: the session ends where the device is ready for one,
     before it starts an update - which it does only once told its type and
-    size, so that a scan cannot start one.  The plug notes the session
+    size, so that a scan cannot start one.  The device notes the session
     failed, as it does for the one probe() leaves.
     """
     try:
@@ -312,14 +322,17 @@ def wants(host: str, password: str | None = None, key: bytes | None = None, *, p
 def upload(host: str, data: bytes, *, kind: int = APP, port: int = PORT,
            timeout: float = 10.0, progress=None, password: str | None = None,
            key: bytes | None = None) -> None:
-    """Send `data` as an update of `kind` - encrypted with `key`, the plug's
+    """Send `data` as an update of `kind` - encrypted with `key`, the device's
     API encryption key, where it takes that; else with its update `password`
-    if it has one.  Returns once the plug has it all and says the update ended
+    if it has one.  Returns once the device has it all and says the update ended
     (it then restarts into it by itself)."""
     with socket.create_connection((host, port), timeout=timeout) as raw:
         raw.settimeout(timeout)
         raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        offer = _handshake(raw, key)
+        try:
+            offer = _handshake(raw, key)
+        except TimeoutError as exc:
+            raise Busy("its update service did not answer") from exc
         if offer.encrypted_only:
             raise NeedsEncryption()
         if kind != APP and not offer.partition_access:

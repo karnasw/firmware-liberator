@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""Image a stock plug's whole flash through the readout bridge (research only).
+"""Image a stock device's whole flash through the bridge (research only).
 
-Reads the flash chip from the research bridge's read-only `GET /flash` (build
-env `autoflash-bridge-flash-readout`) and its eFuse read registers from
+Reads the flash chip from the bridge's read-only `GET /flash` and its eFuse read registers from
 `GET /efuse`, checks the dump is complete and well formed, and reports what
 each application slot holds and which one otadata selects.
 
-The dump holds the plug's Wi-Fi password and eWeLink keys in cleartext. It is
+The dump holds the device's Wi-Fi password and eWeLink keys in cleartext. It is
 written only under captures/ (never committed), readable by you alone.
 
 tools/espressif/flash_readout.py does the whole readout and uses this; run this alone
-only to read again from a readout bridge that is already on a plug:
+only to read again from a readout bridge that is already on a device:
 
     python3 tools/espressif/dump_stock_flash.py --host <bridge address>
 """
@@ -19,7 +18,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
+import re
 import os
 import struct
 import sys
@@ -34,7 +35,8 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tools.espressif.analyze_vendor_ota import parse_esp_image  # noqa: E402
-from tools.autoflash import plugs  # noqa: E402
+from tools.autoflash import records  # noqa: E402
+from tools.espressif import flashmap  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 PARTITION_TABLE = 0x8000
@@ -45,15 +47,24 @@ APP_DESC_MAGIC = 0xABCD5432
 APP_DESC_OFFSET = 32
 OTA_SECTOR = 0x1000
 OTA_STATES_REJECTED = {3, 4}  # ESP_OTA_IMG_INVALID, ESP_OTA_IMG_ABORTED
-# "bridge v5 flash readout" or "bridge 4.4.1 flash readout".
-READOUT_STATUS = "flash readout"
+# How a bridge names itself: "bridge v5" up to v5, "bridge 4.4.1" from then on.
+BRIDGE_ID = rb"bridge (?:v\d+|\d+\.\d+\.\d+)"
+
+
+def table_offset(flash: bytes) -> int:
+    """Where the dump's partition table is: 0x8000, or 0xC000 for firmware built
+    so (the BASICR4's); 0x8000 when neither holds one."""
+    try:
+        return flashmap.table_at(flash)
+    except ValueError:
+        return PARTITION_TABLE
 
 
 def parse_partition_table(flash: bytes) -> tuple[list[dict[str, Any]], bool]:
     """Partition entries, and whether the table's MD5 record matches them."""
     entries: list[dict[str, Any]] = []
-    cursor = PARTITION_TABLE
-    while cursor + 32 <= PARTITION_TABLE + 0xC00:
+    start = cursor = table_offset(flash)
+    while cursor + 32 <= start + 0xC00:
         magic = struct.unpack_from("<H", flash, cursor)[0]
         if magic != PARTITION_MAGIC:
             break
@@ -65,7 +76,7 @@ def parse_partition_table(flash: bytes) -> tuple[list[dict[str, Any]], bool]:
         cursor += 32
     md5_ok = (
         struct.unpack_from("<H", flash, cursor)[0] == MD5_MAGIC
-        and flash[cursor + 16 : cursor + 32] == hashlib.md5(flash[PARTITION_TABLE:cursor]).digest()
+        and flash[cursor + 16 : cursor + 32] == hashlib.md5(flash[start:cursor]).digest()
     )
     return entries, md5_ok
 
@@ -87,6 +98,14 @@ def app_description(image: bytes) -> dict[str, str] | None:
     }
 
 
+def build_sha256(image: bytes) -> str | None:
+    """The SHA-256 of the ELF an app was built from (esp_app_desc_t's
+    app_elf_sha256), the same in every device running that build."""
+    if len(image) < APP_DESC_OFFSET + 176 or struct.unpack_from("<I", image, APP_DESC_OFFSET)[0] != APP_DESC_MAGIC:
+        return None
+    return image[APP_DESC_OFFSET + 144:APP_DESC_OFFSET + 176].hex()
+
+
 def selected_ota_slot(otadata: bytes, slot_count: int) -> int | None:
     """The OTA slot otadata boots: the valid record with the highest sequence."""
     best = None
@@ -103,9 +122,10 @@ def selected_ota_slot(otadata: bytes, slot_count: int) -> int | None:
 
 def check(flash: bytes) -> dict[str, Any]:
     """Everything a dump has to show before it is worth keeping."""
-    report: dict[str, Any] = {"size": len(flash), "sha256": hashlib.sha256(flash).hexdigest()}
+    report: dict[str, Any] = {"size": len(flash), "sha256": hashlib.sha256(flash).hexdigest(),
+                              "partition_table_at": f"0x{table_offset(flash):x}"}
     try:
-        boot = parse_esp_image(flash[:PARTITION_TABLE])
+        boot = parse_esp_image(flash[:table_offset(flash)])
         report["bootloader"] = {"checksum_valid": boot["checksum_valid"], "sha256_valid": boot["sha256_valid"]}
     except ValueError as exc:
         report["bootloader"] = {"error": str(exc)}
@@ -151,21 +171,40 @@ def write_private(path: Path, data: bytes) -> None:
         handle.write(data)
 
 
-def is_readout_bridge(host: str) -> bool:
-    """True when `host` answers as the flash-readout bridge."""
+def is_bridge(host: str) -> bool:
+    """True when `host` answers as the bridge."""
     try:
         status, _ = fetch(host, "/status", timeout=5)
     except OSError:
         return False
-    return READOUT_STATUS in status.decode("ascii", "replace")
+    return re.match(BRIDGE_ID, status) is not None
+
+
+def read_info(host: str, timeout: float = 10.0) -> bytes | None:
+    """The bridge's GET /info; None from a bridge before 4.4.5, or one that does
+    not answer as a bridge. Only the log needs it, so nothing here is an error."""
+    try:
+        body, _ = fetch(host, "/info", timeout=timeout)
+    except (OSError, http.client.HTTPException, ValueError):
+        return None
+    return body if re.match(BRIDGE_ID, body) else None
 
 
 class IncompleteDump(OSError):
     """The flash arrived short, so nothing from it is worth keeping."""
 
 
-def plug_sha256(host: str) -> str | None:
-    """The SHA-256 of the whole flash as the bridge works it out on the plug;
+def read_table(host: str, timeout: float = 60.0) -> bytes:
+    """The device's partition table, from the start of the bridge's `GET /flash`."""
+    with urllib.request.urlopen(f"http://{host}/flash", timeout=timeout) as response:
+        start = response.read(PARTITION_TABLE + OTA_SECTOR)
+    if len(start) != PARTITION_TABLE + OTA_SECTOR:
+        raise OSError("the flash stopped short of the partition table")
+    return start[PARTITION_TABLE:]
+
+
+def device_sha256(host: str) -> str | None:
+    """The SHA-256 of the whole flash as the bridge works it out on the device;
     None from a bridge older than 4.4.2, which cannot."""
     try:
         body, _ = fetch(host, "/flash-sha256", timeout=60)
@@ -178,21 +217,21 @@ def plug_sha256(host: str) -> str | None:
 
 def read_dump(host: str) -> tuple[bytes, bytes, dict[str, Any]]:
     """The whole flash and the eFuse registers from a bridge at `host`, checked
-    byte for byte against the plug's own hash of its flash where it has one."""
+    byte for byte against the device's own hash of its flash where it has one."""
     flash, headers = fetch(host, "/flash", timeout=300)
     declared = int(headers.get("X-Flash-Size", "0"))
     if declared == 0 or len(flash) != declared:
         raise IncompleteDump(f"received {len(flash):,} of {declared:,} bytes")
-    on_plug = plug_sha256(host)
+    on_device = device_sha256(host)
     received = hashlib.sha256(flash).hexdigest()
-    if on_plug is not None and on_plug != received:
+    if on_device is not None and on_device != received:
         raise IncompleteDump(f"what arrived (SHA-256 {received[:16]}...) is not what is on "
-                             f"the device ({on_plug[:16]}...)")
+                             f"the device ({on_device[:16]}...)")
     efuse, _ = fetch(host, "/efuse", timeout=10)
     report = check(flash)
     report["efuse_sha256"] = hashlib.sha256(efuse).hexdigest()
-    # True: identical to the plug's flash, by its own hash; None: not checkable.
-    report["matches_plug"] = True if on_plug is not None else None
+    # True: identical to the device's flash, by its own hash; None: not checkable.
+    report["matches_device"] = True if on_device is not None else None
     return flash, efuse, report
 
 
@@ -212,10 +251,11 @@ def write_dump(out: Path, flash: bytes, efuse: bytes, report: dict[str, Any]) ->
 def summary(report: dict[str, Any]) -> list[str]:
     """What a dump holds, a line each: its size, the table, each partition."""
     lines = [f"{report['size']:,} bytes, SHA-256 {report['sha256']}",
-             f"partition table MD5: {'valid' if report['partition_table_md5_valid'] else 'INVALID'}"]
-    if "matches_plug" in report:
+             f"partition table at {report.get('partition_table_at', '0x8000')}, MD5: "
+             f"{'valid' if report['partition_table_md5_valid'] else 'INVALID'}"]
+    if "matches_device" in report:
         lines.append("byte for byte the same as the device's flash, by the device's own SHA-256"
-                     if report["matches_plug"] else "not checked against the device (bridge before 4.4.2)")
+                     if report["matches_device"] else "not checked against the device (bridge before 4.4.2)")
     for item in report["partitions"]:
         app = item.get("app")
         what = f"{app['project']} {app['version']} ({app['date']})" if app else item.get("error", "")
@@ -228,8 +268,8 @@ def summary(report: dict[str, Any]) -> list[str]:
 def save_dump(host: str, label: str, version: str | None = None) -> int:
     """Read, check and save one dump from the readout bridge at `host`.
 
-    Kept under captures/flash-readout/, and as the plug's Sonoff backup
-    (tools/autoflash/plugs.py) if it has none yet.  0 when the dump is complete
+    Kept under captures/flash-readout/, and as the device's Sonoff backup
+    (tools/autoflash/records.py) if it has none yet.  0 when the dump is complete
     and well formed; nothing is kept from a short transfer.
     """
     print("Reading the whole flash (about a minute)...")
@@ -246,7 +286,7 @@ def save_dump(host: str, label: str, version: str | None = None) -> int:
         print(f"  {line}")
     if not is_good(report):
         return 1
-    backup, saved = plugs.save_backup(flash, efuse, report, version)
+    backup, saved = records.save_backup(flash, efuse, report, version)
     print(f"{'Kept as' if saved else 'It already has'} this device's Sonoff backup: {backup.relative_to(ROOT)}")
     return 0
 
@@ -256,13 +296,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="192.168.4.1")
     parser.add_argument("--label", default="stock", help="name for this dump, e.g. the stock version")
     args = parser.parse_args(argv)
+    try:
+        records.take_over_earlier_names()
+    except records.EarlierNames as error:
+        sys.exit(str(error))
 
-    if not is_readout_bridge(args.host):
-        print(f"{args.host} is not the flash-readout bridge.", file=sys.stderr)
+    if not is_bridge(args.host):
+        print(f"{args.host} is not the bridge.", file=sys.stderr)
         return 2
     code = save_dump(args.host, args.label)
     if code == 0:
-        print("\nSwitch the plug off and on: it boots its Sonoff firmware again.")
+        print("\nSwitch the device off and on: it boots its Sonoff firmware again.")
     return code
 
 

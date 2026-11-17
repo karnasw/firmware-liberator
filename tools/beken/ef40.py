@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """EasyFlash V4 (EF40) KV40 reader/writer for S61 stock flash.
 
 Node: "KV40"(4) | len u32 | crc32 u32 | name_len(1)+0xff*3 | value_len u32 |

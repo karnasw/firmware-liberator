@@ -1,0 +1,8 @@
+# The QEMU fork the emulator is built from: lcgamboa/qemu at this commit, with
+# the subprojects its build fetches, as the archive this repository's release
+# emulator-source-qemu-<commit> holds. image.sh downloads the archive,
+# checks it against this hash, and emu.Dockerfile applies patches/ in name order.
+repo https://github.com/lcgamboa/qemu.git
+commit 64aed503e34a7f52f648374d7d5706ca6d71b606
+archive qemu-lcgamboa-64aed50.tar.xz
+sha256 37f3cbc81b82c43a1bfa44b75c95278a506c871380be65e3727582f9c1640895

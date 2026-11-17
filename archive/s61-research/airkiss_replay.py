@@ -19,7 +19,7 @@ import tempfile
 from pathlib import Path
 ROOT=Path(os.environ.get("BK_EMU_ROOT", "/opt/beken-emulator")); sys.path.insert(0,str(ROOT))
 from src.main import build_emulator  # noqa: E402
-DUMP=os.environ.get("S61_DUMP", str(ROOT/"firmwares/Sonoff_S61s_EUPlug_WBBK_01P_V1.3.bin"))
+DUMP=os.environ.get("AUTOFLASH_BEKEN_EMU_DUMP", str(ROOT/"firmwares/Sonoff_S61s_EUPlug_WBBK_01P_V1.3.bin"))
 
 # ---------- pcap parsing (stdlib) ----------
 def read_pcap(path):

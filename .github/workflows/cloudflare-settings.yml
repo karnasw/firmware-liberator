@@ -1,7 +1,14 @@
-# The website's zone on Cloudflare, as tools/repo/cloudflare_settings.py
-# says: set on each push to main that changes it, and checked weekly, when a
-# change made in the dashboard fails the run, so it is either written down
-# there or put back (started by hand with `apply`).
+# The website's Cloudflare settings, as tools/repo/cloudflare_settings.py
+# says - the zone, its DNS records, its redirect, rate-limiting, firewall and
+# cache rules, Email Routing, the readouts bucket, which keeps them for good,
+# and the public figures' bucket and its domain, and that nothing of the
+# project's is there unwritten (a rule, route or bucket) - checked, never set: daily,
+# and on each push to main that changes them. A run fails
+# on any difference, whether a change made in the dashboard or one written
+# down there and not applied yet. Settings are applied by hand, with a
+# short-lived token (website/README.md); this job's token can read and
+# nothing else, and the check fails if it can see another zone or the
+# account's API tokens.
 name: Cloudflare settings
 
 on:
@@ -11,13 +18,8 @@ on:
       - tools/repo/cloudflare_settings.py
       - .github/workflows/cloudflare-settings.yml
   schedule:
-    - cron: "0 6 * * 1"   # Mondays, 06:00 UTC
+    - cron: "0 6 * * *"   # daily, 06:00 UTC
   workflow_dispatch:
-    inputs:
-      apply:
-        description: "Set what differs, rather than only say it"
-        type: boolean
-        default: false
 
 permissions: {}
 
@@ -35,13 +37,35 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: What differs, set on a push or when asked
+      - name: What differs from what is written down
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          APPLY: ${{ github.event_name == 'push' || inputs.apply }}
-        run: |
-          if [ "$APPLY" = true ]; then
-              python3 tools/repo/cloudflare_settings.py apply
-          else
-              python3 tools/repo/cloudflare_settings.py
-          fi
+          CLOUDFLARE_SETTINGS_CHECK_TOKEN: ${{ secrets.CLOUDFLARE_SETTINGS_CHECK_TOKEN }}
+        run: python3 tools/repo/cloudflare_settings.py ci
+
+  # The API's health (tools/repo/api_health.py): the public figures made last
+  # night, by a database with every migration, the account well within what
+  # its plan includes, and its emails bouncing rarely, drawing no complaint.
+  # Daily, not on a push: none changes with one.
+  health:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: website
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The public figures are fresh
+        run: python3 tools/repo/api_health.py snapshot
+      - name: The account is well within what its plan includes
+        if: ${{ !cancelled() }}
+        env:
+          CLOUDFLARE_SETTINGS_CHECK_TOKEN: ${{ secrets.CLOUDFLARE_SETTINGS_CHECK_TOKEN }}
+        run: python3 tools/repo/api_health.py usage
+      - name: The API's emails bounce rarely, and draw no complaint
+        if: ${{ !cancelled() }}
+        env:
+          CLOUDFLARE_SETTINGS_CHECK_TOKEN: ${{ secrets.CLOUDFLARE_SETTINGS_CHECK_TOKEN }}
+        run: python3 tools/repo/api_health.py mail

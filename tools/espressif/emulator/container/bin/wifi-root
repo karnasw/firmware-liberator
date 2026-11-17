@@ -1,16 +1,16 @@
 #!/bin/bash
 # Root half of `wifi`: puts this "computer" on one network or the other.
-#   wifi-root home         the emulated home Wi-Fi: we are its router (DHCP, DNS)
-#   wifi-root join SSID    the plug's own network: this computer is a client of
-#                          the plug there, while the home network's router stays
-#                          up - the plug may be trying Wi-Fi details on it
+#   wifi-root home         the emulated home Wi-Fi: this computer is its router (DHCP, DNS)
+#   wifi-root join SSID    the device's own network: this computer is a client of
+#                          the device there, while the home network's router stays
+#                          up - the device may be trying Wi-Fi details on it
 set -euo pipefail
 RUN=/run/autoflash-emu
 . "$RUN/env"
 HOME_SSID=PICSimLabWifi
 NET=192.168.60
-PLUG_IP=$NET.50
-JOINED=plugnet   # this computer's interface on the plug's network
+DEVICE_IP=$NET.50
+JOINED=devicenet   # this computer's interface on the device's network
 
 # This computer's own traffic (the tool and its servers run as the user who
 # started the emulator); the router's, dnsmasq's, is root's.
@@ -20,7 +20,7 @@ router_up() {
     [ -f "$RUN/dnsmasq.pid" ] && kill -0 "$(cat "$RUN/dnsmasq.pid")" 2>/dev/null
 }
 
-leave_plug_network() {
+leave_device_network() {
     pkill -f "udhcpc -i $JOINED" 2>/dev/null || true
     ip link del "$JOINED" 2>/dev/null || true
     while iptables -D OUTPUT -o "$LAN" -m owner --uid-owner "$user" -j DROP 2>/dev/null; do :; done
@@ -32,8 +32,8 @@ leave_plug_network() {
 
 case "${1:-}" in
 home)
-    leave_plug_network
-    ip route replace 224.0.0.0/4 dev "$LAN"   # mDNS discovery goes to the plug's network
+    leave_device_network
+    ip route replace 224.0.0.0/4 dev "$LAN"   # mDNS discovery goes to the device's network
     if ! router_up; then
         [ "$(cat /sys/class/net/tap0/address)" = "$(cat "$RUN/tap-mac")" ] || {
             ip link set tap0 down; ip link set tap0 address "$(cat "$RUN/tap-mac")"; ip link set tap0 up; }
@@ -42,23 +42,23 @@ home)
         if [ "$CLOUD" = 1 ]; then dns=(--resolv-file=/etc/resolv.conf); else dns=(--no-resolv); fi
         dnsmasq --interface="$LAN" --bind-interfaces --except-interface=lo \
             --dhcp-range="$NET.100,$NET.199,255.255.255.0,1h" \
-            --dhcp-host="$PLUG_MAC,$PLUG_IP" \
+            --dhcp-host="$DEVICE_MAC,$DEVICE_IP" \
             --dhcp-option=option:router,"$NET.1" --dhcp-option=option:dns-server,"$NET.1" \
             --dhcp-leasefile="$RUN/leases" --pid-file="$RUN/dnsmasq.pid" \
             --log-dhcp --log-facility="$RUN/dnsmasq.log" "${dns[@]}"
     fi
     echo "$HOME_SSID" > "$RUN/network"
-    echo "$PLUG_IP:80" > "$RUN/browser-target"
+    echo "$DEVICE_IP:80" > "$RUN/browser-target"
     ;;
 join)
     ssid=${2:?which network}
     if [ "$WINDOWS" = 1 ]; then
         echo "Windows is the computer on this network (emu.sh --windows), and joining" >&2
-        echo "the plug's own network from Windows is not emulated." >&2
+        echo "the device's own network from Windows is not emulated." >&2
         exit 1
     fi
-    leave_plug_network
-    # The fork's station on the plug's network (lcgamboa/qemu #15) joins it by
+    leave_device_network
+    # The fork's station on the device's network (lcgamboa/qemu #15) joins it by
     # itself once it is on air, within a second or two, and has a MAC of its own,
     # which this side takes; udhcpc, below, asks until it has.
     for _ in $(seq 40); do

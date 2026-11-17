@@ -133,19 +133,19 @@ class CommandTests(unittest.TestCase):
     def restore_into(self, captures):
         sealed = pb.seal(pb.backup_files(self.backup), pb.key())
         return mock.patch.multiple(pb, fetched=mock.Mock(return_value=sealed)), \
-            mock.patch.object(pb.plugs, "PLUGS", captures / "plugs")
+            mock.patch.object(pb.records, "DEVICES", captures / "devices")
 
     def test_restore_files_the_backup_where_the_emulator_looks(self):
-        (self.tmp / "plug.json").write_text('{"model": "S60TPG"}')
+        (self.tmp / "device.json").write_text('{"model": "S60TPG"}')
         efuse = bytearray(1024)
         efuse[0x18:0x1E] = bytes.fromhex("123456abcdef")[::-1]
         (self.backup / "efuse.bin").write_bytes(bytes(efuse))
         fetch, where = self.restore_into(self.tmp / "captures")
         with fetch, where:
             self.assertEqual(pb.restore(), "12:34:56:ab:cd:ef")
-            filed = self.tmp / "captures/plugs/12-34-56-ab-cd-ef"
+            filed = self.tmp / "captures/devices/12-34-56-ab-cd-ef"
             self.assertEqual((filed / "sonoff-backup/flash.bin").read_bytes(), SealTests.FILES["flash.bin"])
-            self.assertEqual((filed / "plug.json").read_text(), '{"model": "S60TPG"}')
+            self.assertEqual((filed / "device.json").read_text(), '{"model": "S60TPG"}')
             self.assertFalse((filed / "sonoff-backup/flash.bin").stat().st_mode & stat.S_IWUSR)
             self.assertEqual(pb.restore(), "12:34:56:ab:cd:ef")  # there already, as sealed: left alone
 
@@ -154,7 +154,7 @@ class CommandTests(unittest.TestCase):
         efuse[0x18:0x1E] = bytes.fromhex("123456abcdef")[::-1]
         (self.backup / "efuse.bin").write_bytes(bytes(efuse))
         fetch, where = self.restore_into(self.tmp / "captures")
-        other = self.tmp / "captures/plugs/12-34-56-ab-cd-ef/sonoff-backup"
+        other = self.tmp / "captures/devices/12-34-56-ab-cd-ef/sonoff-backup"
         other.mkdir(parents=True)
         (other / "flash.bin").write_bytes(b"another")
         (other / "efuse.bin").write_bytes(bytes(efuse))

@@ -1,27 +1,27 @@
 """The Beken routes (the Sonoff S61): every step of every direction, and what
 the runner needs to know of each.
 
-Every direction is one move: an rt_ota image put in the plug's download slot
+Every direction is one move: an rt_ota image put in the device's download slot
 by whatever update the firmware running takes - the stock firmware's through
 eWeLink (B2), OpenBeken's by URL (O1, O2), ESPHome's as a UF2 through its OTA
 (E1, E2) - which the stock bootloader applies on the restart that follows.
-The plug's own store, with its Wi-Fi and calibration, is never written, so
+The device's own store, with its Wi-Fi and calibration, is never written, so
 each firmware reads it on first boot and nothing is typed or copied across.
 The backup (B4) comes after the first conversion, through OpenBeken's flash
 reads: the stock firmware has no way to read the store out, and ESPHome no
 reader of its own to keep for good. So a run to ESPHome from Sonoff's
 firmware installs OpenBeken first, as the interim firmware (J1), backs the
-plug up through it, and has it fetch ESPHome (J2). B2 sends it with a marker
+device up through it, and has it fetch ESPHome (J2). B2 sends it with a marker
 after the image (tools/beken/interim_marker.py), by which it knows itself the
 interim firmware: named so from its first start, saying so when asked, and
 leaving nothing of itself once it has fetched the next firmware. So a run that
-lost its record still finds a plug left on it part way ("interim"), and goes
+lost its record still finds a device left on it part way ("interim"), and goes
 on: to ESPHome as the run to ESPHome would have, to Sonoff's firmware as from
-OpenBeken (J4), and to OpenBeken by keeping it, as the plug's own (J3).
+OpenBeken (J4), and to OpenBeken by keeping it, as the device's own (J3).
 
-A plug on an earlier release of this tool's ESPHome or OpenBeken is updated
+A device on an earlier release of this tool's ESPHome or OpenBeken is updated
 by the same move, the firmware taking this release as any update of its own
-(U1, U3): its settings are kept, and the plug's store is read again only by a
+(U1, U3): its settings are kept, and the device's store is read again only by a
 firmware that has none (routes/update.py).
 """
 
@@ -31,25 +31,32 @@ from typing import Any, Callable, TYPE_CHECKING
 
 from tools.autoflash import kinds
 from tools.autoflash.routes import update
-from tools.autoflash.routes.beken import arrived, images, onward, stock
+from tools.autoflash.routes.beken import arrived, evidence, images, onward, stock
+from tools.autoflash.routes.beken.evidence import ATTEMPTED_EVIDENCE, DESTRUCTIVE_STEPS  # noqa: F401
 
 if TYPE_CHECKING:
     from tools.autoflash.context import Context
 
 Steps = list[tuple[str, str, Callable[["Context"], dict[str, Any]]]]
 
-# What a plug of this family may run: the firmware a run installs, by its key.
+# What a device of this family may run: the firmware a run installs, by its key.
 FIRMWARES = {"openbeken": "OpenBeken", "esphome": "ESPHome", "sonoff": "Sonoff"}
-# What a plug of this family may be running when a run starts.
+# The firmware only some kinds may have, and which (routes.firmwares_of): none.
+ONLY_FOR: dict[str, tuple[str, ...]] = {}
+# What a device of this family may be running when a run starts.
 # "outdated": this tool's ESPHome or OpenBeken, an earlier release (routes/update.py).
 SOURCES = ("sonoff", "openbeken", "esphome", "interim", "outdated")
-# After this step the plug no longer runs its Sonoff firmware.
+# After this step the device no longer runs its Sonoff firmware.
 POINT_OF_NO_RETURN = "B2"
+# The steps a dry run goes through (--dry-run): those that only read, before
+# the first that writes - the prerequisites and B1, which asks eWeLink what the device runs. It stops there, as
+# every step after needs what that one would have written (runner.run_steps, cli.cmd_step).
+READ_ONLY_STEPS = {"A0", "A1", "A2", "A3", "A5", "B1"}
 RESUME_CHECK = None
 
 
 def published_version(kind: kinds.Kind, firmware: str) -> str | None:
-    """The release of `firmware` this tool installs on a plug of `kind`, if any:
+    """The release of `firmware` this tool installs on a device of `kind`, if any:
     its ESPHome's and its OpenBeken's, both built here."""
     version = images.PINS.get(kind.key, {}).get(firmware, {}).get("version")
     return str(version) if version else None
@@ -74,7 +81,7 @@ FROM_OPENBEKEN: dict[str, Steps] = {
     "esphome": [("O1", "ESPHome, fetched by OpenBeken", onward.step_openbeken_to_esphome)],
     "sonoff": [("O2", "Sonoff's firmware, fetched by OpenBeken", onward.step_openbeken_to_sonoff)],
 }
-# From a plug left on the interim firmware, found by a run with no record of it.
+# From a device left on the interim firmware, found by a run with no record of it.
 FROM_INTERIM: dict[str, Steps] = {
     "esphome": INTERIM_STEPS[1:],
     "openbeken": [("J3", "OpenBeken, in place of the interim firmware", onward.step_interim_to_openbeken)],
@@ -89,7 +96,7 @@ UPDATE_OPENBEKEN_STEPS: Steps = [
     ("U3", "This release's OpenBeken, fetched by OpenBeken as an update", onward.step_openbeken_update),
     ("U4", "OpenBeken updated and on the Wi-Fi", update.wait_for_update),
 ]
-# A plug on an earlier release, updated as its firmware takes any update, its
+# A device on an earlier release, updated as its firmware takes any update, its
 # settings kept: left for another firmware, it is a run from the one it runs.
 UPDATE_STEPS = {"esphome": UPDATE_ESPHOME_STEPS, "openbeken": UPDATE_OPENBEKEN_STEPS}
 FROM_ESPHOME: dict[str, Steps] = {
@@ -107,7 +114,7 @@ def steps_for(firmware: str, source: str = "sonoff") -> Steps:
     if source == "sonoff":
         return STOCK_STEPS + (INTERIM_STEPS if firmware in images.INTERIM else []) + final
     if source == "openbeken":
-        # The backup first, where the plug has none yet: only OpenBeken reads it out.
+        # The backup first, where the device has none yet: only OpenBeken reads it out.
         return OPENBEKEN_FINAL_STEPS[1:] + FROM_OPENBEKEN[firmware] + final
     if source == "outdated" and firmware in UPDATE_STEPS:
         return UPDATE_STEPS[firmware]
@@ -118,10 +125,10 @@ def steps_for(firmware: str, source: str = "sonoff") -> Steps:
     raise ValueError(f"no route from {source}")
 
 
-# The steps that write to the plug, which happen once; and those tried again by
-# themselves when they fail for a reason that may pass: each only reads, or
-# waits - or, J3, sets the name it set again and restarts the plug.
-DESTRUCTIVE_STEPS = {"B2", "J2", "J4", "O1", "O2", "E1", "E2", "U1", "U3"}
+# The steps tried again by themselves when they fail for a reason that may
+# pass: each only reads, or waits - or, J3, sets the name it set again and
+# restarts the device. (Those that write to the device, which happen once, are
+# evidence.DESTRUCTIVE_STEPS.)
 RETRY_STEPS = {"B1", "J1", "J3", "K1", "K2", "K3", "B4", "U2", "U4"}
 # No Tasmota here to lose its settings and raise a network of its own.
 ERASED_CHECK_STEPS: set[str] = set()
@@ -170,25 +177,14 @@ PLAIN_DESCRIPTION = {
     "U3": "has OpenBeken fetch this release's OpenBeken, which the device installs as it restarts",
     "U4": "checks the device has started the updated OpenBeken and joined your Wi-Fi",
 }
-# What a step cut off part way may have left: the plug says, by what it answers as.
-ATTEMPTED_EVIDENCE: dict[str, Callable[["Context"], tuple[bool | None, str]]] = {
-    "B2": stock.evidence_pushed,
-    "J2": onward.evidence_installed,
-    "J4": onward.evidence_installed,
-    "O1": onward.evidence_installed,
-    "O2": onward.evidence_installed,
-    "E1": onward.evidence_installed,
-    "E2": onward.evidence_installed,
-    "U1": update.evidence_updated,
-    "U3": update.evidence_updated,
-}
-# A step from OpenBeken or ESPHome recorded done is doubted where the plug
+# A step from OpenBeken or ESPHome recorded done is doubted where the device
 # still answers as the firmware it was leaving: the image was never applied (a
 # power cut while it was written, say), and sending it again is what is wanted.
-# The check steps ask the plug afresh anyway.
+# The check steps ask the device afresh anyway.
 STEP_VERIFIERS: dict[str, Callable[["Context"], tuple[bool, str]]] = {
-    **{step: onward.still_installed for step in ("J2", "J4", "O1", "O2", "E1", "E2")},
+    **{step: evidence.still_installed for step in ("J2", "J4", "O1", "O2", "E1", "E2")},
     "U1": update.still_updated, "U3": update.still_updated}
-# Sonoff's firmware goes back on from the public dump (images.stock_rbl), not
-# the plug's backup - which B4 takes first, from OpenBeken, where there is none.
+# Going back needs no backup: Sonoff's firmware comes from the device's backup
+# where it has one, else eWeLink's offer or a public copy (images.stock_rbl),
+# and the device keeps its own data.
 SONOFF_FROM_BACKUP = False

@@ -1,2 +1,2 @@
-"""Autoflash, the plug conversion tool, and the research tools it grew from."""
+"""Autoflash, the device conversion tool, and the research tools it grew from."""
 

@@ -1,4 +1,4 @@
-"""Minimal Tasmota HTTP client used to drive a plug without console pasting.
+"""Minimal Tasmota HTTP client used to drive a device without console pasting.
 
 Only stdlib.  Every method is deliberately explicit about timeouts, because the
 long Berry phases hold the HTTP request open until they finish and a timeout is
@@ -76,34 +76,34 @@ def upload_refusal(page: str) -> str | None:
     return " ".join(re.sub(r"<[^>]+>", " ", found.group(1)).split()) or "no reason given"
 
 
-# A plug is on the LAN, so requests go straight to it: never through a proxy
+# A device is on the LAN, so requests go straight to it: never through a proxy
 # from http_proxy/HTTPS_PROXY in the environment, which cannot route to
 # 192.168.x.x and fails exactly as if the device were absent.
 
-# How long a request the plug has not answered is kept open after its caller
+# How long a request the device has not answered is kept open after its caller
 # has stopped waiting.  Tasmota answers nothing while Berry runs, and a request
 # it then finds given up on - closed, or forgotten by this computer (Linux
 # forgets a closed one after a minute) - leaves its web server stuck for good:
-# the plug answers ping and nothing else until it is switched off and on.  One
-# such request was enough, on a real plug with Tasmota 15.6.0.  So a request
-# that reached the plug is never closed unanswered: it is held open here, and
-# the plug's late answer read and dropped.  Longer than any phase can run.
+# the device answers ping and nothing else until it is switched off and on.  One
+# such request was enough, on a real device with Tasmota 15.6.0.  So a request
+# that reached the device is never closed unanswered: it is held open here, and
+# the device's late answer read and dropped.  Longer than any phase can run.
 HOLD_SECONDS = 20 * 60
-# A held request to a plug that has since restarted - the commit restarts it,
+# A held request to a device that has since restarted - the commit restarts it,
 # cutting off the reply to the request that started it - will never be
-# answered.  Keepalive tells the two apart: a busy plug's network answers it,
+# answered.  Keepalive tells the two apart: a busy device's network answers it,
 # as it answers ping, and a restarted one refuses the old connection, which
 # ends the hold within seconds.  Checked every 10s, given up after 5 minutes
-# of no answer at all (the plug off the network for that long).
+# of no answer at all (the device off the network for that long).
 KEEPALIVE_IDLE, KEEPALIVE_INTERVAL, KEEPALIVE_COUNT = 10, 10, 30
-# A plug that has not answered this many requests will not answer another one
-# sooner: it is not sent, only added to the plug's queue, and fails at once.
+# A device that has not answered this many requests will not answer another one
+# sooner: it is not sent, only added to the device's queue, and fails at once.
 MOST_HELD = 3
 _held: list[tuple[str, threading.Thread]] = []
 
 
 def held_requests(host: str | None = None) -> int:
-    """How many requests a plug has not answered yet, held open for it."""
+    """How many requests a device has not answered yet, held open for it."""
     return sum(1 for to, worker in _held if worker.is_alive() and host in (None, to))
 
 
@@ -130,7 +130,7 @@ def _exchange(host: str, method: str, target: str, headers: dict[str, str],
     """One HTTP request and its (status, reason, headers, body).
 
     Connecting is given `timeout`, and a failure raises URLError, as urllib
-    does.  A request that reached the plug and is not answered within the rest
+    does.  A request that reached the device and is not answered within the rest
     of `timeout` raises socket.timeout, as urllib's does - and is held open.
     """
     if held_requests(host) >= MOST_HELD:
@@ -170,6 +170,20 @@ def _exchange(host: str, method: str, target: str, headers: dict[str, str],
     if "error" in outcome:
         raise outcome["error"]
     return outcome["reply"]
+
+
+# Tasmota counts a boot when it has been up 10 s (BOOT_LOOP_TIME), at the turn
+# of that second; a second more, so a count read then is this boot's.
+BOOT_COUNTED_AFTER = 11
+
+
+def uptime_of(text: Any) -> int | None:
+    """Seconds in Tasmota's uptime as Status 1 gives it, "1T02:03:04"."""
+    found = re.fullmatch(r"(\d+)T(\d+):(\d+):(\d+)", text) if isinstance(text, str) else None
+    if not found:
+        return None
+    days, hours, minutes, seconds = (int(part) for part in found.groups())
+    return ((days * 24 + hours) * 60 + minutes) * 60 + seconds
 
 
 class Device:
@@ -251,7 +265,7 @@ class Device:
         does not have, none or another: True when it says so, False when it
         answers otherwise, None when it does not answer.  Its command
         interface is asked nothing, so it runs nothing, and nothing goes into
-        the plug's console log."""
+        the device's console log."""
         try:
             self._get("/cm", {}, timeout)
         except NeedsPassword:
@@ -311,7 +325,7 @@ class Device:
         yielding.  Completion is detected from the host phase server's evidence,
         never from this response.  Returns True when a response did arrive.
 
-        A phase that ends by restarting the plug (the commit does) cuts its own
+        A phase that ends by restarting the device (the commit does) cuts its own
         reply off part way, which is the same: no response.
         """
         try:
@@ -328,7 +342,7 @@ class Device:
         """Have Tasmota run `commands` at its next restart, as it saves its
         settings: a Berry driver for save_before_restart, which every restart
         calls just before the save (settings.ino SettingsSaveAll).  So a name
-        or template goes in with a restart the plug makes anyway - after
+        or template goes in with a restart the device makes anyway - after
         Reset 4 has rebuilt the defaults, or once the Wi-Fi given through its
         setup page has connected - and costs none of its own.  Kept in memory
         only: gone with that restart, and one given again replaces it.
@@ -393,6 +407,36 @@ class Device:
             )
         return digest
 
+    # Bytes of flash a read asks for at a time: Tasmota answers a command in
+    # one buffer, and this, as hex, sits well inside it.
+    READ_CHUNK = 512
+
+    def read_region(self, address: int, length: int, timeout: float = 30.0) -> bytes:
+        """`length` bytes of flash from `address`, read on the device as hex."""
+        out = bytearray()
+        while len(out) < length:
+            size = min(self.READ_CHUNK, length - len(out))
+            text = self.berry_value(f"import flash _r=flash.read({address + len(out)},{size}).tohex()",
+                                    "_r", timeout=timeout).strip('"')
+            try:
+                chunk = bytes.fromhex(text)
+            except ValueError:
+                chunk = b""
+            if len(chunk) != size:
+                raise DeviceError(f"expected {size} bytes of flash from the device, got {text[:40]!r} - "
+                                  "the running firmware probably cannot execute Berry")
+            out += chunk
+        return bytes(out)
+
+    def read_nvs(self, address: int, size: int) -> bytes:
+        """An NVS partition, its pages ESP-IDF never used left unread (erased)."""
+        out = bytearray(b"\xff" * size)
+        for page in range(0, size, 0x1000):
+            if self.read_region(address + page, 4) == b"\xff" * 4:
+                continue
+            out[page:page + 0x1000] = self.read_region(address + page, 0x1000)
+        return bytes(out)
+
     # -- state --------------------------------------------------------------
 
     def firmware_version(self) -> str:
@@ -435,18 +479,29 @@ class Device:
         return None
 
     def started_at(self) -> str | None:
-        """Which boot this is: the plug's own boot time and boot count.
+        """Which boot this is: the device's own boot time and boot count.
 
         A restart changes it whatever the uptime happened to be before, so it
         catches a restart that follows closely on another, which an uptime
-        comparison misses.  The count covers a plug with no clock, whose boot
+        comparison misses.  The count covers a device with no clock, whose boot
         time would read the same every time.
+
+        Tasmota counts a boot only once it has been up BOOT_COUNTED_AFTER: read
+        before then, the count goes up by one later in the same boot, which
+        looked like a restart (seen in the emulator: an upload cut off taken
+        for one the device took and booted).  So that long is waited for first.
         """
-        status = self.command("Status 1")
-        if isinstance(status, dict):
-            prm = status.get("StatusPRM", {})
-            if prm.get("StartupUTC") or prm.get("BootCount") is not None:
-                return f"{prm.get('StartupUTC')}#{prm.get('BootCount')}"
+        for _ in range(2):
+            status = self.command("Status 1")
+            if not isinstance(status, dict):
+                return None
+            uptime = uptime_of(status.get("StatusPRM", {}).get("Uptime"))
+            if uptime is None or uptime >= BOOT_COUNTED_AFTER:
+                break
+            time.sleep(BOOT_COUNTED_AFTER - uptime)
+        prm = status.get("StatusPRM", {})
+        if prm.get("StartupUTC") or prm.get("BootCount") is not None:
+            return f"{prm.get('StartupUTC')}#{prm.get('BootCount')}"
         return None
 
     def is_safeboot(self) -> bool:
@@ -460,7 +515,7 @@ class Device:
     def start_app(self) -> str:
         """Ask Tasmota's safeboot to start the Tasmota it holds, as its own
         page's switch does: that set to start, and a restart.  One that cannot
-        start leaves the plug on the safeboot again."""
+        start leaves the device on the safeboot again."""
         return self._get("/u4", {"u4": "ota", "api": ""}, self.timeout)
 
     def current_ota(self, timeout: float = 15.0) -> int | None:
@@ -476,7 +531,7 @@ class Device:
     def reachable(self, timeout: float = 3.0) -> bool:
         """True when the device answered at all, including refusing us.
 
-        HTTPError is a subclass of URLError, so a password-protected plug
+        HTTPError is a subclass of URLError, so a password-protected device
         answering 401 must be treated as present rather than absent.
         """
         try:
@@ -488,11 +543,11 @@ class Device:
             return False
 
     def answers(self, timeout: float = 3.0) -> bool:
-        """True when the plug's web page answers - without a trace on the plug.
+        """True when the device's web page answers - without a trace on the device.
 
         Not a console command, as reachable() sends: its output goes into the
-        plug's console log, which keeps only the last few kilobytes, and would
-        push out what the plug said there when a step stopped.
+        device's console log, which keeps only the last few kilobytes, and would
+        push out what the device said there when a step stopped.
         """
         try:
             self._get("/", {}, timeout)
@@ -504,7 +559,7 @@ class Device:
             return False
 
     def wait_reachable(self, timeout: float = 180.0, poll: float = 3.0) -> float:
-        """Block until the plug answers.  Returns seconds waited."""
+        """Block until the device answers.  Returns seconds waited."""
         started = time.monotonic()
         deadline = started + timeout
         while time.monotonic() < deadline:
@@ -520,7 +575,7 @@ class Device:
         before: int | None = None,
         started_at: str | None = None,
     ) -> float:
-        """Wait for the plug to restart.  Returns seconds waited.
+        """Wait for the device to restart.  Returns seconds waited.
 
         A restart is confirmed by uptime going backwards, or by an uptime
         shorter than the wait so far, not by catching the device offline
@@ -543,7 +598,7 @@ class Device:
                 if current is not None and current != started_at:
                     time.sleep(settle)
                     return time.monotonic() - started
-            # Read before asking, so a slow answer cannot make the plug look
+            # Read before asking, so a slow answer cannot make the device look
             # younger than it is.
             asked = time.monotonic()
             try:
@@ -552,7 +607,7 @@ class Device:
                 continue  # restarting as it was asked, say
             if now is not None and now + 2 < asked - started:
                 # Up for less time than this wait has lasted: it has started
-                # again since.  The checks below miss that on a plug with no
+                # again since.  The checks below miss that on a device with no
                 # clock when a settings reset brought its boot count back to
                 # the same number and it first answers with its uptime
                 # already past `before` - held up by the request the restart

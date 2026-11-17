@@ -41,8 +41,8 @@ def notes(version: str, changelog: str) -> str:
 
 
 def adoption_tags() -> list[str]:
-    """The release each plug's ESPHome config names for Home Assistant to adopt
-    it from: one that never comes out leaves that plug's image impossible to adopt."""
+    """The release each device's ESPHome config names for Home Assistant to adopt
+    it from: one that never comes out leaves that device's image impossible to adopt."""
     return sorted({tag for path in sorted(ROOT.glob("devices/*/esphome.yaml"))
                    for tag in re.findall(r"^  package_import_url: \S+@(\S+)$", path.read_text(encoding="utf-8"),
                                          re.MULTILINE)})

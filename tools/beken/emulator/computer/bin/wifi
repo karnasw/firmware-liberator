@@ -1,0 +1,79 @@
+#!/bin/bash
+# This computer's Wi-Fi, emulated, on a computer beside the emulated Beken
+# device (beken-emu.sh computer). Stands in for your desktop's Wi-Fi menu.
+#   wifi                 the network this computer is on, and those it can see
+#   wifi join [NAME]     join the device's own network (NAME, or the one on the air)
+#   wifi home            back to the home network
+# Joined, this computer is off the home network, as a laptop is: your own
+# traffic there stops, but for the tunnel the device's network is carried in,
+# and its gateway is the device, until `wifi home`.
+set -euo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=/dev/null
+. "$HERE/../own-network.sh"
+AIR=${AUTOFLASH_EMULATOR_AIR:-/device/air}
+JOINS=${AUTOFLASH_EMULATOR_JOINS:-/device/joins}   # "join"/"home" and when: the station joins afresh, or leaves
+RUN=${AUTOFLASH_WIFI_RUN:-/tmp/autoflash-wifi}
+LINK=own0   # this computer's Wi-Fi on the device's own network
+mkdir -p "$RUN"
+
+joined() { [ -s "$RUN/network" ]; }
+
+home() {
+    ip link del "$LINK" 2>/dev/null || true
+    while iptables -D OUTPUT -o eth0 -m owner --uid-owner "$(id -u)" -j DROP 2>/dev/null; do :; done
+    while iptables -D OUTPUT -o eth0 -p udp --dport "$OWN_PORT" -j ACCEPT 2>/dev/null; do :; done
+    if [ -s "$RUN/routes" ]; then
+        # shellcheck disable=SC2046
+        ip route replace $(cat "$RUN/routes")
+    fi
+    rm -f "$RUN/network" "$RUN/routes" "$RUN/gateway"
+}
+
+case "${1:-status}" in
+status)
+    if joined; then echo "Joined:   $(cat "$RUN/network")"; else echo "Joined:   the home network"; fi
+    echo "Visible:"
+    "$HERE/nmcli" -t -f SSID device wifi list | sed 's/^/          /'
+    ;;
+home)
+    home
+    if [ -e "$JOINS" ]; then echo "home $(date +%s.%N)" > "$JOINS"; fi
+    echo "Back on the home network."
+    ;;
+join)
+    on_air=$(head -1 "$AIR/network" 2>/dev/null || true)
+    name=${2:-$on_air}
+    if [ -z "$name" ] || [ "$name" != "$on_air" ]; then
+        [ -n "$name" ] && name="'$name'" || name="of the device's own"
+        echo "No network $name is on the air. Visible now:" >&2
+        "$HERE/nmcli" -t -f SSID device wifi list | sed 's/^/    /' >&2
+        exit 1
+    fi
+    joined && home
+    # Chosen from the menu, a network is joined afresh (device.py follow_air);
+    # in place, as the file is mounted.
+    if [ -e "$JOINS" ]; then echo "join $(date +%s.%N)" > "$JOINS"; fi
+    ip -4 route show default > "$RUN/routes"
+    ip link add "$LINK" type vxlan id "$OWN_VNI" group "$OWN_GROUP" dev eth0 dstport "$OWN_PORT"
+    ip link set "$LINK" address "$(cat "$AIR/station")"
+    ip link set "$LINK" up
+    # Off the home network: your own traffic there stops. The tunnel's packets go
+    # on: they are yours too, as what they carry is (udhcpc's, the tool's).
+    iptables -I OUTPUT 1 -o eth0 -m owner --uid-owner "$(id -u)" -j DROP
+    iptables -I OUTPUT 1 -o eth0 -p udp --dport "$OWN_PORT" -j ACCEPT
+    ip route replace 224.0.0.0/4 dev "$LINK"   # mDNS discovery goes to the device's network
+    echo "$name" > "$RUN/network"
+    echo "Joining $name..."
+    if busybox udhcpc -i "$LINK" -q -n -t 8 -T 2 -s "$HERE/../udhcpc.script" > "$RUN/udhcpc.log" 2>&1; then
+        echo "Joined $name; the device is at $(cat "$RUN/gateway"). Back home: wifi home"
+    else
+        echo "Could not get an address from $name. Back home: wifi home" >&2
+        exit 1
+    fi
+    ;;
+*)
+    sed -n '2,/^set /s/^# \{0,1\}//p' "$0" | sed '$d'
+    exit 2
+    ;;
+esac

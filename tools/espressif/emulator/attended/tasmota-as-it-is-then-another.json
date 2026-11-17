@@ -1,0 +1,46 @@
+{
+ "about": "Tasmota kept as it is (its meter checked), then \"What next\": another device, quit at its first question",
+ "start": "stub-suite-tasmota",
+ "answers": [
+  {
+   "when": "Which device is this run for",
+   "type": "1\r"
+  },
+  {
+   "when": "Press any key",
+   "type": "x"
+  },
+  {
+   "when": "Which firmware should the device have",
+   "type": "1\r"
+  },
+  {
+   "when": "What next",
+   "type": "1\r"
+  },
+  {
+   "when": "Which device is this run for",
+   "type": "q\r"
+  },
+  {
+   "when": "This computer's password \\(for sudo\\)",
+   "type": "autoflash\r",
+   "times": 6,
+   "optional": true
+  },
+  {
+   "when": "\\(y/N[^)]*\\)|\\(Y/n[^)]*\\)",
+   "type": "y\r",
+   "times": 3,
+   "optional": true
+  },
+  {
+   "when": "\\[[Yy]/n\\]",
+   "type": "n\r",
+   "optional": true
+  }
+ ],
+ "expect": {
+  "exit": 130
+ }
+}

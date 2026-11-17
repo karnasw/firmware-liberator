@@ -1,12 +1,13 @@
 // The website's build: the repository's Markdown (src/site.mjs) rendered in
 // the layout under src/layouts, written out as files for the Worker.
-import { copyFileSync, globSync, mkdirSync } from "node:fs";
+import { appendFileSync, copyFileSync, globSync, mkdirSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig, passthroughImageService } from "astro/config";
 import { satteri } from "@astrojs/markdown-satteri";
 import sitemap from "@astrojs/sitemap";
-import { PICTURES, ROOT, pages, rewrite } from "./src/site.mjs";
+import { PICTURES, ROOT, SITE, pages, retired, rewrite } from "./src/site.mjs";
+import { llmsFigures, loadStats } from "./src/stats.mjs";
 
 const onSite = pages();
 
@@ -34,10 +35,24 @@ const pictures = {
   },
 };
 
+// llms.txt, written by hand in public/, with the headline figures after it
+// (src/stats.mjs) while they are fresh: never a stale figure without its date.
+const figures = {
+  name: "llms-figures",
+  hooks: {
+    "astro:build:done": async ({ dir }) => {
+      const section = llmsFigures(await loadStats());
+      if (section) {
+        appendFileSync(join(fileURLToPath(dir), "llms.txt"), `\n${section}`);
+      }
+    },
+  },
+};
+
 export default defineConfig({
-  site: "https://firmwareliberator.com",
+  site: SITE,
   build: { format: "file" },
   image: { service: passthroughImageService() },
   markdown: { processor: satteri({ mdastPlugins: [links] }) },
-  integrations: [sitemap(), pictures],
+  integrations: [sitemap({ filter: (page) => !retired(new URL(page).pathname) }), pictures, figures],
 });

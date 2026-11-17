@@ -10,16 +10,18 @@
 
 Two kinds of finding:
 
-- **This computer's own**, by value: each value in .env; the eWeLink account
-  (captures/settings.json) and each plug's record (captures/plugs/*/plug.json);
-  each backed-up plug's MAC, in any form, and the Sonoff settings in its backup
+- **This computer's own**, by value: each value in .env, in .env.infra
+  (the project's tokens, keys and private addresses) and in the emulator
+  suites' credentials (tools/repo/emulator_stats.py CREDENTIALS); the eWeLink account
+  (captures/settings.json) and each device's record (captures/devices/*/device.json);
+  each backed-up device's MAC, in any form, and the Sonoff settings in its backup
   (its eWeLink keys, the Wi-Fi it was set up on); the addresses real runs - not
-  the emulator's - found plugs and this computer at; and each line of
+  the emulator's - found devices and this computer at; and each line of
   tools/repo/leak-scan.local, which Git ignores: more of your own (a router, a name).
 - **Anyone's**, by their shape: a MAC address that could be a real device's -
   not locally administered, and not one of the made-up ones tools/repo/leak-scan-allow
   lists; a UUID that could be a device's apikey or id (same allow-list); a
-  private key; a GitHub, AWS, Google or Slack token; disassembly or decompiler
+  private key; a Cloudflare, GitHub, AWS, Google or Slack token; disassembly or decompiler
   output (the S61 research tools make it - commit the tool, not its dump); and
   a packet capture (.pcap/.pcapng), whose frames carry a network's credentials.
 
@@ -52,6 +54,9 @@ sys.path.insert(0, str(ROOT))
 ALLOW_FILE = Path(__file__).resolve().parent / "leak-scan-allow"
 LOCAL_FILE = Path(__file__).resolve().parent / "leak-scan.local"
 CAPTURES = ROOT / "captures"
+# The maintainer's tokens, keys and private addresses for the project's
+# services (.env.infra.example).
+INFRA_FILE = ROOT / "tools" / "repo" / ".env.infra"
 # The emulator's own network and the computer itself: not anyone's real address.
 EMULATOR_NETWORKS = [ipaddress.ip_network(n) for n in ("192.168.60.0/24", "127.0.0.0/8", "0.0.0.0/32")]
 SHORTEST = 4  # values shorter than this match too much to mean anything
@@ -59,6 +64,10 @@ SHORTEST = 4  # values shorter than this match too much to mean anything
 MAC_TEXT = re.compile(r"(?<![0-9A-Fa-f:-])([0-9A-Fa-f]{2})([:-])([0-9A-Fa-f]{2})(?:\2[0-9A-Fa-f]{2}){4}(?![0-9A-Fa-f:-])")
 TOKENS = {
     "a private key": re.compile(r"-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----"),
+    # An account's (cfat_) or a user's (cfut_) API token. One made before
+    # Cloudflare gave them a prefix has no shape to find: only its value, as
+    # .env.infra holds it (own values, below).
+    "a Cloudflare API token": re.compile(r"\bcf[au]t_[A-Za-z0-9_-]{20,}"),
     "a GitHub token": re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{60,})"),
     "an AWS access key": re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
     "a Google API key": re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
@@ -104,6 +113,14 @@ def made_up_mac(mac: str) -> bool:
     return bool(int(pairs[0], 16) & 0x03) or bool({":".join(pairs), "-".join(pairs)} & allowed())
 
 
+def model_name(name: object) -> bool:
+    """Whether an eWeLink name is a product model the tool converts: the name
+    eWeLink gives a device until its owner renames it, which is no one's own
+    and which the docs name throughout."""
+    from tools.autoflash import kinds
+    return isinstance(name, str) and any(kind.product.fullmatch(name.strip()) for kind in kinds.EVERY)
+
+
 def mac_forms(mac: str) -> set[str]:
     hexes = mac.lower().replace(":", "").replace("-", "")
     pairs = [hexes[i:i + 2] for i in range(0, 12, 2)]
@@ -127,50 +144,70 @@ def own_values() -> dict[str, str]:
     for key, value in env.items():
         add(value, f"a value in .env ({key})")
     try:
+        infra = credentials.parse(INFRA_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        infra = {}
+    for key, value in infra.items():
+        add(value, f"a value in .env.infra ({key})")
+    # The emulator suites' service token, kept in this computer's home.
+    from tools.repo import emulator_stats
+    try:
+        emulator = credentials.parse(emulator_stats.CREDENTIALS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        emulator = {}
+    for key, value in emulator.items():
+        add(value, f"a value in the emulator suites' credentials ({key})")
+    try:
         add(json.loads((CAPTURES / "settings.json").read_text())["ewelink_email"], "the eWeLink account")
     except (OSError, ValueError, KeyError):
         pass
     dumps: dict[str, bytes] = {}
-    for plug in sorted((CAPTURES / "plugs").glob("*")):
-        try:
-            record = json.loads((plug / "plug.json").read_text())
-        except (OSError, ValueError):
-            record = {}
-        # A test copy (copy_plug.py) goes by a MAC made up for it - the docs'
+    # Under the names releases before 3.0.0 gave them too (plugs/, plug.json),
+    # where the tool has not run since to rename them.
+    for device in sorted([*(CAPTURES / "devices").glob("*"), *(CAPTURES / "plugs").glob("*")]):
+        record = {}
+        for name in ("device.json", "plug.json"):
+            try:
+                record = json.loads((device / name).read_text())
+                break
+            except (OSError, ValueError):
+                continue
+        # A test copy (copy_device.py) goes by a MAC made up for it - the docs'
         # 12:34:56:ab:cd:ef - which no device has, and which every test may
-        # use: the plug it was copied from (test_copy_of) is what to look for.
+        # use: the device it was copied from (test_copy_of) is what to look for.
         # Only a MAC that cannot be a device's is let off so.
         copy = bool(record.get("test_copy_of"))
 
         def add_mac(mac: str, copy: bool = copy) -> None:
             if not (copy and made_up_mac(mac)):
                 for form in mac_forms(mac):
-                    add(form, "a plug's MAC")
+                    add(form, "a device's MAC")
 
-        if re.fullmatch(r"([0-9a-f]{2}-){5}[0-9a-f]{2}", plug.name):  # each plug's folder is its MAC
-            add_mac(plug.name)
-        for field in ("ewelink_id", "ewelink_name"):
-            add(record.get(field), f"a plug's eWeLink {field.split('_')[1]}")
+        if re.fullmatch(r"([0-9a-f]{2}-){5}[0-9a-f]{2}", device.name):  # each device's folder is its MAC
+            add_mac(device.name)
+        add(record.get("ewelink_id"), "a device's eWeLink id")
+        if not model_name(record.get("ewelink_name")):
+            add(record.get("ewelink_name"), "a device's eWeLink name")
         if record.get("mac"):
             add_mac(record["mac"])
         if record.get("test_copy_of"):
             for form in mac_forms(record["test_copy_of"]):
-                add(form, "a plug's MAC")
-        backup = plug / "sonoff-backup"
+                add(form, "a device's MAC")
+        backup = device / "sonoff-backup"
         try:
-            from tools.autoflash.plugs import mac_from_efuse
+            from tools.autoflash.records import mac_from_efuse
             add_mac(mac_from_efuse((backup / "efuse.bin").read_bytes()))
             flash = (backup / "flash.bin").read_bytes()
             dumps[hashlib.sha256(flash).hexdigest()] = flash
         except (OSError, ValueError, ImportError):
             pass
-        for state in plug.glob("runs/*/autoflash-state.json"):
+        for state in device.glob("runs/*/autoflash-state.json"):
             try:
                 run = json.loads(state.read_text())
             except (OSError, ValueError):
                 continue
             for key, value in {**run.get("inputs", {}), **run.get("captures", {})}.items():
-                if key.endswith(("plug_ip", "listen_ip")) and isinstance(value, str):
+                if key.endswith(("device_ip", "plug_ip", "listen_ip")) and isinstance(value, str):
                     try:
                         address = ipaddress.ip_address(value)
                     except ValueError:
@@ -204,10 +241,10 @@ def needle_pattern(value: str) -> re.Pattern[str]:
 # -- looking --------------------------------------------------------------------
 
 def own_bytes(values: dict[str, str]) -> list[tuple[str, bytes]]:
-    """Each plug's MAC as a binary file holds it: six bytes, either way round."""
+    """Each device's MAC as a binary file holds it: six bytes, either way round."""
     raw = []
     for value, what in values.items():
-        if what == "a plug's MAC" and re.fullmatch(r"[0-9a-f]{12}", value):
+        if what == "a device's MAC" and re.fullmatch(r"[0-9a-f]{12}", value):
             raw += [(what, bytes.fromhex(value)), (what, bytes.fromhex(value)[::-1])]
     return raw
 
@@ -257,7 +294,7 @@ class Scanner:
         self.raw(where, data)
 
     def raw(self, where: str, data: bytes) -> None:
-        """Any file, text or not: a plug's MAC as six bytes."""
+        """Any file, text or not: a device's MAC as six bytes."""
         for what, raw in self.own_raw:
             if raw in data:
                 self.findings.append(Finding(where, f"{what}, as bytes"))

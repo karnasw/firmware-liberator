@@ -52,7 +52,7 @@ def report_failure(exception, message)
       client.POST(format("session=%s\nreason=%s\n", session, reason.asstring()))
       client.close()
     else
-      print("AUTOFLASH report not sent: the plug's Wi-Fi is down")
+      print("AUTOFLASH report not sent: the device's Wi-Fi is down")
     end
   except .. as report_exception, report_message
     print("AUTOFLASH failure report not sent:", report_exception, report_message)
@@ -82,11 +82,11 @@ def pause(ms)
 end
 
 # How long failed requests are worth trying again: 20 seconds in all, for the
-# whole phase.  While a phase runs the plug does nothing else - not even read
+# whole phase.  While a phase runs the device does nothing else - not even read
 # its energy meter, whose readings then pile up until its web server stops
 # answering for good, after 70-90 seconds busy (a real S60TPG).  A phase takes
 # under a minute, so retrying stops well short of that.  A router restart takes
-# longer: this computer runs the step again once the plug is back.
+# longer: this computer runs the step again once the device is back.
 var retry_spent = 0   # ms spent retrying in this phase, all failures together
 class retry_window
   var since
@@ -101,7 +101,7 @@ end
 
 # webclient's get_string() waits for ever on a reply that stops part way with
 # the connection still open - a router restarting mid-block, say - and the
-# plug then answers nothing until it is switched off and on (Tasmota reads a
+# device then answers nothing until it is switched off and on (Tasmota reads a
 # body with no time limit: arendst/Tasmota#25139).  So replies are read here
 # by hand, and one silent for five seconds is given up, to be asked for again.
 # This computer's replies always say how long they are.
@@ -171,7 +171,7 @@ def fetch_table(path, expected_hash, what)
   window.done()
   # Given up with the Wi-Fi still down: that is the reason, whatever was tried first.
   guard(attempt > 0 && (reply[0] >= 0 || tasmota.wifi("up")),
-        "the plug's Wi-Fi went down and was not back within 20 seconds")
+        "the device's Wi-Fi went down and was not back within 20 seconds")
   guard(reply[0] == 200, format("%s GET returned HTTP %i after %i attempts", what, reply[0], attempt))
   var encoded = reply[1]
   guard(size(encoded) == 8192, what + " body length differs")
@@ -232,7 +232,7 @@ def best_effort_report(status, rollback)
       client.close()
       print(format("AUTOFLASH COMMIT report HTTP %i", code))
     else
-      print("AUTOFLASH report not sent: the plug's Wi-Fi is down")
+      print("AUTOFLASH report not sent: the device's Wi-Fi is down")
     end
   except .. as report_exception, report_message
     print("AUTOFLASH COMMIT report failed:", report_exception, report_message)
@@ -241,8 +241,8 @@ end
 
 def restore_source_layout(old_table, old_otadata)
   try
-    flash.write(0x1D000, old_otadata)
-    guard(flash.read(0x1D000, 0x2000) == old_otadata, "old otadata restore differs")
+    flash.write(@OLD_OTADATA@, old_otadata)
+    guard(flash.read(@OLD_OTADATA@, 0x2000) == old_otadata, "old otadata restore differs")
     flash.write(0x8000, old_table)
     guard(flash.read(0x8000, 0x1000) == old_table, "source table restore differs")
     print("AUTOFLASH ROLLBACK PASS: source table and live old otadata restored; DO NOT REBOOT")
@@ -257,20 +257,20 @@ end
 def run_commit(provided_token)
   guard(armed, "this commit closure has already been consumed")
   guard(provided_token == arm_token, "arming token differs")
-  guard(tasmota.arch() == "esp32c3", "device is not ESP32-C3")
+  guard(tasmota.arch() == "@ARCH@", "device is not @ARCH@")
   guard(flash.size() == 0x400000, "flash is not exactly 4 MiB")
   guard(flash.current_ota() == 1, "commit requires old ota_1 to be running")
   guard(sha_region(0x8000, 0x1000) == source_table_hash, "source table changed")
   guard(sha_region(0x9000, 0x5000) == live_nvs_hash, "NVS changed since preflight")
-  guard(sha_region(0x20000, safeboot_length) == safeboot_hash,
+  guard(sha_region(@STAGE_ADDRESS@, safeboot_length) == safeboot_hash,
         "staged Safeboot SHA-256 differs")
-  guard(sha_region(0x20000 + safeboot_length, staging_pad_length) == staging_pad_hash,
+  guard(sha_region(@STAGE_ADDRESS@ + safeboot_length, staging_pad_length) == staging_pad_hash,
         "staged Safeboot sector padding is not erased")
 
   var target_table = fetch_table("/target-table", target_table_hash, "target table")
   var interim = fetch_table("/interim-table", interim_table_hash, "interim table")
   var old_table = flash.read(0x8000, 0x1000)
-  var old_otadata = flash.read(0x1D000, 0x2000)
+  var old_otadata = flash.read(@OLD_OTADATA@, 0x2000)
   armed = false
   var interim_in_place = false
 
@@ -289,7 +289,7 @@ def run_commit(provided_token)
     var sector = 0
     while offset < copy_length
       # Downward copy is overlap-safe: source is read before its lower destination is erased.
-      var data = flash.read(0x20000 + offset, 0x1000)
+      var data = flash.read(@STAGE_ADDRESS@ + offset, 0x1000)
       flash.write(0x10000 + offset, data)
       guard(flash.read(0x10000 + offset, 0x1000) == data,
             format("canonical Safeboot read-back differs at 0x%X", 0x10000 + offset))

@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Extract the stock S61 app from a flash dump, verified, ready to repackage.
 
 The app partition holds the firmware as the bootloader left it: decompressed and
@@ -5,11 +6,11 @@ CRC-striped (32 data bytes, 2 CRC bytes). Its rt_ota RBL header survives just
 before the download partition (logical 0x25ffa0) and carries the decompressed
 size and the FNV-1a hash of the decompressed image, so the extraction can be
 checked byte-for-byte. The compressed OTA body itself is not kept anywhere, so to
-put a converted plug back to stock the app is packed again as an RBL (rbl.py,
+put a converted device back to stock the app is packed again as an RBL (rbl.py,
 byte for byte what the Beken SDK's packer makes with -c gzip -s aes and
 RT-Thread's public default key), which the stock bootloader applies from the
 download slot: `extract()` for the app, `stock_rbl()` for the RBL, which the
-conversion tool makes from the public S61 dump when a plug goes back.
+conversion tool makes from the public S61 dump when a device goes back.
 
   python3 stock_app.py dump.bin [-o stock_app_1.0.2.bin]
 """

@@ -44,17 +44,17 @@ class MdnsTests(unittest.TestCase):
         self.assertEqual(records[2]["value"], "192.0.2.96")
 
     def test_only_answers_count_as_devices(self):
-        # The eWeLink app on a phone asks for devices, listing the plug it
+        # The eWeLink app on a phone asks for devices, listing the device it
         # already knows as a known answer: a question that mentions eWeLink.
         service = encode_name("_ewelink._tcp.local")
         instance = encode_name("eWeLink_10000abcde._ewelink._tcp.local")
         known = service + struct.pack("!HHIH", 12, 1, 4500, len(instance)) + instance
         question = service + struct.pack("!HH", 12, 1)
         from_the_app = struct.pack("!HHHHHH", 0, 0x0000, 1, 1, 0, 0) + question + known
-        from_a_plug = struct.pack("!HHHHHH", 0, 0x8400, 0, 1, 0, 0) + known
+        from_a_device = struct.pack("!HHHHHH", 0, 0x8400, 0, 1, 0, 0) + known
         self.assertFalse(is_response(from_the_app))
         self.assertFalse(is_response(make_query()))
-        self.assertTrue(is_response(from_a_plug))
+        self.assertTrue(is_response(from_a_device))
         self.assertFalse(is_response(b"\x00"))
 
 
@@ -90,7 +90,7 @@ class SweepTests(unittest.TestCase):
             self.assertEqual(sweep_targets(), [])
 
     def test_every_network_is_swept_not_just_the_routes(self):
-        # Windows' multicast route was QEMU's NAT network; the plug was on the other.
+        # Windows' multicast route was QEMU's NAT network; the device was on the other.
         with addresses("10.0.2.15", {"10.0.2.15", "192.168.60.10"}):
             targets = sweep_targets()
         self.assertIn("10.0.2.2", targets)
@@ -126,7 +126,7 @@ class NetworkTests(unittest.TestCase):
 
     def test_the_ids_that_answered(self):
         packets = [
-            {"source": "192.0.2.50", "records": [{"type": "TXT", "value": ["type=plug", "id=10000abcde"]}]},
+            {"source": "192.0.2.50", "records": [{"type": "TXT", "value": ["type=device", "id=10000abcde"]}]},
             {"source": "192.0.2.51", "records": [{"type": "PTR", "value": "x"}]},
             {"source": "192.0.2.52", "parse_error": "truncated"},
         ]

@@ -1,0 +1,16 @@
+---
+// The figures behind a chart, as a table: every value it shows, without
+// hovering. `columns`: [heading, key, number?].
+const { caption, columns, rows } = Astro.props;
+const shown = (value, number) =>
+  value === null || value === undefined ? (number ? "fewer than 5" : "") : number ? Number(value).toLocaleString("en") : value;
+---
+<details class="table-view">
+  <summary>{caption}</summary>
+  <table>
+    <thead><tr>{columns.map(([heading, , number]) => <th class:list={{ number }}>{heading}</th>)}</tr></thead>
+    <tbody>
+      {rows.map((row) => <tr>{columns.map(([, key, number]) => <td class:list={{ number }}>{shown(row[key], number)}</td>)}</tr>)}
+    </tbody>
+  </table>
+</details>

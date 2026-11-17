@@ -1,0 +1,61 @@
+From c378d69b07393c766440e2337cf134e203a9809e Mon Sep 17 00:00:00 2001
+From: Adam Matthews <52178922+adamsthws@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 01:51:16 +0000
+Subject: [PATCH] esp32c3 saradc: each ADC1 channel's reading can be set
+
+Only PICSimLab can give the emulated ADC a reading
+(qemu_picsimlab_set_apin), so run on its own every channel reads 0. Firmware
+that watches a board's thermistor takes that as far too hot: a Sonoff BASICR4,
+whose NTC divider reads under 580 mV only when overheating, then refuses its
+updates, as it is built to.
+
+The new properties adc1_ch0 to adc1_ch4 (GPIO0-4) hold the raw 12-bit sample
+each channel reads, as gpio_in holds the pins' input levels. 0 by default, so
+nothing changes unless one is set:
+
+  -global driver=misc.esp32c3.saradc,property=adc1_ch3,value=2700
+---
+ hw/misc/esp32c3_saradc.c | 17 ++++++++++++++++-
+ 1 file changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/hw/misc/esp32c3_saradc.c b/hw/misc/esp32c3_saradc.c
+index 5e3e48e..c2e1146 100644
+--- a/hw/misc/esp32c3_saradc.c
++++ b/hw/misc/esp32c3_saradc.c
+@@ -12,6 +12,7 @@
+ #include "hw/misc/esp32c3_saradc.h"
+ #include "hw/misc/esp32c3_reg.h"
+ #include "hw/irq.h"
++#include "hw/qdev-properties.h"
+ 
+ 
+ #define DEBUG 0
+@@ -122,10 +123,24 @@ static void esp32c3_saradc_reset_enter(Object *obj, ResetType type)
+     memset(s->mem, 0, sizeof(s->mem));
+ }
+ 
++static Property esp32c3_saradc_properties[] = {
++    /* The raw 12-bit sample each ADC1 channel (GPIO0-4) reads, for running
++     * without PICSimLab driving them: firmware that checks a board's
++     * thermistor otherwise reads 0, which can mean far too hot. E.g.
++     * -global driver=misc.esp32c3.saradc,property=adc1_ch3,value=2700 */
++    DEFINE_PROP_UINT16("adc1_ch0", Esp32c3SarAdcState, ADC_values[0], 0),
++    DEFINE_PROP_UINT16("adc1_ch1", Esp32c3SarAdcState, ADC_values[1], 0),
++    DEFINE_PROP_UINT16("adc1_ch2", Esp32c3SarAdcState, ADC_values[2], 0),
++    DEFINE_PROP_UINT16("adc1_ch3", Esp32c3SarAdcState, ADC_values[3], 0),
++    DEFINE_PROP_UINT16("adc1_ch4", Esp32c3SarAdcState, ADC_values[4], 0),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
+ static void esp32c3_saradc_class_init(ObjectClass * klass, void * data)
+ {
+     ResettablePhases rp;
+-    //DeviceClass * dc = DEVICE_CLASS(klass);
++    DeviceClass * dc = DEVICE_CLASS(klass);
++    device_class_set_props(dc, esp32c3_saradc_properties);
+     ResettableClass *rc = RESETTABLE_CLASS(klass);
+     resettable_class_set_parent_phases(rc, esp32c3_saradc_reset_enter, NULL, NULL, &rp);
+ }
+-- 
+2.43.0
+

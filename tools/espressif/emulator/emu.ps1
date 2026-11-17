@@ -2,14 +2,14 @@
 The emulator with Windows as the computer: run the conversion tool on Windows
 against the emulated S60 (see docs/emulator.md, "On Windows").
 
-    tools\espressif\emulator\emu.ps1 -Cloud     plug and tool online (real plug must be unplugged)
+    tools\espressif\emulator\emu.ps1 -Cloud     device and tool online (real device must be unplugged)
 
-Options as emu.sh's: -Cloud -Fresh -Pcap -Rebuild -NoFirewall, -Plug <MAC> for
-which backed-up plug (asked in the emulator's window when there are several),
+Options as emu.sh's: -Cloud -Fresh -Pcap -Rebuild -NoFirewall, -Device <MAC> for
+which backed-up device (asked in the emulator's window when there are several),
 and -Distro to pick the WSL distribution (Ubuntu-24.04 otherwise).
 
 Opens the emulator (emu.sh --windows, under WSL) in a window of its own - the
-plug's power and serial log are there - and the link that puts Windows on its
+device's power and serial log are there - and the link that puts Windows on its
 home network in another. This window is left for the conversion:
 
     .\start.cmd
@@ -19,7 +19,7 @@ the adapter - is listed first, and installed after one question
 (tools\espressif\emulator\windows-bootstrap.ps1 -LocalEmulator).
 #>
 param([switch]$Cloud, [switch]$Fresh, [switch]$Pcap, [switch]$Rebuild, [switch]$NoFirewall,
-      [string]$Plug = "", [string]$Distro = "Ubuntu-24.04")
+      [string]$Device = "", [string]$Distro = "Ubuntu-24.04")
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 
@@ -45,9 +45,9 @@ if ($Fresh) { $flags += "--fresh" }
 if ($Pcap) { $flags += "--pcap" }
 if ($Rebuild) { $flags += "--rebuild" }
 if ($NoFirewall) { $flags += "--no-firewall" }
-if ($Plug) {
-    if ($Plug -notmatch '^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$') { throw "-Plug takes a MAC address, such as 58:cf:79:01:02:03" }
-    $flags += "--plug=$Plug"
+if ($Device) {
+    if ($Device -notmatch '^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$') { throw "-Device takes a MAC address, such as 58:cf:79:01:02:03" }
+    $flags += "--device=$Device"
 }
 
 # One command line, not a list: Start-Process joins a list without quoting.
@@ -66,12 +66,12 @@ if ($link) {
 
 Write-Host @"
 
-The emulator is starting in its own window$(if ($Cloud) { " - confirm the real plug is unplugged there" }),
+The emulator is starting in its own window$(if ($Cloud) { " - confirm the real device is unplugged there" }),
 and the link in another. Once the link says Connected, run the conversion here:
 
     .\start.cmd
 
-When it asks you to switch the plug off and on, type in the emulator window:
-    plug restart | plug off | plug on | plug cycle 7
+When it asks you to switch the device off and on, type in the emulator window:
+    device restart | device off | device on | device cycle 7
 Your home Wi-Fi there is PICSimLabWifi, with no password.
 "@

@@ -5,18 +5,18 @@ Two parts, decoded from stock 1.2.0 (devices/sonoff-s60/esphome.yaml applies bot
 
 - The board's factor: at start-up stock reads GPIO6, GPIO10 and GPIO19 with
   pull-ups, and scales voltage and power by 1.02 unless all three read high.
-  Nothing records it, so it is read from the plug each time.
-- The plug's factory calibration, in Sonoff's NVS (namespace user_unusual,
+  Nothing records it, so it is read from the device each time.
+- The device's factory calibration, in Sonoff's NVS (namespace user_unusual,
   blob content, JSON field calib_coefficient0): "1,1,[9 numbers],[9 numbers]",
   two sets of a, b, c for current, voltage and power - the first below 300 W,
   the second from 300 W on - applied as a*x^2/1e7 + b*x/1e6 + c/1e6 in mA, mV
-  and mW.  A plug converted through Tasmota has lost it (the new layout
+  and mW.  A device converted through Tasmota has lost it (the new layout
   clears NVS), but its Sonoff backup keeps it (tools.autoflash.wifi.backup_calibration).
 
 Tasmota scales each reading by one whole number per quantity (VoltageCal,
 CurrentCal, PowerCal), which it starts from the meter chip's own numbers
 whenever one holds Tasmota's default.  So the board's factor and each set-1
-b term carry over exactly; the a and c terms (none on the plugs examined so
+b term carry over exactly; the a and c terms (none on the devices examined so
 far) and the set from 300 W on do not.  Its energy is the meter's pulses
 times PowerCal, so it is calibrated with the power.
 """
@@ -55,7 +55,7 @@ def board_factor(levels: list[int]) -> float:
 def tasmota_values(chip: dict[str, int], factor: float,
                    coefficients: list[float] | None = None) -> dict[str, int]:
     """Tasmota's three calibration settings for the chip's own (`chip`), the
-    board's factor and, if known, the plug's factory calibration.  Never one
+    board's factor and, if known, the device's factory calibration.  Never one
     of Tasmota's defaults, which it would take from the chip again."""
     values = {}
     for name, (term, scaled) in _TASMOTA_TERMS.items():

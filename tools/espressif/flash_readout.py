@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Read a stock plug's whole flash over Wi-Fi, then put it back to stock.
+"""Read a stock device's whole flash over Wi-Fi, then put it back to stock.
 
-This is not the conversion. It installs a small read-only firmware into the
-plug's spare app slot, reads the plug's whole memory through it, and saves
-that under captures/flash-readout/. Switching the plug off and on afterwards
+This is not the conversion. It installs the conversion's bridge into the device's
+spare app slot, only reads the device's whole memory through it, and saves that
+under captures/flash-readout/. Switching the device off and on afterwards
 boots its Sonoff firmware again, as it was.
 
 What it costs: the spare slot is overwritten, so whatever was there - often
-the Sonoff version the plug had before its last update - is gone. The Sonoff
+the Sonoff version the device had before its last update - is gone. The Sonoff
 firmware it is running, its settings and its pairing are kept.
 
     python3 tools/espressif/flash_readout.py
@@ -30,7 +30,6 @@ from typing import Callable
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from tools.espressif.analyze_vendor_ota import analyze  # noqa: E402
 from tools.autoflash import hostsys, kinds, output, safety_locks  # noqa: E402
 from tools.autoflash.output import PROBLEM_RE  # noqa: E402
 from tools.autoflash.prompts import (  # noqa: E402
@@ -43,8 +42,9 @@ from tools.autoflash.prompts import (  # noqa: E402
     warning_box,
 )
 from tools.ewelink.discover_ewelink import discover  # noqa: E402
-from tools.espressif.dump_stock_flash import fetch, is_readout_bridge, save_dump  # noqa: E402
-from tools.autoflash.account import find_ewelink_plugs  # noqa: E402
+from tools.espressif import chips  # noqa: E402
+from tools.espressif.dump_stock_flash import is_bridge, save_dump  # noqa: E402
+from tools.autoflash.account import find_ewelink_devices  # noqa: E402
 from tools.autoflash.firewall import DELIVERY_PORTS  # noqa: E402
 from tools.autoflash.names import (  # noqa: E402
     LEGACY_BRIDGE_PASSWORD,
@@ -54,17 +54,10 @@ from tools.autoflash.names import (  # noqa: E402
 )
 from tools.autoflash.runs import SETTINGS_PATH  # noqa: E402
 
-# The readout build of the conversion bridge, at the same version.
-READOUT_OTA = Path("captures/flash-readout/autoflash-bridge-sonoff-s60-flash-readout-4.4.4.ota")
-# --control: a conversion bridge, only to see whether it starts on this plug.
-# 4.4.4 is the one the conversion sends.  Pinned as in SHA256SUMS.
-CONTROL_FILES = {
-    "4.4.4": (Path("artifacts/autoflash-bridge-sonoff-s60-4.4.4.ota"),
-              "4424af5d59258f5c1998269c65bffc5d1341f519352fdc1bfd9c76e37b34f5bb"),
-}
+# The conversion's own bridge, the one it sends, as firmware.json pins it.
+READOUT_OTA = Path(chips.ESP32C3.pin("bridge")["file"])
+READOUT_SHA256 = chips.ESP32C3.pin("bridge")["sha256"]
 CONFIRM_WORD = "readout"
-# How a bridge names itself: "bridge v5" up to v5, "bridge 4.4.1" from then on.
-BRIDGE_ID = rb"bridge (?:v\d+|\d+\.\d+\.\d+)"
 BRIDGE_AP_HOST = "192.168.4.1"
 STAGES = 6
 STOCK_LAN_PORT = 8081
@@ -78,60 +71,28 @@ def stage(number: int, title: str) -> None:
     print(f"\n[{number}/{STAGES}] {title}")
 
 
-def check_bridge_image(path: Path, marker: bytes) -> None:
-    """A locally built bridge is checked as an image here, not pinned."""
-    try:
-        data = path.read_bytes()
-        report = analyze(data)
-    except (OSError, ValueError) as exc:
-        raise Stop(f"the firmware {path} cannot be used: {exc}. "
-                   "Build it as archive/bridge/README.md describes") from exc
-    wrapper, esp = report["wrapper"], report["esp_image"]
-    if not (wrapper["payload_crc32_valid"] and wrapper["record_crc32_valid"]
-            and esp["chip_is_esp32_c3"] and esp["checksum_valid"] and esp["sha256_valid"] is not False):
-        raise Stop(f"{path} failed its integrity checks; rebuild it")
-    if not re.search(marker, data):
-        raise Stop(f"{path} is not the expected bridge build")
-
-
-def check_readout_file(path: Path) -> None:
-    check_bridge_image(path, BRIDGE_ID + rb" flash readout")
-
-
-def check_control_file(path: Path, expected: str | None) -> None:
-    if expected is None:
-        check_bridge_image(path, BRIDGE_ID + rb"\n")
-        return
+def check_bridge_file(path: Path) -> None:
     try:
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError as exc:
         raise Stop(f"cannot read {path}: {exc}") from exc
-    if digest != expected:
+    if digest != READOUT_SHA256:
         raise Stop(f"{path} does not match its pinned SHA-256")
 
 
-def is_any_bridge(host: str) -> bool:
-    """True when `host` answers as any bridge: "bridge v5" or "bridge 4.4.1" on."""
-    try:
-        status, _ = fetch(host, "/status", timeout=5)
-    except OSError:
-        return False
-    return re.match(BRIDGE_ID, status) is not None
-
-
-def choose_plug(plug_ip: str | None) -> str:
-    if plug_ip:
-        return plug_ip
+def choose_device(device_ip: str | None) -> str:
+    if device_ip:
+        return device_ip
     while True:
-        print("Looking for Sonoff plugs on your network...")
-        plugs = find_ewelink_plugs()
-        if len(plugs) == 1:
-            print(f"Found {plugs[0][1]} at {plugs[0][0]}.")
-            return plugs[0][0]
-        if plugs:
-            index = ask_choice("Which plug should be read", [f"{name} at {ip}" for ip, name in plugs])
-            return plugs[index][0]
-        if ask_choice("No Sonoff plug answered. Check it is on, with LAN Control on in eWeLink",
+        print("Looking for Sonoff devices on your network...")
+        devices = find_ewelink_devices()
+        if len(devices) == 1:
+            print(f"Found {devices[0][1]} at {devices[0][0]}.")
+            return devices[0][0]
+        if devices:
+            index = ask_choice("Which device should be read", [f"{name} at {ip}" for ip, name in devices])
+            return devices[index][0]
+        if ask_choice("No Sonoff device answered. Check it is on, with LAN Control on in eWeLink",
                       ["Look again"]) == 0:
             continue
 
@@ -146,12 +107,12 @@ def account_email(given: str | None) -> str:
     return ask_text("eWeLink account email", default=last)
 
 
-def query_plug(plug_ip: str, email: str, env: dict[str, str], work: Path) -> tuple[str, kinds.Kind]:
-    """The plug's stock version and its kind, after making sure it is one
+def query_device(device_ip: str, email: str, env: dict[str, str], work: Path) -> tuple[str, kinds.Kind]:
+    """The device's stock version and its kind, after making sure it is one
     this tool converts."""
-    report = discover(8.0, None, plug_ip)
+    report = discover(8.0, None, device_ip)
     if not report["packets"]:
-        raise Stop(f"the plug at {plug_ip} did not answer; check LAN Control is on in eWeLink")
+        raise Stop(f"the device at {device_ip} did not answer; check LAN Control is on in eWeLink")
     mdns = work / "mdns.json"
     mdns.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     meta = work / "ota-metadata.json"
@@ -171,32 +132,32 @@ def query_plug(plug_ip: str, email: str, env: dict[str, str], work: Path) -> tup
     model, version = str(query.get("model", "")), str(query["version"])
     kind = kinds.for_stock_model(model)
     if kind is None:
-        raise Stop(f"{plug_ip} is a {model or 'device of unknown model'}, not one this tool converts")
+        raise Stop(f"{device_ip} is a {model or 'device of unknown model'}, not one this tool converts")
     return version, kind
 
 
 def confirmed(version: str, control: bool = False) -> bool:
     if control:
         opening = [
-            "This replaces the plug's spare app slot with a conversion bridge, only",
+            "This replaces the device's spare app slot with a conversion bridge, only",
             "to see whether it starts. Nothing is read, and nothing is installed",
             "after it. The",
         ]
     else:
-        opening = ["This replaces the plug's spare app slot with a read-only firmware. The"]
+        opening = ["This replaces the device's spare app slot with the bridge, only to read from. The"]
     warning_box("Before going on", [
         *opening,
         f"Sonoff {version} it is running, its settings and its eWeLink pairing stay;",
         "whatever is in the spare slot (often an older Sonoff version) is lost.",
-        "Until you switch the plug off and on at the end, eWeLink cannot control it.",
-        "As with every first install on a stock plug, there is no automatic",
+        "Until you switch the device off and on at the end, eWeLink cannot control it.",
+        "As with every first install on a stock device, there is no automatic",
         "rollback if the new firmware failed to start at all.",
     ])
     question = f"Type {CONFIRM_WORD.upper()} to go ahead - anything else stops, changing nothing: "
     return input(question).strip().lower() == CONFIRM_WORD
 
 
-def deliver(plug_ip: str, listen_ip: str, port: int, email: str, version: str,
+def deliver(device_ip: str, listen_ip: str, port: int, email: str, version: str,
             work: Path, env: dict[str, str], firmware: Path = READOUT_OTA,
             verbose: bool = False) -> int:
     """Run the reviewed sender with the recovery lock lifted only for it.
@@ -213,7 +174,7 @@ def deliver(plug_ip: str, listen_ip: str, port: int, email: str, version: str,
             hostsys.python_script(
                 "tools/espressif/serve_tasmota_ota.py",
                 "--listen-ip", listen_ip, "--listen-port", str(port),
-                "--device-ip", plug_ip, "--firmware", str(firmware),
+                "--device-ip", device_ip, "--firmware", str(firmware),
                 "--email", email, "--expected-current-version", version,
                 "--mdns-capture", str(work / "mdns.json"),
                 "--i-understand-stock-has-no-automatic-rollback", unbuffered=True),
@@ -259,7 +220,7 @@ def sender_line_kind(line: str) -> str:
 
 
 class SenderProgress:
-    """One line, redrawn in place, for how far the plug has got."""
+    """One line, redrawn in place, for how far the device has got."""
 
     def __init__(self, total: int) -> None:
         self.total = total
@@ -271,7 +232,7 @@ class SenderProgress:
         self.reached = max(self.reached, int(match.group(2).replace(",", "")) + 1)
         done = (f"{100 * min(self.reached, self.total) // self.total}%" if self.total
                 else f"{self.reached:,} bytes")
-        sys.stdout.write(f"\r  The plug is downloading: {done}   ")
+        sys.stdout.write(f"\r  The device is downloading: {done}   ")
         sys.stdout.flush()
         self.drawn = True
 
@@ -282,113 +243,107 @@ class SenderProgress:
             self.drawn = False
 
 
-def stock_answers(plug_ip: str) -> bool:
-    """True when the Sonoff firmware's LAN service is listening at `plug_ip`."""
+def stock_answers(device_ip: str) -> bool:
+    """True when the Sonoff firmware's LAN service is listening at `device_ip`."""
     try:
-        with socket.create_connection((plug_ip, STOCK_LAN_PORT), timeout=3):
+        with socket.create_connection((device_ip, STOCK_LAN_PORT), timeout=3):
             return True
     except OSError:
         return False
 
 
-def find_bridge(plug_ip: str, mac: str | None, *, timeout: float = 120.0,
-                probe: Callable[[str], bool] = is_readout_bridge,
+def find_bridge(device_ip: str, mac: str | None, *, timeout: float = 120.0,
+                probe: Callable[[str], bool] = is_bridge,
                 by_mac: Callable[[str, str], str | None] = hostsys.find_by_mac,
                 clock: Callable[[], float] = time.monotonic,
                 sleep: Callable[[float], None] = time.sleep) -> str | None:
-    """The readout bridge's address on the home network, if it joined it.
+    """The bridge's address on the home network, if it joined it.
 
-    It joins with the plug's own hardware address, so it is usually where the
-    plug was; if the router moved it, it is found by that address.
+    It joins with the device's own hardware address, so it is usually where the
+    device was; if the router moved it, it is found by that address.
     """
     started = clock()
     while clock() - started < timeout:
-        if probe(plug_ip):
-            return plug_ip
-        moved = by_mac(mac, plug_ip) if mac else None
-        if moved and moved != plug_ip and probe(moved):
+        if probe(device_ip):
+            return device_ip
+        moved = by_mac(mac, device_ip) if mac else None
+        if moved and moved != device_ip and probe(moved):
             return moved
         sleep(3.0)
     return None
 
 
-def wait_for_stock(plug_ip: str, timeout: float = 180.0) -> bool:
+def wait_for_stock(device_ip: str, timeout: float = 180.0) -> bool:
     started = time.monotonic()
     while time.monotonic() - started < timeout:
-        if any(ip == plug_ip for ip, _ in find_ewelink_plugs(timeout=5.0)):
+        if any(ip == device_ip for ip, _ in find_ewelink_devices(timeout=5.0)):
             return True
     return False
 
 
 def run(args: argparse.Namespace) -> int:
     print(__doc__.split("\n\n")[1])
-    print("Nothing on the plug changes until you type READOUT.")
+    print("Nothing on the device changes until you type READOUT.")
 
     stage(1, "Checking this computer")
-    if args.control:
-        firmware, expected = CONTROL_FILES[args.control]
-        probe = is_any_bridge
-        name = f"the published bridge ({args.control})"
-        check_control_file(ROOT / firmware, expected)
-    else:
-        firmware, probe, name = Path(args.firmware), is_readout_bridge, "the readout firmware"
-        check_readout_file(ROOT / firmware)
+    firmware, probe, name = READOUT_OTA, is_bridge, "the bridge"
+    check_bridge_file(ROOT / firmware)
     if not (ROOT / safety_locks.DIR / "RECOVERY_LOCK").exists():
         raise Stop("RECOVERY_LOCK is not in place; refusing to start from an unsafe state")
     print(f"{name[0].upper()}{name[1:]} and safety lock: OK")
 
-    stage(2, "Finding the plug")
-    plug_ip = choose_plug(args.plug_ip)
-    mac = hostsys.mac_of(plug_ip)
-    listen_ip = args.listen_ip or hostsys.local_ip_towards(plug_ip)
+    stage(2, "Finding the device")
+    device_ip = choose_device(args.device_ip)
+    mac = hostsys.mac_of(device_ip)
+    listen_ip = args.listen_ip or hostsys.local_ip_towards(device_ip)
     port = hostsys.first_free_port(listen_ip, DELIVERY_PORTS)
     if port is None:
         raise Stop(f"ports {DELIVERY_PORTS[0]} and {DELIVERY_PORTS[1]}-{DELIVERY_PORTS[-1]} are all in use")
 
-    stage(3, "Asking the plug what it is running")
+    stage(3, "Asking the device what it is running")
     email = account_email(args.email)
     env = {**os.environ, "EWELINK_PASSWORD": ask_secret(f"eWeLink password for {email}: ")}
     work = ROOT / "captures" / "flash-readout" / f"run-{time.strftime('%Y%m%d-%H%M%S')}"
     work.mkdir(parents=True, exist_ok=True)
-    version, kind = query_plug(plug_ip, email, env, work)
-    print(f"{kind.name} at {plug_ip}{f' ({mac})' if mac else ''}, running Sonoff {version}.")
+    version, kind = query_device(device_ip, email, env, work)
+    print(f"{kind.name} at {device_ip}{f' ({mac})' if mac else ''}, running Sonoff {version}.")
     if not confirmed(version, args.control):
-        print("Stopped. Nothing was sent to the plug.")
+        print("Stopped. Nothing was sent to the device.")
         return 1
 
     rule = None
     try:
         stage(4, f"Installing {name}")
-        if args.verbose or hostsys.local_rules_ignored(plug_ip):
-            for line in hostsys.firewall_advice(plug_ip, [port]):
+        if args.verbose or hostsys.local_rules_ignored(device_ip):
+            for line in hostsys.firewall_advice(device_ip, [port]):
                 print(line)
         if hostsys.active_firewall():
-            print("Adding a temporary firewall rule so the plug can fetch the firmware;")
+            print("Adding a temporary firewall rule so the device can fetch the firmware;")
             print("Windows will ask for permission - choose Yes." if hostsys.IS_WINDOWS
                   else "you may be asked for this computer's password.")
             try:
-                rule = hostsys.open_firewall(plug_ip, [port])
+                rule = hostsys.open_firewall(device_ip, [port])
             except OSError as exc:
                 print(f"Could not add it ({exc}); carrying on.")
             if rule is not None and rule.detail.get("paused") and args.verbose:
                 print("Python had been blocked from networks here (a \"Cancel\" in Windows")
                 print("Security, most likely): paused while this runs, put back afterwards.")
-        code = deliver(plug_ip, listen_ip, port, email, version, work, env, firmware, args.verbose)
+        code = deliver(device_ip, listen_ip, port, email, version, work, env, firmware, args.verbose)
         env.pop("EWELINK_PASSWORD", None)
         if code == 2:
-            raise Stop("the sender refused before contacting the plug; nothing was sent")
+            raise Stop("the sender refused before contacting the device; nothing was sent")
 
-        stage(5, f"Checking {name} started" if args.control else "Reading the plug's memory")
+        stage(5, f"Checking {name} started" if args.control else "Reading the device's memory")
         print(f"Waiting for {name} to start and join your Wi-Fi...")
-        host = find_bridge(plug_ip, mac, probe=probe)
+        host = find_bridge(device_ip, mac, probe=probe)
         while host is None:
-            # Any plug's: its MAC is not known for certain here.  Also by the
+            # Any device's: its MAC is not known for certain here.  Also by the
             # names of a readout build from before 4.4.4 (--firmware).
             network = find_ssid((SETUP_SSID_PREFIX, LEGACY_SETUP_PREFIX, LEGACY_BRIDGE_PREFIX))
-            if network is None and stock_answers(plug_ip):
+            if network is None and stock_answers(device_ip):
                 raise Stop(
-                    f"the plug restarted on its Sonoff firmware, so {name} is not running"
-                    f"{'' if args.control else ' and nothing was read'}. The plug is working as "
+                    f"the device restarted on its Sonoff firmware, so {name} is not running"
+                    f"{'' if args.control else ' and nothing was read'}. The device is working as "
                     "before (only its spare slot changed); there is no need to switch it off and "
                     f"on. The sender's output is in {(work / 'sender.log').relative_to(ROOT)}")
             if network is not None and args.control:
@@ -396,26 +351,26 @@ def run(args: argparse.Namespace) -> int:
                 break
             if network is None:
                 section(f"Neither {name} nor the Sonoff firmware is answering", [
-                    "The plug may still be starting up.",
+                    "The device may still be starting up.",
                 ])
                 ask_choice("Type 1 to look again", ["Look again"])
-                host = find_bridge(plug_ip, mac, timeout=30.0, probe=probe)
+                host = find_bridge(device_ip, mac, timeout=30.0, probe=probe)
                 continue
-            section("The readout firmware did not join your Wi-Fi, but its own network is up", [
+            section("The bridge did not join your Wi-Fi, but its own network is up", [
                 f"Connect this computer to the Wi-Fi network {network}",
                 (f"(password {LEGACY_BRIDGE_PASSWORD}), then come back here."
                  if network.startswith(LEGACY_BRIDGE_PREFIX) else "(open), then come back here."),
             ])
             ask_choice("Type 1 once this computer is on that network",
-                       [f"I've joined {network} - read the plug"])
-            host = BRIDGE_AP_HOST if is_readout_bridge(BRIDGE_AP_HOST) else None
+                       [f"I've joined {network} - read the device"])
+            host = BRIDGE_AP_HOST if is_bridge(BRIDGE_AP_HOST) else None
             if host is None:
-                print(f"Nothing answers as the readout firmware at {BRIDGE_AP_HOST} yet.")
+                print(f"Nothing answers as the bridge at {BRIDGE_AP_HOST} yet.")
         if args.control:
-            print(f"{name[0].upper()}{name[1:]} started on this plug ({host}): the Sonoff updater")
+            print(f"{name[0].upper()}{name[1:]} started on this device ({host}): the Sonoff updater")
             print("accepted it and it runs.")
         elif save_dump(host, args.label or f"stock-{version}", version) != 0:
-            raise Stop("the dump was not complete or not well formed. The readout firmware is "
+            raise Stop("the dump was not complete or not well formed. The bridge is "
                        f"still running: retry with python3 tools/espressif/dump_stock_flash.py --host {host}")
     finally:
         if rule is not None and not hostsys.close_firewall(rule):
@@ -423,28 +378,26 @@ def run(args: argparse.Namespace) -> int:
             for line in hostsys.undo_commands(rule):
                 print("  " + line)
 
-    stage(6, "Putting the plug back to stock")
-    print("Switch the plug off at the wall, wait five seconds, and switch it on again.")
-    ask_choice("Type 1 once the plug is switched back on", ["It's switched back on"])
+    stage(6, "Putting the device back to stock")
+    print("Switch the device off at the wall, wait five seconds, and switch it on again.")
+    ask_choice("Type 1 once the device is switched back on", ["It's switched back on"])
     print("Waiting for the Sonoff firmware to answer...")
-    if wait_for_stock(plug_ip):
-        print(f"The plug is answering as an eWeLink device at {plug_ip} again: back on stock.")
+    if wait_for_stock(device_ip):
+        print(f"The device is answering as an eWeLink device at {device_ip} again: back on stock.")
     else:
-        print(f"Nothing has answered at {plug_ip} yet. Check the eWeLink app; if the plug")
+        print(f"Nothing has answered at {device_ip} yet. Check the eWeLink app; if the device")
         print("is missing, switch it off and on once more.")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--plug-ip", help="the plug's address, instead of looking for it")
-    parser.add_argument("--email", help="the eWeLink account the plug is in")
-    parser.add_argument("--listen-ip", help="this computer's address as the plug sees it")
+    parser.add_argument("--device-ip", help="the device's address, instead of looking for it")
+    parser.add_argument("--email", help="the eWeLink account the device is in")
+    parser.add_argument("--listen-ip", help="this computer's address as the device sees it")
     parser.add_argument("--label", help="name for the saved dump (default: stock-<version>)")
-    parser.add_argument("--firmware", default=str(READOUT_OTA), help=argparse.SUPPRESS)
-    parser.add_argument("--control", nargs="?", const="4.4.4", choices=sorted(CONTROL_FILES),
-                        help="send a conversion bridge instead, only to see whether it starts "
-                             "(nothing is read): 4.4.4, the one the conversion sends")
+    parser.add_argument("--control", action="store_true",
+                        help="only see whether the bridge starts on this device: nothing is read")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="also show the cloud's messages while the firmware is delivered")
     args = parser.parse_args(argv)

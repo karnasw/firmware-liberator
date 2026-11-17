@@ -1,19 +1,32 @@
 # The website at firmwareliberator.com (website/README.md): tested and built
 # with Astro, then deployed from main to the Cloudflare Worker
-# website/wrangler.jsonc describes. A pull request builds it only, so one
-# that breaks the site shows before it is merged.
+# website/wrangler.jsonc describes; and the API Worker
+# (website/api/wrangler.jsonc) and the admin view's (website/admin/), each in
+# a job of its own, so no deploy holds up or breaks another. A pull request builds and tests only, so one
+# that breaks either shows before it is merged.
 #
 # The deploy job's environment, website, takes only main (set by
-# tools/repo/github_settings.py) and holds CLOUDFLARE_API_TOKEN.
+# tools/repo/github_settings.py) and holds CLOUDFLARE_WORKERS_DEPLOY_TOKEN.
 name: Website
 
 on:
   push:
     branches: [main]
   pull_request:
+  # Daily, after the API's nightly job (03:17 UTC) has written the figures:
+  # /stats and llms.txt are built from them (website/src/stats.mjs).
+  schedule:
+    - cron: "30 4 * * *"
   # The dependabot-merge workflow starts it after merging: a merge by a
-  # workflow's own token does not start another workflow.
+  # workflow's own token does not start another workflow. Run by hand, it
+  # can deploy the API taking no requests (website/README.md, Stopping the API).
   workflow_dispatch:
+    inputs:
+      ingest:
+        description: "The API takes requests (on), or answers each with 503 until the next deploy (off)"
+        type: choice
+        options: ["on", "off"]
+        default: "on"
 
 permissions: {}
 
@@ -45,6 +58,13 @@ jobs:
       - run: npm run build
         env:
           ASTRO_TELEMETRY_DISABLED: "1"
+      # What was built, as search engines read it: the sitemap, each page's
+      # address and description (checks/built.mjs). The daily build must have
+      # the night's figures too: one without them fails, where it is seen,
+      # rather than publish a page of none.
+      - run: npm run check
+        env:
+          REQUIRE_STATS: ${{ github.event_name == 'schedule' && '1' || '' }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: site
@@ -76,5 +96,118 @@ jobs:
           path: website/dist
       - name: Deploy
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_DEPLOY_TOKEN }}
         run: npx wrangler deploy
+
+  deploy-api:
+    needs: build
+    # Not on the daily build: it changes nothing of the API, and a stopped API
+    # (Run workflow, ingest off) must stay stopped until the next push.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: website
+      url: https://api.firmwareliberator.com/readout
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - run: npm ci --ignore-scripts
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_DEPLOY_TOKEN }}
+          # "off" only when run by hand and so chosen; a push has no input.
+          INGEST: ${{ inputs.ingest || 'on' }}
+        run: |
+          case "$INGEST" in
+            on|off) ;;
+            *) echo "ingest is on or off, not $INGEST"; exit 1 ;;
+          esac
+          # Named by its code, for the release workflow (tools/repo/api_health.py deployed).
+          npx wrangler deploy --config api/wrangler.jsonc --var "INGEST:$INGEST" \
+            --var "API_TREE:$(git rev-parse HEAD:website/api)"
+      # That it answers as deployed: migrated, with its database, through the
+      # firewall (tools/repo/api_health.py live).
+      - name: The API answers
+        working-directory: .
+        env:
+          INGEST: ${{ inputs.ingest || 'on' }}
+        run: python3 tools/repo/api_health.py live "$INGEST"
+
+  deploy-admin:
+    needs: build
+    # Not on the daily build: nothing of it changes.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: website
+      url: https://admin.firmwareliberator.com/
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - run: npm ci --ignore-scripts
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_DEPLOY_TOKEN }}
+        run: npx wrangler deploy --config admin/wrangler.jsonc
+      # That it lets no one in unsigned: Access sends a visitor to sign in,
+      # and the Worker refuses one Access has not passed.
+      - name: The admin view is closed
+        run: |
+          # A hostname the deploy has just made can take minutes to resolve:
+          # it is waited for, so that only an answer is judged.
+          for try in $(seq 30); do
+            getent hosts admin.firmwareliberator.com > /dev/null && break
+            if [ "$try" = 30 ]; then echo "admin.firmwareliberator.com does not resolve after 5 minutes"; exit 1; fi
+            sleep 10
+          done
+          status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 https://admin.firmwareliberator.com/)
+          case "$status" in
+            2*) echo "admin.firmwareliberator.com answered $status to a request not signed in"; exit 1 ;;
+            *) echo "admin.firmwareliberator.com answered $status: closed" ;;
+          esac
+          # And the emulator suites' path, without their service token: Access's
+          # application for it lets in nothing else (admin/emulator.js).
+          status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 -X POST \
+            -H 'Content-Type: application/json' -d '{"runs": []}' https://admin.firmwareliberator.com/v1/emulator/runs)
+          case "$status" in
+            2*|400|405) echo "/v1/emulator/runs answered $status to a request without the suites' token"; exit 1 ;;
+            *) echo "/v1/emulator/runs answered $status: closed" ;;
+          esac
+
+  # What the deploy token can see, once the deploys are done, so a mistaken
+  # expectation fails here without holding up the site: this zone and account,
+  # its three Workers, and no more (tools/repo/cloudflare_settings.py). Reads
+  # only - what it can change, the hand check shows.
+  deploy-token:
+    needs: [deploy, deploy-api, deploy-admin]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: website
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: What the deploy token can see
+        env:
+          CLOUDFLARE_WORKERS_DEPLOY_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_DEPLOY_TOKEN }}
+        run: python3 tools/repo/cloudflare_settings.py deploy-token
