@@ -113,6 +113,14 @@ def made_up_mac(mac: str) -> bool:
     return bool(int(pairs[0], 16) & 0x03) or bool({":".join(pairs), "-".join(pairs)} & allowed())
 
 
+def model_name(name: object) -> bool:
+    """Whether an eWeLink name is a product model the tool converts: the name
+    eWeLink gives a device until its owner renames it, which is no one's own
+    and which the docs name throughout."""
+    from tools.autoflash import kinds
+    return isinstance(name, str) and any(kind.product.fullmatch(name.strip()) for kind in kinds.EVERY)
+
+
 def mac_forms(mac: str) -> set[str]:
     hexes = mac.lower().replace(":", "").replace("-", "")
     pairs = [hexes[i:i + 2] for i in range(0, 12, 2)]
@@ -177,8 +185,9 @@ def own_values() -> dict[str, str]:
 
         if re.fullmatch(r"([0-9a-f]{2}-){5}[0-9a-f]{2}", device.name):  # each device's folder is its MAC
             add_mac(device.name)
-        for field in ("ewelink_id", "ewelink_name"):
-            add(record.get(field), f"a device's eWeLink {field.split('_')[1]}")
+        add(record.get("ewelink_id"), "a device's eWeLink id")
+        if not model_name(record.get("ewelink_name")):
+            add(record.get("ewelink_name"), "a device's eWeLink name")
         if record.get("mac"):
             add_mac(record["mac"])
         if record.get("test_copy_of"):

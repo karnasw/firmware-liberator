@@ -124,6 +124,21 @@ class OwnValueTests(unittest.TestCase):
         self.assertIn("1000fake99", values)
         self.assertIn("10.9.8.7", values)
 
+    def test_an_ewelink_name_left_as_the_model_is_not_taken_for_a_devices(self):
+        # eWeLink names a device after its model until it is renamed: the docs
+        # name every model, so such a name stopped every commit that touched them.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for mac, name in (("58-cf-79-99-88-77", "S60TPF"), ("12-34-56-ab-cd-ef", "Kitchen lamp")):
+                (root / "captures/devices" / mac).mkdir(parents=True)
+                (root / "captures/devices" / mac / "device.json").write_text(json.dumps({"ewelink_name": name}))
+            with mock.patch.object(ls, "CAPTURES", root / "captures"), \
+                 mock.patch.object(ls, "LOCAL_FILE", root / "none"), mock.patch.object(ls, "ALLOW_FILE", root / "none"), \
+                 mock.patch("tools.autoflash.credentials.ENV_FILE", root / ".env"):
+                values = ls.own_values()
+        self.assertNotIn("S60TPF", values)
+        self.assertEqual(values["Kitchen lamp"], "a device's eWeLink name")
+
     def test_a_test_copys_made_up_mac_is_not_taken_for_a_devices(self):
         # copy_device.py names a test copy by a MAC made up for it, as the docs say,
         # the one every test uses; the real device it was copied from is still found.
