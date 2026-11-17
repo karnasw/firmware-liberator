@@ -830,8 +830,9 @@ class FromAConvertedPlugTests(RouteTestCase):
                 self.assertEqual(steps[-1], last[firmware], (running, firmware))
                 self.assertEqual(len(steps), len(set(steps)), (running, firmware))
                 # The bootloader is written on every route, before any firmware goes
-                # in - past the commit, by the run that got there (D5 comes before E3).
-                self.assertTrue("D5" in steps or "L1" in steps or running == "committed",
+                # in - past the commit, by the run that got there (D5 comes before E3);
+                # Supla's own with it, at S1.
+                self.assertTrue("D5" in steps or "L1" in steps or "S1" in steps or running == "committed",
                                 (running, firmware))
 
     def test_past_the_commit_official_tasmota_goes_on_first(self):

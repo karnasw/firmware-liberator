@@ -406,43 +406,70 @@ def back_to_sonoff(backup: bytes, running: int) -> list[Plan]:
     return [first, second]
 
 
-# Supla's layout (tools/autoflash/supla.py): Sonoff's, ota_1 made smaller for
-# the LittleFS and core dump partitions GUI-Generic needs after it.  Pinned,
-# so a change to the layout is a change to this too.
-SUPLA_TABLE_SHA256 = "c30ea5d3c653b9185e23c41b05c705a012d20eb3a927348366a8faa69a0f5480"
-SUPLA_OTA1_SIZE = 0x1C0000
+# Supla's layout (tools/autoflash/supla.py): the builder's own.  Pinned, so a
+# change to the layout is a change to this too.
+SUPLA_TABLE_SHA256 = "5826ebb499d58c5707f565be1c80a6e3d1d5d2198dadadb4d9f75d5773ff12aa"
+SUPLA_APP0 = 0x10000
+SUPLA_APP_SIZE = 0x1E0000
+SUPLA_NVS = (0x9000, 0x5000)
+SUPLA_OTADATA = 0xE000
 SUPLA_TAIL = 0x3D0000           # the LittleFS and core dump partitions, to the end of the flash
+# The app's first 64 KiB go over Sonoff's settings, reserve, boot selection
+# and PHY data, the rest from Sonoff's ota_0 on.
+SUPLA_HEAD = SONOFF_OTA[0] - SUPLA_APP0
 
 
-def supla(image: bytes, table: bytes) -> list[Plan]:
-    """GUI-Generic into ota_0 beside the Berry Tasmota in ota_1, in two plans
-    as it is more than one may write; then the end of the flash cleared for
-    its LittleFS and core dump, Supla's partition table, and the boot
-    selection cleared, so the plug starts ota_0, and a restart.
+def supla(image: bytes, bootloader_image: bytes, table: bytes, otadata: bytes) -> list[Plan]:
+    """GUI-Generic laid out as the builder lays it out, written from the
+    Berry Tasmota running from Sonoff's ota_1, in two plans as it is more
+    than one may write; then the end of the flash cleared for its LittleFS
+    and core dump, its settings partition cleared, and its boot selection,
+    bootloader (what is left of a longer one after it cleared) and partition
+    table, the table last, and a restart.
 
-    Until the boot selection is cleared it still starts Tasmota, which
-    Supla's table leaves where it was: a cut before then leaves the plug as
-    it was, with the table changed or not.  The table is the one sector a
-    power cut leaves unable to start; it is written in a few milliseconds.
+    The app goes in at 0x10000, Sonoff's ota_0 first and its first 64 KiB
+    last: until those overwrite Sonoff's boot selection the plug starts
+    Tasmota as it did.  After, with no boot selection, the bootloader tries
+    each slot: ota_0 then holds no app (the image is checked for that), so it
+    starts the Tasmota in ota_1 - with its settings, which share those 64
+    KiB, maybe gone.  The bootloader and the table are the sectors a power cut
+    leaves unable to start; each is written in a few milliseconds.
     """
-    if len(image) > SUPLA_OTA1_SIZE:
+    if len(image) > SUPLA_APP_SIZE:
         raise PlanError("GUI-Generic does not fit Supla's slots")
-    if len(image) <= SECTOR:
+    if len(image) <= SUPLA_HEAD + SECTOR:
         raise PlanError("that is too small to be GUI-Generic")
+    if image[SUPLA_HEAD] == 0xE9:
+        # Sonoff's ota_0 would hold an app's start: one cut short there could be started.
+        raise PlanError("GUI-Generic would leave what looks like an app in Sonoff's ota_0")
     if sha256(table) != SUPLA_TABLE_SHA256:
         raise PlanError("that is not Supla's partition table")
-    half = len(image) // 2 // SECTOR * SECTOR or SECTOR
+    if SUPLA_APP0 + len(padded(image)) > SONOFF_OTA[1]:
+        raise PlanError("GUI-Generic would reach the Tasmota it is written from")
+    if len(padded(bootloader_image)) > TABLE_ADDRESS:
+        raise PlanError("the bootloader does not fit before the partition table")
+    split = max(len(image) // 2 // SECTOR * SECTOR, SUPLA_HEAD + SECTOR)
+    blobs = {"supla": image}
+    # What is left of a longer bootloader after it, cleared once it is in place.
+    after_bootloader = len(padded(bootloader_image))
+    leftover = ([Erase(after_bootloader, TABLE_ADDRESS - after_bootloader)]
+                if after_bootloader < TABLE_ADDRESS else [])
     first = Plan(
         name="supla_app", title="Supla", table_sha256=SONOFF_TABLE_SHA256, running=1,
-        steps=[Write("supla", SONOFF_OTA[0], 0, half)], blobs={"supla": image}, restart=False,
+        steps=[Write("supla", SONOFF_OTA[0], SUPLA_HEAD, split - SUPLA_HEAD)], blobs=blobs,
+        restart=False,
     ).check()
     second = Plan(
         name="supla_rest", title="Supla and its memory layout", table_sha256=SONOFF_TABLE_SHA256,
         running=1,
-        steps=[Write("supla", SONOFF_OTA[0] + half, half, len(image) - half),
+        steps=[Write("supla", SUPLA_APP0 + split, split, len(image) - split),
+               Write("supla", SUPLA_APP0, 0, SUPLA_HEAD),
                Erase(SUPLA_TAIL, 0x400000 - SUPLA_TAIL),
-               Write("table", TABLE_ADDRESS, whole=True),
-               Erase(SONOFF_OTADATA, OTADATA_SIZE)],
-        blobs={"supla": image, "table": table},
+               Erase(*SUPLA_NVS),
+               Write("otadata", SUPLA_OTADATA, whole=True),
+               Write("bootloader", 0, whole=True),
+               *leftover,
+               Write("table", TABLE_ADDRESS, whole=True)],
+        blobs=blobs | {"otadata": otadata, "bootloader": bootloader_image, "table": table},
     ).check()
     return [first, second]

@@ -1,6 +1,6 @@
-"""Supla GUI-Generic, written from the hub (S0, S1, S2): the image the
-builder gave checked before anything is written, written beside the Berry
-Tasmota with Supla's memory layout, then set up through its own network.
+"""Supla GUI-Generic, written from the hub (S0, S1, S2): the build the
+builder gave checked before anything is written, written from the Berry
+Tasmota as the builder lays it out, then set up through its own network.
 """
 
 from __future__ import annotations
@@ -33,34 +33,36 @@ def image_path(ctx: Context) -> Path:
         answer = prompts.ask_text(
             "Path to the GUI-Generic firmware",
             help_lines=[f"Build GUI-Generic for the device at {BUILDER}",
-                        "(ESP32-C3, the S60's template), and give the .bin or the .zip it downloads."],
+                        "(ESP32-C3, the S60's template), and give the .zip it downloads."],
             example="~/Downloads/GUI-Generic.ESP32C3.vNX26.11.08.2.S60.json.tmpl.pl.bin.zip")
     except prompts.NoOneToAnswer:
         raise Abort("an unattended run to Supla needs its firmware: --supla PATH") from None
     return Path(answer.strip().strip("'\"")).expanduser().resolve()
 
 
-def checked_image(ctx: Context) -> tuple[bytes, str]:
-    """The GUI-Generic app, checked; on a run that checked it before, the
+def checked_build(ctx: Context) -> supla.Build:
+    """The builder's build, checked; on a run that checked it before, the
     same one, unchanged since."""
     path = image_path(ctx)
     try:
-        image, name = supla.load(path)
-        supla.check(image, name)
+        build = supla.load(path)
+        supla.check(build)
     except (supla.ImageError, OSError) as exc:
         raise Abort(f"the Supla firmware cannot be used: {exc}") from exc
-    kept = ctx.state.input("supla_sha256")
-    if kept and kept != hashlib.sha256(image).hexdigest():
-        raise Abort(f"{name} has changed since this run checked it: give the same file, or "
+    kept = ctx.state.input("supla_build_sha256")
+    if kept and kept != build.sha256():
+        raise Abort(f"{path.name} has changed since this run checked it: give the same file, or "
                     "start again with --new")
-    return image, name
+    return build
 
 
 def step_image(ctx: Context) -> dict[str, Any]:
-    """S0 - the GUI-Generic image checked, before anything is written: an
+    """S0 - the builder's build checked, before anything is written: an
     ESP32-C3 app that fits Supla's slots, passes its own integrity check and
-    is GUI-Generic; and built with the device's template, where it has one."""
-    image, name = checked_image(ctx)
+    is GUI-Generic, built with the device's template where it has one; and
+    the bootloader, layout and boot selection the tool knows to start it."""
+    build = checked_build(ctx)
+    image, name = build.app, build.name
     path = image_path(ctx)
     kind = kinds.of_run(ctx.state)
     matches = supla.template_matches(image, kind)
@@ -71,40 +73,43 @@ def step_image(ctx: Context) -> dict[str, Any]:
         output.tell(f"    {name} carries no device template: set the {kind.short}'s pins in")
         output.tell("    GUI-Generic once it runs, or it will switch nothing.")
     ctx.state.set_input("supla_image", str(path))
-    ctx.state.set_input("supla_sha256", hashlib.sha256(image).hexdigest())
+    ctx.state.set_input("supla_build_sha256", build.sha256())
     version = supla.builder_version(name)
     output.say(f"Supla GUI-Generic {version or ''} checked: {name}".replace("  ", " "))
-    return supla.describe(image) | {"file": name, "builder_version": version, "template": matches}
+    return supla.describe(image) | {"file": name, "builder_version": version, "template": matches,
+                                    "bootloader_sha256": hashlib.sha256(build.bootloader).hexdigest()}
 
 
 def step_supla_install(ctx: Context) -> dict[str, Any]:
-    """S1 - GUI-Generic into ota_0 from the temporary Tasmota, every block
-    read back; then Supla's layout and the switch to it (plans.supla).
+    """S1 - GUI-Generic laid out as the builder lays it out, from the
+    temporary Tasmota, every block read back; the switch to it last
+    (plans.supla).
 
     The first half of the app is written by one plan and the rest by a
     second; a run that finished the first goes on from the second, which
     finds its table written already if it got that far."""
-    image, name = checked_image(ctx)
+    build = checked_build(ctx)
+    image, name = build.app, build.name
     signal = join.note_signal(ctx, join.plug_signal(ctx.device), [
         "Once Supla is written, it starts with its own network for you to",
         "set it up through; a weak signal makes joining your Wi-Fi after that less certain."])
     try:
-        first, second = plans.supla(image, supla.table())
+        first, second = plans.supla(image, build.bootloader, build.table, build.otadata)
     except plans.PlanError as exc:
         raise Abort(f"the Supla firmware cannot be written: {exc}") from exc
     prompts.section("Installing Supla", quiet=True, body=[
-        f"{name} goes into the half of the device's memory Tasmota is not running",
-        "from. Every block is read back and checked against the file; only then is",
-        "the memory layout given room for Supla's settings, and the device switches",
-        "to Supla and restarts.",
+        f"{name} goes into the device's memory where the builder puts it, beside",
+        "the temporary Tasmota. Every block is read back and checked against the",
+        "file; only then are the builder's bootloader and memory layout written,",
+        "and the device switches to Supla and restarts.",
     ])
     if ctx.dry_run:
         output.say(f"[dry-run] would install {name}")
         return {"dry_run": True, "image": name}
-    sha = hashlib.sha256(image).hexdigest()
-    if ctx.state.input("supla_first_half") != sha:
+    sha = build.sha256()
+    if ctx.state.input("supla_first_part") != sha:
         hub.run_plan(ctx, first)
-        ctx.state.set_input("supla_first_half", sha)
+        ctx.state.set_input("supla_first_part", sha)
     return hub.run_plan(ctx, second) | {"image": name, "size": len(image), "signal_dbm": signal}
 
 

@@ -462,7 +462,7 @@ def _main() -> int:
                         "by an ESPHome builder, losing that build's config changes and any API key")
     parser.add_argument("--supla", metavar="PATH",
                         help="install Supla GUI-Generic from this file, as gui-generic-builder-new.supla.io gave it "
-                        "(the firmware .bin, or the .zip it came in)")
+                        "(the .zip, as it is)")
     # An ESPHome built by hand (firmware.ota.bin), instead of the published one.
     parser.add_argument("--esphome", metavar="PATH", help=argparse.SUPPRESS)
     parser.add_argument("--dry-run", action="store_true")

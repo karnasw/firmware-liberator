@@ -62,8 +62,8 @@ class Context:
         # (no Safeboot / E3 repartition) and uploads this image via Tasmota OTA.
         esphome = getattr(args, "esphome", None)
         self.esphome_firmware = Path(esphome).expanduser().resolve() if esphome else None
-        # Supla GUI-Generic as the builder gave it (--supla PATH: the app .bin
-        # or the .zip), which choosing Supla needs; asked for if not given.
+        # Supla GUI-Generic as the builder gave it (--supla PATH: its .zip),
+        # which choosing Supla needs; asked for if not given.
         supla = getattr(args, "supla", None)
         self.supla_firmware = Path(supla).expanduser().resolve() if supla else None
         # --firmware: which to install, instead of being asked (--unattended needs it).

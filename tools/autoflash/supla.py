@@ -1,42 +1,48 @@
-"""Supla GUI-Generic instead of the final Tasmota: the image, and the memory
-layout it needs.
+"""Supla GUI-Generic instead of the final Tasmota: the build, and the memory
+layout it runs on.
 
 GUI-Generic is built for each user at https://gui-generic-builder-new.supla.io/,
 with their own choice of features and the device's template, so the tool
-publishes none: it takes the file the builder gave (the app .bin, or the .zip
-it came in) and checks it before anything is written.
+publishes none: it takes the .zip the builder gave and checks it before
+anything is written.
 
-The builder's own partition table puts its app at 0x10000, over where Sonoff's
-layout keeps the plug's settings and boot selection, and is meant for a plug
-flashed over USB.  Over the air, the app goes into Sonoff's ota_0 instead - an
-app runs from wherever its partition is - and the table written is Sonoff's
-with room taken from the end of ota_1 for what GUI-Generic needs and Sonoff's
-layout lacks: the LittleFS partition its settings are kept in (labelled
-"spiffs", as Arduino looks for it) and a core dump partition.
+The plug is given what the builder made for it: its bootloader, its
+partition table, its boot selection and the app at 0x10000, as flashing over
+USB would leave it.  Under ESPHome's bootloader, on Sonoff's layout, a real
+S60 ran GUI-Generic but could not mount its LittleFS settings partition, so
+every setting was lost at the next restart; with the builder's own bootloader
+and layout the same build keeps them.
 """
 
 from __future__ import annotations
 
+import binascii
 import hashlib
 import re
 import struct
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import esphome, imprint, kinds
 
-# Sonoff's app slot ota_0, which GUI-Generic goes into, and its ota_1, made
-# smaller for the partitions after it.  An update GUI-Generic later takes goes
-# into the slot it does not run from, so an image has to fit the smaller one.
-OTA0_ADDRESS = 0x20000
-OTA0_SIZE = 0x1F0000
-OTA1_ADDRESS = 0x210000
-OTA1_SIZE = 0x1C0000
-# Where the builder's own table has them, at the end of the flash.
+# The builder's layout: two app slots, the second for the update GUI-Generic
+# takes later, and at the end of the flash the LittleFS partition its
+# settings are kept in (labelled "spiffs", as Arduino looks for it) and a
+# core dump partition.
+NVS_ADDRESS = 0x9000
+NVS_SIZE = 0x5000
+OTADATA_ADDRESS = 0xE000
+OTADATA_SIZE = 0x2000
+APP0_ADDRESS = 0x10000
+APP1_ADDRESS = 0x1F0000
+APP_SIZE = 0x1E0000
 LITTLEFS_ADDRESS = 0x3D0000
 LITTLEFS_SIZE = 0x20000
 COREDUMP_ADDRESS = 0x3F0000
 COREDUMP_SIZE = 0x10000
+# The bootloader ends before the partition table.
+BOOTLOADER_LIMIT = 0x8000
 
 TABLE_SIZE = 0x1000
 _ENTRY = struct.Struct("<2sBBII16sI")
@@ -44,15 +50,13 @@ _MAGIC = b"\xaa\x50"
 _MD5_MAGIC = b"\xeb\xeb"
 APP, DATA = 0x00, 0x01
 
-# The partitions of the layout GUI-Generic is given: (label, type, subtype,
-# address, size, flags).  The first five are Sonoff's, as they are.
+# The partitions of the builder's table: (label, type, subtype, address,
+# size, flags).  A build whose table differs is refused, not guessed at.
 LAYOUT = (
-    ("nvs", DATA, 0x02, 0x9000, 0x10000, 0),
-    ("reserve", DATA, 0x02, 0x19000, 0x4000, 0),
-    ("otadata", DATA, 0x00, 0x1D000, 0x2000, 0),
-    ("phy_init", DATA, 0x01, 0x1F000, 0x1000, 0),
-    ("ota_0", APP, 0x10, OTA0_ADDRESS, OTA0_SIZE, 0),
-    ("ota_1", APP, 0x11, OTA1_ADDRESS, OTA1_SIZE, 0),
+    ("nvs", DATA, 0x02, NVS_ADDRESS, NVS_SIZE, 0),
+    ("otadata", DATA, 0x00, OTADATA_ADDRESS, OTADATA_SIZE, 0),
+    ("app0", APP, 0x10, APP0_ADDRESS, APP_SIZE, 0),
+    ("app1", APP, 0x11, APP1_ADDRESS, APP_SIZE, 0),
     ("spiffs", DATA, 0x82, LITTLEFS_ADDRESS, LITTLEFS_SIZE, 0),
     ("coredump", DATA, 0x03, COREDUMP_ADDRESS, COREDUMP_SIZE, 0),
 )
@@ -102,7 +106,39 @@ def table() -> bytes:
     return encode_table(LAYOUT)
 
 
-# ------------------------------------------------------------------ the image
+def selected_slot(otadata: bytes) -> int | None:
+    """The app slot a boot selection starts, as ESP-IDF's bootloader reads
+    it: the valid entry with the highest sequence number; None for none."""
+    found = []
+    for offset in (0, OTADATA_SIZE // 2):
+        sequence, _, _, crc = struct.unpack_from("<I20sII", otadata, offset)
+        if sequence != 0xFFFFFFFF and crc == binascii.crc32(struct.pack("<I", sequence), 0xFFFFFFFF):
+            found.append(sequence)
+    return (max(found) - 1) % 2 if found else None
+
+
+# ------------------------------------------------------------------ the build
+
+
+@dataclass(frozen=True)
+class Build:
+    """What the builder's .zip holds: GUI-Generic and what starts it."""
+    app: bytes
+    name: str                         # the app's file name, which names the release
+    bootloader: bytes
+    table: bytes                      # a whole sector
+    otadata: bytes
+
+    def sha256(self) -> str:
+        """One hash of all four, so a resumed run can tell any of them changed."""
+        digest = hashlib.sha256()
+        for part in (self.app, self.bootloader, self.table, self.otadata):
+            digest.update(hashlib.sha256(part).digest())
+        return digest.hexdigest()
+
+
+# The files of the builder's .zip besides the app, by name.
+_PARTS = {"bootloader.bin": "bootloader", "partitions.bin": "table", "boot_app0.bin": "otadata"}
 
 
 def builder_version(name: str) -> str | None:
@@ -112,46 +148,47 @@ def builder_version(name: str) -> str | None:
     return found.group(1) if found else None
 
 
-def _from_zip(path: Path) -> tuple[bytes, str]:
-    """The app in a zip the builder gave: the one .bin that is an app, its
-    bootloader, partition table and boot selection left out.  Read in
-    memory, never unpacked."""
-    try:
-        with zipfile.ZipFile(path) as archive:
-            found = []
-            for member in archive.infolist():
-                if member.is_dir() or not member.filename.lower().endswith(".bin"):
-                    continue
-                if member.file_size > LARGEST_FILE:
-                    raise ImageError(f"{member.filename} in {path.name} is larger than any firmware for the device")
-                data = archive.read(member)
-                if len(data) >= 64 and data[0] == 0xE9 and struct.unpack_from("<I", data, 32)[0] == esphome.APP_DESC_MAGIC:
-                    found.append((data, Path(member.filename).name))
-    except (zipfile.BadZipFile, OSError) as exc:
-        raise ImageError(f"{path.name} cannot be read as a zip: {exc}") from exc
-    if len(found) != 1:
-        raise ImageError(f"{path.name} holds {len(found)} firmware apps, not one: give the app's .bin itself")
-    return found[0]
-
-
-def load(path: Path) -> tuple[bytes, str]:
-    """The GUI-Generic app in `path` (the .bin, or the builder's .zip), and
-    the name of its file."""
+def load(path: Path) -> Build:
+    """The build in the builder's .zip at `path`, read in memory, never
+    unpacked: the one .bin that is an app, and its bootloader, partition
+    table and boot selection."""
     if not path.is_file():
         raise ImageError(f"{path} is not a file")
-    if path.stat().st_size > LARGEST_FILE * 2:
-        raise ImageError(f"{path.name} is larger than any firmware for the device")
-    if zipfile.is_zipfile(path):
-        return _from_zip(path)
-    return path.read_bytes(), path.name
+    if not zipfile.is_zipfile(path):
+        raise ImageError(f"{path.name} is not the .zip the builder gave: Supla is installed with the "
+                         "bootloader and partition table in it, so give the .zip as it is")
+    apps, parts = [], {}
+    try:
+        with zipfile.ZipFile(path) as archive:
+            for member in archive.infolist():
+                name = Path(member.filename).name
+                if member.is_dir() or not name.lower().endswith(".bin"):
+                    continue
+                if member.file_size > LARGEST_FILE:
+                    raise ImageError(f"{name} in {path.name} is larger than any firmware for the device")
+                data = archive.read(member)
+                if name.lower() in _PARTS:
+                    parts[_PARTS[name.lower()]] = data
+                elif len(data) >= 64 and data[0] == 0xE9 and struct.unpack_from("<I", data, 32)[0] == esphome.APP_DESC_MAGIC:
+                    apps.append((data, name))
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise ImageError(f"{path.name} cannot be read as a zip: {exc}") from exc
+    if len(apps) != 1:
+        raise ImageError(f"{path.name} holds {len(apps)} firmware apps, not one")
+    missing = [name for name, part in _PARTS.items() if part not in parts]
+    if missing:
+        raise ImageError(f"{path.name} has no {' or '.join(missing)}: give the .zip as the builder gave it")
+    table_part = parts["table"]
+    return Build(app=apps[0][0], name=apps[0][1], bootloader=parts["bootloader"],
+                 table=table_part + b"\xff" * max(0, TABLE_SIZE - len(table_part)), otadata=parts["otadata"])
 
 
-def check(image: bytes, label: str) -> None:
-    """Refuse anything but a GUI-Generic app for the ESP32-C3 that fits both
-    of its slots, and passes its own integrity check."""
-    if len(image) > OTA1_SIZE:
+def check_app(image: bytes, label: str) -> None:
+    """Refuse anything but a GUI-Generic app for the ESP32-C3 that fits its
+    slots, and passes its own integrity check."""
+    if len(image) > APP_SIZE:
         raise ImageError(f"{label} is {len(image):,} bytes; Supla's layout on the device holds "
-                         f"{OTA1_SIZE:,} in each of its two slots")
+                         f"{APP_SIZE:,} in each of its two slots")
     try:
         esphome.check_app(image, label)
     except esphome.ImageError as exc:
@@ -159,6 +196,31 @@ def check(image: bytes, label: str) -> None:
                                           "the app's .bin, not the bootloader or partitions.bin")) from exc
     if not all(marker in image for marker in MARKERS):
         raise ImageError(f"{label} is not Supla's GUI-Generic firmware")
+
+
+def check(build: Build) -> None:
+    """Refuse a build but for the ESP32-C3 laid out as this tool knows: the
+    app as check_app; a bootloader that passes its own integrity check and
+    ends before the table; the builder's table (LAYOUT); and a boot selection
+    that starts app0."""
+    check_app(build.app, build.name)
+    bootloader = build.bootloader
+    if len(bootloader) < 64 or bootloader[0] != 0xE9:
+        raise ImageError("bootloader.bin is not an ESP32 bootloader")
+    if struct.unpack_from("<H", bootloader, 12)[0] != esphome.ESP32_C3_CHIP_ID:
+        raise ImageError("bootloader.bin is not built for the device's ESP32-C3")
+    if len(bootloader) > BOOTLOADER_LIMIT:
+        raise ImageError("bootloader.bin is too big to fit before the partition table")
+    try:
+        report = imprint.parse_esp_image(bootloader)
+    except ValueError as exc:
+        raise ImageError(f"bootloader.bin is not a valid bootloader: {exc}") from exc
+    if not report["checksum_valid"] or report["sha256_valid"] is False:
+        raise ImageError("bootloader.bin fails its own integrity check")
+    if len(build.table) != TABLE_SIZE or decode_table(build.table) != list(LAYOUT):
+        raise ImageError("partitions.bin is a memory layout this version of the tool does not know")
+    if len(build.otadata) != OTADATA_SIZE or selected_slot(build.otadata) != 0:
+        raise ImageError("boot_app0.bin does not start the app's slot")
 
 
 def template_gpio(image: bytes) -> tuple[int, ...] | None:

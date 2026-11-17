@@ -70,9 +70,9 @@ ESPHOME_FINAL_STEPS: list[tuple[str, str, Callable[[Context], dict[str, Any]]]] 
     ("I1", "ESPHome into the other slot, every block checked", mover.step_esphome_install),
     ("I2", "ESPHome started and on the Wi-Fi", mover.step_esphome_check),
 ]
-# Supla GUI-Generic: the image the builder gave checked first (SUPLA_CHECK_STEP,
-# before anything is written); then from the hub, like ESPHome, into the slot
-# Tasmota does not run from, with Supla's own layout (tools/autoflash/supla.py).
+# Supla GUI-Generic: the build the builder gave checked first (SUPLA_CHECK_STEP,
+# before anything is written); then from the hub, as the builder lays it out,
+# its own bootloader in place of ESPHome's: so the hub's D5 is not run.
 SUPLA_CHECK_STEP = ("S0", "The Supla firmware checked", supla.step_image)
 SUPLA_FINAL_STEPS: list[tuple[str, str, Callable[[Context], dict[str, Any]]]] = [
     ("S1", "Supla into the other slot, every block checked, and its layout", supla.step_supla_install),
@@ -128,9 +128,9 @@ def steps_for(firmware: str, source: str = "sonoff") -> list[tuple[str, str, Cal
     """The steps from `source` firmware to `firmware` (none, if it is the same)."""
     steps = _steps_for(firmware, source)
     if firmware == "supla" and steps:
-        # Its image checked straight after this computer's files: before anything is written.
+        # Its build checked straight after this computer's files: before anything is written.
         at = next(index for index, (name, _, _) in enumerate(steps) if name == "A5") + 1
-        steps = steps[:at] + [SUPLA_CHECK_STEP] + steps[at:]
+        steps = [step for step in steps[:at] + [SUPLA_CHECK_STEP] + steps[at:] if step[0] != "D5"]
     return steps
 
 
