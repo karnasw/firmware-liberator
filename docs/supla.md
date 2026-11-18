@@ -49,7 +49,9 @@ The run is the ESPHome one up to the point the firmware goes in
    raises its own network, named `SUPLA-...`. The tool names it and waits
    while you join it and, at `http://192.168.4.1`, give GUI-Generic your Wi-Fi
    and your Supla server and account email. Once you are back on your Wi-Fi,
-   the tool looks for the device there by its hardware address.
+   the tool looks for the device there by its hardware address. Set up with
+   a login, GUI-Generic answers every page by asking for it and shows
+   nothing else; the tool takes that answer, from that device, as Supla.
 
 If S2 sees Supla's own network but not the device on your Wi-Fi, Supla is
 still written and checked: its network stays up until it is set up, and your

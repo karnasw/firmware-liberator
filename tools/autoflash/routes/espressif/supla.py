@@ -113,10 +113,20 @@ def step_supla_install(ctx: Context) -> dict[str, Any]:
     return hub.run_plan(ctx, second) | {"image": name, "size": len(image), "signal_dbm": signal}
 
 
+# What GUI-Generic answers every page with once it is set up with a login, as
+# setting it up asks: Arduino's WebServer asking for it, with nothing to read.
+LOGIN = 'Basic realm="Login Required"'
+
+
 def supla_answers(address: str) -> bool:
-    """Whether GUI-Generic's page answers at `address`."""
+    """Whether GUI-Generic answers at `address`: its page, or, set up with a
+    login, its asking for one.  The device is found by its hardware address,
+    and the temporary Tasmota is told apart first where that matters
+    (evidence_supla_installed)."""
     page = setup_network.page(address, "/", timeout=3.0)
-    return bool(page) and any(marker.decode() in page for marker in supla.MARKERS)
+    if page and any(marker.decode() in page for marker in supla.MARKERS):
+        return True
+    return setup_network.login_asked(address, "/", timeout=3.0) == LOGIN
 
 
 def step_supla_check(ctx: Context, wait: float = 240.0) -> dict[str, Any]:
@@ -165,13 +175,14 @@ def step_supla_check(ctx: Context, wait: float = 240.0) -> dict[str, Any]:
 
 def evidence_supla_installed(ctx: Context) -> tuple[bool | None, str]:
     """S1, cut off: the temporary Tasmota answering means the device did not
-    switch; Supla's network or page means it did."""
+    switch; Supla's network or page means it did.  Tasmota is asked first:
+    with a web password it asks for a login as GUI-Generic does."""
     host = ctx.state.input("device_ip")
-    if host and supla_answers(host):
-        return True, "The device is running Supla, so the install did finish."
     if host and ctx.device.reachable() and ctx.device.current_ota() == 1:
         return False, ("The device is still running the temporary Tasmota, so it did not switch;\n"
                        "  it is safe to do this step again.")
+    if host and supla_answers(host):
+        return True, "The device is running Supla, so the install did finish."
     network = prompts.find_ssid(OWN_NETWORK_PREFIX)
     if network:
         return True, f"The device is broadcasting '{network}': Supla is running, so the install did finish."

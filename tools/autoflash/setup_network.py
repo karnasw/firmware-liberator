@@ -74,6 +74,19 @@ def page(host: str = SETUP_HOST, path: str = "/", timeout: float = 3.0) -> str |
         return None
 
 
+def login_asked(host: str, path: str = "/", timeout: float = 3.0) -> str | None:
+    """The login the page at `path` asks for (its WWW-Authenticate), or None
+    when it asks none, or nothing answers."""
+    request = urllib.request.Request(f"http://{host}{path}", headers={"User-Agent": "Autoflash/1"})
+    try:
+        with _OPENER.open(request, timeout=timeout):
+            return None
+    except urllib.error.HTTPError as exc:
+        return exc.headers.get("WWW-Authenticate") if exc.code == 401 else None
+    except (urllib.error.URLError, OSError, http.client.HTTPException):
+        return None
+
+
 def wait_for_page(
     marker: str,
     *,

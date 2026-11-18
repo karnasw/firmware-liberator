@@ -47,6 +47,13 @@ class FakeDeviceHandler(http.server.BaseHTTPRequestHandler):
         url = urllib.parse.urlsplit(self.path)
         if url.path == "/":
             device.root_views += 1
+            if device.behaviour == "login":
+                # GUI-Generic set up with a login: every page asks for it, and says nothing.
+                self.send_response(401)
+                self.send_header("WWW-Authenticate", 'Basic realm="Login Required"')
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             self.reply("<title>Autoflash bridge</title>" if device.behaviour == "bridge"
                        else "<title>Tasmota</title>")
             return
@@ -101,6 +108,10 @@ class SetupNetworkTests(unittest.TestCase):
         thread.start()
         self.addCleanup(lambda: (device.shutdown(), device.server_close()))
         return device
+
+    def test_the_login_a_page_asks_for_is_read(self):
+        self.assertEqual(setup_network.login_asked(self.start("login").host), 'Basic realm="Login Required"')
+        self.assertIsNone(setup_network.login_asked(self.start("tasmota").host))
 
     def test_joining_is_noticed_by_the_page_marker(self):
         device = self.start("bridge")

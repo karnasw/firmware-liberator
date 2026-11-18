@@ -14,7 +14,7 @@ from tests.autoflash.test_imprint import build_image
 from tools.autoflash import kinds, plans, supla
 from tools.autoflash.errors import Abort
 from tools.autoflash.routes import espressif
-from tools.autoflash import join, prompts
+from tools.autoflash import join, prompts, setup_network
 from tools.autoflash.routes.espressif import evidence, hub, images
 from tools.autoflash.routes.espressif import supla as route
 from tools.autoflash.state import RunState
@@ -342,6 +342,27 @@ class StepTests(unittest.TestCase):
             with mock.patch.object(join, "wait_for", return_value=True):
                 self.assertEqual(route.step_supla_check(ctx), {"network": "SUPLA-ESP32C3-ABCD", "seen": True})
         self.assertIn("    SUPLA-ESP32C3-ABCD      (open - no password)", shown.call_args.args[1])
+
+    def test_supla_set_up_with_a_login_is_found(self):
+        # Once set up, every page of GUI-Generic's asks for its login and says
+        # nothing more: seen on a real S60, S2 waited for a page it never got.
+        login = 'Basic realm="Login Required"'
+        with mock.patch.object(setup_network, "page", return_value=""), \
+                mock.patch.object(setup_network, "login_asked", return_value=login):
+            self.assertTrue(route.supla_answers("192.0.2.50"))
+        with mock.patch.object(setup_network, "page", return_value=""), \
+                mock.patch.object(setup_network, "login_asked", return_value='Digest realm="other"'):
+            self.assertFalse(route.supla_answers("192.0.2.50"))
+        with mock.patch.object(setup_network, "page", return_value="<h1>GUI-Generic</h1> SUPLA"):
+            self.assertTrue(route.supla_answers("192.0.2.50"))
+
+    def test_the_temporary_tasmota_is_told_apart_from_supla_first(self):
+        # A Tasmota with a web password asks for a login as GUI-Generic does.
+        ctx = self.ctx(gui_generic())
+        ctx.state.set_input("device_ip", "192.0.2.50")
+        ctx.device = SimpleNamespace(reachable=lambda: True, current_ota=lambda: 1)
+        with mock.patch.object(route, "supla_answers", return_value=True):
+            self.assertIs(route.evidence_supla_installed(ctx)[0], False)
 
     def test_supla_seen_nowhere_is_not_called_converted(self):
         # As in the emulator, which cannot run GUI-Generic: it restarts over
